@@ -1,0 +1,121 @@
+[project]
+name = "telegram-acp-bot"
+description = "A Telegram bot that implements Agent Client Protocol to interact with AI agents"
+authors = [{name = "Martín Gaitán", email = "gaitan@gmail.com"}]
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.12"
+keywords = []
+version = "0.1.0"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Documentation",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = ["rich"]
+
+[build-system]
+requires = ["uv_build>=0.8.9,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "telegram_acp_bot"
+
+[tool.uv]
+exclude-newer = "1 week"
+exclude-newer-package = { ty = "0 days" }
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",      # pycodestyle (E, W) https://docs.astral.sh/ruff/rules/#pycodestyle-e-w
+    "F",      # https://docs.astral.sh/ruff/rules/#pyflakes-f
+    "I",      # isort
+    "C90",    # https://docs.astral.sh/ruff/rules/#mccabe-c90
+    "A",      # https://docs.astral.sh/ruff/rules/#flake8-builtins-a
+    "ANN",    # https://docs.astral.sh/ruff/rules/#flake8-annotations-ann
+    "UP",     # https://docs.astral.sh/ruff/rules/#pyupgrade-up
+    "RUF",    # https://docs.astral.sh/ruff/rules/#ruff-specific-rules-ruf
+    "T10",    # remove pdbs
+    "ISC",    # https://docs.astral.sh/ruff/rules/#flake8-implicit-str-concat-isc
+    "SIM",    # https://docs.astral.sh/ruff/rules/#flake8-simplify-sim
+    "ASYNC",  # https://docs.astral.sh/ruff/rules/#flake8-async-async
+    "ERA",    # https://docs.astral.sh/ruff/rules/#eradicate-era
+    "TRY",    # https://docs.astral.sh/ruff/rules/#tryceratops-try
+    "BLE",    # https://docs.astral.sh/ruff/rules/#flake8-blind-except-ble
+    "B",      # https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
+    "EXE",    # https://docs.astral.sh/ruff/rules/#flake8-executable-exe
+    "FA",     # https://docs.astral.sh/ruff/rules/#flake8-future-annotations-fa
+    "C4",     # https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4
+    "N",      # https://docs.astral.sh/ruff/rules/#pep8-naming-n
+    "PIE",    # https://docs.astral.sh/ruff/rules/#flake8-pie-pie
+    "PERF",   # https://docs.astral.sh/ruff/rules/#perflint-perf
+    "PL",     # https://docs.astral.sh/ruff/rules/#pylint-pl
+    "FURB",   # https://docs.astral.sh/ruff/rules/#refurb-furb
+    "RET",    # https://docs.astral.sh/ruff/rules/#flake8-return-ret
+    "TID252", # https://docs.astral.sh/ruff/rules/relative-imports/
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ANN"]
+"docs/conf.py" = ["A"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--cov=telegram_acp_bot",
+    "--cov-report=term-missing",
+    "--cov-fail-under=100",
+    "--strict-markers",          # Fail if markers are not registered in pytest configuration
+    "--strict-config",           # Fail if there are errors in pytest configuration
+    "-ra",                       # Show extra test summary info for all except passed tests
+]
+
+[project.urls]
+Homepage = "https://mgaitan.github.io/telegram-acp-bot"
+Documentation = "https://mgaitan.github.io/telegram-acp-bot"
+Changelog = "https://github.com/mgaitan/telegram-acp-bot/releases"
+Repository = "https://github.com/mgaitan/telegram-acp-bot"
+Issues = "https://github.com/mgaitan/telegram-acp-bot/issues"
+Funding = "https://github.com/sponsors/mgaitan"
+
+[project.scripts]
+acp-bot = "telegram_acp_bot:main"
+
+[dependency-groups]
+test = [
+    "pytest>=9.0.1",
+    "pytest-freezer>=0.4.9",
+    "pytest-mock>=3.15.0",
+    "pytest-cov>=7.0.0",
+]
+lint = ["ruff"]
+qa = [
+    { include-group = "lint" },
+    "ty>=0.0.19",
+]
+docs = [
+    "myst-parser>=3.0.0",
+    "sphinx>=8.2",
+    "sphinx-book-theme>=1.1.0",
+    "sphinxcontrib-mermaid>=1.0.0",
+    "richterm[sphinx]>=0.1.0",
+]
+dev = [
+    { include-group = "test" },
+    { include-group = "qa" },
+    "ipdb",
+    "ipython",
+]

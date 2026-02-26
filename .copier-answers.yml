@@ -1,0 +1,16 @@
+# Changes here will be overwritten by Copier.
+_commit: 0.4.0
+_src_path: gh:mgaitan/python-package-copier-template
+author_email: gaitan@gmail.com
+author_fullname: Martín Gaitán
+author_username: mgaitan
+copyright_license: BSD-3-Clause
+gh_repo_create: public
+project_description: A Telegram bot that implements Agent Client Protocol to interact
+    with AI agents
+project_name: Telegram ACP bot
+python_package_command_line_name: acp-bot
+python_package_distribution_name: telegram-acp-bot
+python_package_import_name: telegram_acp_bot
+repository_name: telegram-acp-bot
+

@@ -1,0 +1,47 @@
+name: Copier Template Update
+
+on:
+  schedule:
+    - cron: "0 0 */20 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Capture template version (before)
+        id: template-version-before
+        run: |
+          before=$(yq -r '._commit // "unknown"' .copier-answers.yml)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh from template
+        run: uvx git+https://github.com/mgaitan/python-package-copier-template -- .
+
+      - name: Capture template version (after)
+        id: template-version-after
+        run: |
+          after=$(yq -r '._commit // "unknown"' .copier-answers.yml)
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: update project template"
+          title: "chore: update project template to ${{ steps.template-version-after.outputs.after }}"
+          body: |
+            Automated template refresh via `uvx copier update --trust --defaults .`.
+
+            Template version:
+            - before: {% raw %}${{ steps.template-version-before.outputs.before }}
+            - after: ${{ steps.template-version-after.outputs.after }}
+
+            Template releases: https://github.com/mgaitan/python-package-copier-template/releases
+          branch: chore/update-template
