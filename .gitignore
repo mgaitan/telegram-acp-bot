@@ -24,3 +24,8 @@ uv.lock
 .mypy_cache/
 .ruff_cache/
 __pycache__/
+
+# local env
+.env
+.env.*
+!.env.example

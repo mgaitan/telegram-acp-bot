@@ -1,11 +1,20 @@
 """
 Telegram ACP bot
 
-A Telegram bot that implements Agent Client Protocol to interact with AI agents
+A Telegram bot that implements Agent Client Protocol to interact with AI agents.
 """
 
+from __future__ import annotations
+
 import argparse
+import os
 from importlib import metadata
+
+from dotenv import load_dotenv
+
+from telegram_acp_bot.acp_app.echo_service import EchoAgentService
+from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.telegram.bot import TelegramBridge, make_config, run_polling
 
 
 def get_version() -> str:
@@ -19,15 +28,39 @@ def get_parser() -> argparse.ArgumentParser:
     """Return the CLI argument parser."""
     parser = argparse.ArgumentParser(prog="acp-bot")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {get_version()}")
+    parser.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN", ""), help="Telegram bot token")
+    parser.add_argument(
+        "--allowed-user-id",
+        action="append",
+        default=[],
+        type=int,
+        help="Allowed Telegram user ID. Can be repeated.",
+    )
+    parser.add_argument(
+        "--workspace",
+        default=os.getcwd(),
+        help="Default workspace path for /new when path is not provided.",
+    )
     return parser
 
 
 def main(args: list[str] | None = None) -> int:
     """Run the main program."""
+    load_dotenv(override=False)
     parser = get_parser()
     opts = parser.parse_args(args=args)
-    print(opts)
-    return 0
+
+    if not opts.telegram_token:
+        parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")
+
+    config = make_config(
+        token=opts.telegram_token,
+        allowed_user_ids=opts.allowed_user_id,
+        workspace=opts.workspace,
+    )
+    service = EchoAgentService(SessionRegistry())
+    bridge = TelegramBridge(config=config, agent_service=service)
+    return run_polling(config, bridge)
 
 
 __all__: list[str] = ["get_parser", "main"]

@@ -14,7 +14,19 @@ A Telegram bot that implements Agent Client Protocol to interact with AI agents
 Run directly without installing via `uvx`:
 
 ```bash
-uvx --with=telegram-acp-bot acp-bot
+uvx --with=telegram-acp-bot acp-bot --help
+```
+
+Run the MVP bot (echo agent placeholder):
+
+```bash
+TELEGRAM_BOT_TOKEN=123456:abc uvx --with=telegram-acp-bot acp-bot
+```
+
+You can also store variables in a local `.env` file (it is gitignored):
+
+```env
+TELEGRAM_BOT_TOKEN=123456:abc
 ```
 
 To install the tool permanently:

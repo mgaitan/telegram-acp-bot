@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from telegram import Update
+from telegram.constants import ChatAction
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+from telegram_acp_bot.acp_app.echo_service import EchoAgentService
+
+
+@dataclass(slots=True, frozen=True)
+class BotConfig:
+    """Runtime settings for Telegram transport."""
+
+    token: str
+    allowed_user_ids: set[int]
+    default_workspace: Path
+
+
+class ChatRequiredError(ValueError):
+    """Raised when a Telegram update does not include a chat object."""
+
+
+class TelegramBridge:
+    """Telegram command and message handlers for the MVP bot."""
+
+    def __init__(self, config: BotConfig, agent_service: EchoAgentService) -> None:
+        self._config = config
+        self._agent_service = agent_service
+
+    def install(self, app: Application) -> None:
+        app.add_handler(CommandHandler("start", self.start))
+        app.add_handler(CommandHandler("help", self.help))
+        app.add_handler(CommandHandler("new", self.new_session))
+        app.add_handler(CommandHandler("session", self.session))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+        await self._reply(update, "Use /new [workspace] to start a session, then send plain text prompts.")
+
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+        await self._reply(update, "Commands: /new [workspace], /session, /help")
+
+    async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._require_access(update):
+            return
+
+        chat_id = self._chat_id(update)
+        workspace = self._workspace_from_args(context.args)
+        session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
+        await self._reply(update, f"Session started: `{session_id}` in `{workspace}`")
+
+    async def session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+
+        workspace = self._agent_service.get_workspace(chat_id=self._chat_id(update))
+        if workspace is None:
+            await self._reply(update, "No active session. Use /new first.")
+            return
+
+        await self._reply(update, f"Active session workspace: `{workspace}`")
+
+    async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._require_access(update):
+            return
+
+        message = update.message
+        if message is None or not message.text:
+            return
+
+        chat_id = self._chat_id(update)
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        reply = await self._agent_service.prompt(chat_id=chat_id, text=message.text)
+        if reply is None:
+            await self._reply(update, "No active session. Use /new first.")
+            return
+
+        await self._reply(update, reply.text)
+
+    async def _require_access(self, update: Update) -> bool:
+        allowed = self._config.allowed_user_ids
+        if not allowed:
+            return True
+
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id in allowed:
+            return True
+
+        await self._reply(update, "Access denied for this bot.")
+        return False
+
+    @staticmethod
+    def _chat_id(update: Update) -> int:
+        chat = update.effective_chat
+        if chat is None:
+            raise ChatRequiredError
+        return chat.id
+
+    def _workspace_from_args(self, args: list[str]) -> Path:
+        return Path(args[0]).expanduser() if args else self._config.default_workspace
+
+    @staticmethod
+    async def _reply(update: Update, text: str) -> None:
+        if update.message is not None:
+            await update.message.reply_text(text)
+
+
+def build_application(config: BotConfig, bridge: TelegramBridge) -> Application:
+    app = Application.builder().token(config.token).build()
+    bridge.install(app)
+    return app
+
+
+def run_polling(config: BotConfig, bridge: TelegramBridge) -> int:
+    app = build_application(config, bridge)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    return 0
+
+
+def make_config(*, token: str, allowed_user_ids: list[int], workspace: str) -> BotConfig:
+    return BotConfig(
+        token=token,
+        allowed_user_ids=set(allowed_user_ids),
+        default_workspace=Path(workspace).expanduser(),
+    )

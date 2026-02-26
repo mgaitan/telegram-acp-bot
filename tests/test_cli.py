@@ -11,9 +11,40 @@ import pytest
 from telegram_acp_bot import get_version, main
 
 
-def test_main() -> None:
-    """Basic CLI test."""
+@pytest.fixture(autouse=True)
+def isolate_token_sources(monkeypatch: pytest.MonkeyPatch, mocker):
+    """Prevent tests from loading real token values from environment or .env files."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    return mocker.patch("telegram_acp_bot.load_dotenv")
+
+
+def test_main_loads_dotenv(isolate_token_sources, mocker) -> None:
+    """CLI loads .env before parsing arguments."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert isolate_token_sources is not None
+    assert main(["--telegram-token", "TOKEN"]) == 0
+    isolate_token_sources.assert_called_once_with(override=False)
+
+
+def test_main_requires_token() -> None:
+    """Running the bot without token should fail fast."""
+    with pytest.raises(SystemExit):
+        main([])
+
+
+def test_main_runs_bot(mocker) -> None:
+    """Run path delegates to run_polling."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert main(["--telegram-token", "TOKEN"]) == 0
+    mock_run_polling.assert_called_once()
+
+
+def test_main_uses_env_token(mocker, monkeypatch) -> None:
+    """Run path uses TELEGRAM_BOT_TOKEN when loaded from environment."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TOKEN")
     assert main([]) == 0
+    mock_run_polling.assert_called_once()
 
 
 def test_show_help(capsys: pytest.CaptureFixture) -> None:
