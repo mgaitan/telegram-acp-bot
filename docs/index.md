@@ -27,6 +27,24 @@ To install the tool permanently:
 uv tool install telegram-acp-bot
 ```
 
+Run the bot with a real ACP agent:
+
+```bash
+TELEGRAM_BOT_TOKEN=123456:abc \
+ACP_AGENT_COMMAND="codex-acp" \
+uvx --with=telegram-acp-bot acp-bot
+```
+
+You can also set `TELEGRAM_BOT_TOKEN` and `ACP_AGENT_COMMAND` in a local `.env` file.
+
+Supported bot commands:
+- `/new [workspace]`
+- `/session`
+- `/cancel`
+- `/stop`
+- `/clear`
+- `/perm`, `/perm session approve|deny`, `/perm next on|off`
+
 
 ```{toctree}
 :maxdepth: 2
@@ -35,4 +53,5 @@ uv tool install telegram-acp-bot
 ../CONTRIBUTING.md
 ../CODE_OF_CONDUCT.md
 about_the_docs.md
+preliminary_ux.md
 ```

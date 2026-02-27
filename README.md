@@ -14,7 +14,28 @@ A Telegram bot that implements Agent Client Protocol to interact with AI agents
 Run directly without installing via `uvx`:
 
 ```bash
+uvx --with=telegram-acp-bot acp-bot --help
+```
+
+Run the bot with a real ACP agent:
+
+```bash
+TELEGRAM_BOT_TOKEN=123456:abc \
+ACP_AGENT_COMMAND="codex-acp" \
 uvx --with=telegram-acp-bot acp-bot
+```
+
+Current interaction capabilities:
+- `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`
+- Permission controls: `/perm`, `/perm session approve|deny`, `/perm next on|off`
+- Plain text prompts
+- Image and document attachments from Telegram messages
+- Agent markdown output (with fallback to plain text when Telegram rejects entities)
+
+You can also store variables in a local `.env` file (it is gitignored):
+
+```env
+TELEGRAM_BOT_TOKEN=123456:abc
 ```
 
 To install the tool permanently:
