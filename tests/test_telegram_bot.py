@@ -4,15 +4,24 @@ import asyncio
 import base64
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from telegram import Update
 from telegram.error import TelegramError
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
 from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, ImagePayload
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
-from telegram_acp_bot.telegram.bot import ChatRequiredError, TelegramBridge, build_application, make_config, run_polling
+from telegram_acp_bot.telegram.bot import (
+    AgentService,
+    ChatRequiredError,
+    TelegramBridge,
+    build_application,
+    make_config,
+    run_polling,
+)
 
 EXPECTED_OUTBOUND_DOCUMENTS = 2
 
@@ -223,7 +232,7 @@ def test_new_session_reports_invalid_workspace() -> None:
             del chat_id
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=InvalidWorkspaceService())
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, InvalidWorkspaceService()))
     update = make_update()
 
     asyncio.run(bridge.new_session(update, make_context(args=["/missing"])))
@@ -245,7 +254,7 @@ def test_new_session_reports_process_stdio_error() -> None:
             del chat_id
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=BrokenAgentService())
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, BrokenAgentService()))
     update = make_update()
 
     asyncio.run(bridge.new_session(update, make_context(args=["/tmp"])))
@@ -270,7 +279,7 @@ def test_new_session_reports_generic_error() -> None:
             del chat_id
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=UnexpectedService())
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, UnexpectedService()))
     update = make_update()
 
     asyncio.run(bridge.new_session(update, make_context(args=["/tmp"])))
@@ -586,7 +595,7 @@ def test_on_text_ignores_when_message_is_missing() -> None:
 
 
 def test_chat_id_without_chat_raises() -> None:
-    update = SimpleNamespace(effective_chat=None)
+    update = cast(Update, SimpleNamespace(effective_chat=None))
     with pytest.raises(ChatRequiredError):
         TelegramBridge._chat_id(update)
 

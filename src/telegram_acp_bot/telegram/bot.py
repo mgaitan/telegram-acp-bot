@@ -4,7 +4,7 @@ import base64
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from telegram import InputFile, Message, Update
 from telegram.constants import ChatAction, ParseMode
@@ -106,7 +106,7 @@ class TelegramBridge:
             return
 
         chat_id = self._chat_id(update)
-        workspace = self._workspace_from_args(context.args)
+        workspace = self._workspace_from_args(self._context_args(context))
         workspace_was_missing = not workspace.exists()
         try:
             session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
@@ -176,7 +176,8 @@ class TelegramBridge:
             return
 
         chat_id = self._chat_id(update)
-        if not context.args:
+        args = self._context_args(context)
+        if not args:
             policy = self._agent_service.get_permission_policy(chat_id=chat_id)
             if policy is None:
                 await self._reply(update, "No active session. Use /new first.")
@@ -187,21 +188,24 @@ class TelegramBridge:
             )
             return
 
-        subcommand = context.args[0].lower()
-        if subcommand == "session" and len(context.args) >= PERMISSION_SET_ARG_COUNT:
-            mode = context.args[1].lower()
+        subcommand = args[0].lower()
+        if subcommand == "session" and len(args) >= PERMISSION_SET_ARG_COUNT:
+            mode = args[1].lower()
             if mode not in {"approve", "deny"}:
                 await self._reply(update, "Usage: /perm session approve|deny")
                 return
-            changed = await self._agent_service.set_session_permission_mode(chat_id=chat_id, mode=mode)
+            changed = await self._agent_service.set_session_permission_mode(
+                chat_id=chat_id,
+                mode=cast(PermissionMode, mode),
+            )
             if changed:
                 await self._reply(update, f"Updated session permission mode to {mode}.")
                 return
             await self._reply(update, "No active session. Use /new first.")
             return
 
-        if subcommand == "next" and len(context.args) >= PERMISSION_SET_ARG_COUNT:
-            raw_value = context.args[1].lower()
+        if subcommand == "next" and len(args) >= PERMISSION_SET_ARG_COUNT:
+            raw_value = args[1].lower()
             if raw_value not in {"on", "off"}:
                 await self._reply(update, "Usage: /perm next on|off")
                 return
@@ -322,6 +326,13 @@ class TelegramBridge:
         if candidate.is_absolute():
             return candidate
         return self._config.default_workspace / candidate
+
+    @staticmethod
+    def _context_args(context: ContextTypes.DEFAULT_TYPE) -> list[str]:
+        args = context.args
+        if not args:
+            return []
+        return list(args)
 
     @staticmethod
     async def _reply(update: Update, text: str) -> None:
