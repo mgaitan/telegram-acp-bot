@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Protocol
 
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy
@@ -208,7 +209,7 @@ class TelegramBridge:
             await self._reply(update, "No active session. Use /new first.")
             return
 
-        await self._reply(update, reply.text)
+        await self._reply_agent(update, reply.text)
 
     async def _require_access(self, update: Update) -> bool:
         allowed = self._config.allowed_user_ids
@@ -235,6 +236,16 @@ class TelegramBridge:
     @staticmethod
     async def _reply(update: Update, text: str) -> None:
         if update.message is not None:
+            await update.message.reply_text(text)
+
+    @staticmethod
+    async def _reply_agent(update: Update, text: str) -> None:
+        if update.message is None:
+            return
+
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except TelegramError:
             await update.message.reply_text(text)
 
 

@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from telegram.error import TelegramError
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
@@ -11,12 +12,25 @@ from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import ChatRequiredError, TelegramBridge, build_application, make_config, run_polling
 
 
+class MarkdownFailureError(TelegramError):
+    """Raised by test doubles to emulate Telegram markdown parse failure."""
+
+    def __init__(self) -> None:
+        super().__init__("bad markdown")
+
+
 class DummyMessage:
     def __init__(self, text: str | None = None) -> None:
         self.text = text
         self.replies: list[str] = []
+        self.reply_kwargs: list[dict[str, object]] = []
+        self.fail_markdown = False
 
-    async def reply_text(self, text: str) -> None:
+    async def reply_text(self, text: str, **kwargs: object) -> None:
+        if self.fail_markdown and kwargs.get("parse_mode") is not None:
+            self.reply_kwargs.append(kwargs)
+            raise MarkdownFailureError
+        self.reply_kwargs.append(kwargs)
         self.replies.append(text)
 
 
@@ -212,6 +226,22 @@ def test_on_text_without_and_with_session() -> None:
     assert update.message.replies[0] == "No active session. Use /new first."
     assert update.message.replies[-1].endswith("hello")
     assert context.bot.actions == [(100, "typing"), (100, "typing")]
+    assert update.message.reply_kwargs[-1] == {"parse_mode": "Markdown"}
+
+
+def test_on_text_markdown_fallback_to_plain() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+    update.message.fail_markdown = True
+    context = make_context()
+
+    asyncio.run(bridge.new_session(update, make_context()))
+    asyncio.run(bridge.on_text(update, context))
+
+    assert update.message.replies[-1].endswith("hello")
+    assert update.message.reply_kwargs[-2] == {"parse_mode": "Markdown"}
+    assert update.message.reply_kwargs[-1] == {}
 
 
 def test_cancel_stop_clear_without_session() -> None:
@@ -345,6 +375,11 @@ def test_reply_with_no_message_object() -> None:
     update = make_update(with_message=False)
 
     asyncio.run(bridge.help(update, make_context()))
+
+
+def test_reply_agent_with_no_message_object() -> None:
+    update = make_update(with_message=False)
+    asyncio.run(TelegramBridge._reply_agent(update, "x"))
 
 
 def test_on_text_ignores_when_message_is_missing() -> None:
