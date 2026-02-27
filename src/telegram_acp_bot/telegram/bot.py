@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Protocol
 
-from telegram import Update
+from telegram import InputFile, Message, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy
+from telegram_acp_bot.acp_app.models import (
+    AgentReply,
+    FilePayload,
+    ImagePayload,
+    PermissionMode,
+    PermissionPolicy,
+    PromptFile,
+    PromptImage,
+)
 
 PERMISSION_SET_ARG_COUNT = 2
 
@@ -32,7 +42,14 @@ class AgentService(Protocol):
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str: ...
 
-    async def prompt(self, *, chat_id: int, text: str) -> AgentReply | None: ...
+    async def prompt(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        images: tuple[PromptImage, ...] = (),
+        files: tuple[PromptFile, ...] = (),
+    ) -> AgentReply | None: ...
 
     def get_workspace(self, *, chat_id: int) -> Path | None: ...
 
@@ -65,7 +82,9 @@ class TelegramBridge:
         app.add_handler(CommandHandler("stop", self.stop))
         app.add_handler(CommandHandler("clear", self.clear))
         app.add_handler(CommandHandler("perm", self.permissions))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+        app.add_handler(
+            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
+        )
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -194,22 +213,83 @@ class TelegramBridge:
 
         await self._reply(update, "Usage: /perm | /perm session approve|deny | /perm next on|off")
 
-    async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
             return
 
         message = update.message
-        if message is None or not message.text:
+        if message is None:
+            return
+
+        text = message.text or message.caption or ""
+        images = await self._extract_prompt_images(message=message, context=context)
+        files = await self._extract_prompt_files(message=message, context=context)
+        if not text and not images and not files:
             return
 
         chat_id = self._chat_id(update)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        reply = await self._agent_service.prompt(chat_id=chat_id, text=message.text)
+        reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
         if reply is None:
             await self._reply(update, "No active session. Use /new first.")
             return
 
         await self._reply_agent(update, reply.text)
+        await self._send_attachments(update, reply)
+
+    async def _extract_prompt_images(
+        self,
+        *,
+        message: Message,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> tuple[PromptImage, ...]:
+        images: list[PromptImage] = []
+        if message.photo:
+            photo = message.photo[-1]
+            tg_file = await context.bot.get_file(photo.file_id)
+            raw = bytes(await tg_file.download_as_bytearray())
+            images.append(PromptImage(data_base64=base64.b64encode(raw).decode("ascii"), mime_type="image/jpeg"))
+
+        document = message.document
+        if document is not None and document.mime_type and document.mime_type.startswith("image/"):
+            tg_file = await context.bot.get_file(document.file_id)
+            raw = bytes(await tg_file.download_as_bytearray())
+            images.append(PromptImage(data_base64=base64.b64encode(raw).decode("ascii"), mime_type=document.mime_type))
+
+        return tuple(images)
+
+    async def _extract_prompt_files(
+        self,
+        *,
+        message: Message,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> tuple[PromptFile, ...]:
+        document = message.document
+        if document is None:
+            return ()
+        if document.mime_type and document.mime_type.startswith("image/"):
+            return ()
+
+        tg_file = await context.bot.get_file(document.file_id)
+        raw = bytes(await tg_file.download_as_bytearray())
+        name = document.file_name or "attachment.bin"
+        try:
+            text_content = raw.decode("utf-8")
+            return (PromptFile(name=name, mime_type=document.mime_type, text_content=text_content),)
+        except UnicodeDecodeError:
+            return (
+                PromptFile(
+                    name=name,
+                    mime_type=document.mime_type,
+                    data_base64=base64.b64encode(raw).decode("ascii"),
+                ),
+            )
+
+    async def _send_attachments(self, update: Update, reply: AgentReply) -> None:
+        for image in reply.images:
+            await self._send_image(update, image)
+        for file_payload in reply.files:
+            await self._send_file(update, file_payload)
 
     async def _require_access(self, update: Update) -> bool:
         allowed = self._config.allowed_user_ids
@@ -247,6 +327,31 @@ class TelegramBridge:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         except TelegramError:
             await update.message.reply_text(text)
+
+    @staticmethod
+    async def _send_image(update: Update, payload: ImagePayload) -> None:
+        if update.message is None:
+            return
+
+        raw = base64.b64decode(payload.data_base64)
+        extension = "jpg" if payload.mime_type == "image/jpeg" else "bin"
+        input_file = InputFile(BytesIO(raw), filename=f"agent-image.{extension}")
+        await update.message.reply_photo(photo=input_file)
+
+    @staticmethod
+    async def _send_file(update: Update, payload: FilePayload) -> None:
+        if update.message is None:
+            return
+
+        if payload.text_content is not None:
+            raw = payload.text_content.encode("utf-8")
+        elif payload.data_base64 is not None:
+            raw = base64.b64decode(payload.data_base64)
+        else:
+            raw = b""
+
+        input_file = InputFile(BytesIO(raw), filename=payload.name)
+        await update.message.reply_document(document=input_file)
 
 
 def build_application(config: BotConfig, bridge: TelegramBridge) -> Application:

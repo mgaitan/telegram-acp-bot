@@ -37,6 +37,14 @@ uvx --with=telegram-acp-bot acp-bot
 
 You can also set `TELEGRAM_BOT_TOKEN` and `ACP_AGENT_COMMAND` in a local `.env` file.
 
+Supported bot commands:
+- `/new [workspace]`
+- `/session`
+- `/cancel`
+- `/stop`
+- `/clear`
+- `/perm`, `/perm session approve|deny`, `/perm next on|off`
+
 
 ```{toctree}
 :maxdepth: 2

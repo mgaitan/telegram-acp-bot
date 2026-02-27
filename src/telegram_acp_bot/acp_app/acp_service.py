@@ -16,6 +16,7 @@ from acp.schema import (
     AllowedOutcome,
     AudioContentBlock,
     AvailableCommandsUpdate,
+    BlobResourceContents,
     ClientCapabilities,
     ConfigOptionUpdate,
     CreateTerminalResponse,
@@ -34,6 +35,7 @@ from acp.schema import (
     SessionInfoUpdate,
     TerminalOutputResponse,
     TextContentBlock,
+    TextResourceContents,
     ToolCall,
     ToolCallProgress,
     ToolCallStart,
@@ -43,7 +45,15 @@ from acp.schema import (
     WriteTextFileResponse,
 )
 
-from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy
+from telegram_acp_bot.acp_app.models import (
+    AgentReply,
+    FilePayload,
+    ImagePayload,
+    PermissionMode,
+    PermissionPolicy,
+    PromptFile,
+    PromptImage,
+)
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 
@@ -82,13 +92,19 @@ class _AcpClient:
     ) -> None:
         self._permission_decider = permission_decider
         self._buffers: dict[str, list[str]] = {}
+        self._images: dict[str, list[ImagePayload]] = {}
+        self._files: dict[str, list[FilePayload]] = {}
 
     def start_capture(self, session_id: str) -> None:
         self._buffers[session_id] = []
+        self._images[session_id] = []
+        self._files[session_id] = []
 
-    def finish_capture(self, session_id: str) -> str:
+    def finish_capture(self, session_id: str) -> AgentReply:
         chunks = self._buffers.pop(session_id, [])
-        return "".join(chunks).strip()
+        images = tuple(self._images.pop(session_id, []))
+        files = tuple(self._files.pop(session_id, []))
+        return AgentReply(text="".join(chunks).strip(), images=images, files=files)
 
     async def request_permission(
         self, options: list[PermissionOption], session_id: str, tool_call: ToolCall, **kwargs: object
@@ -124,12 +140,35 @@ class _AcpClient:
             text = content.text
         elif isinstance(content, ImageContentBlock):
             text = "<image>"
+            self._images.setdefault(session_id, []).append(
+                ImagePayload(data_base64=content.data, mime_type=content.mime_type)
+            )
         elif isinstance(content, AudioContentBlock):
             text = "<audio>"
         elif isinstance(content, ResourceContentBlock):
             text = content.uri or "<resource>"
+            self._files.setdefault(session_id, []).append(
+                FilePayload(name=content.name, mime_type=content.mime_type, text_content=content.uri)
+            )
         elif isinstance(content, EmbeddedResourceContentBlock):
             text = "<resource>"
+            resource = content.resource
+            if isinstance(resource, TextResourceContents):
+                self._files.setdefault(session_id, []).append(
+                    FilePayload(
+                        name=Path(resource.uri).name or "resource.txt",
+                        mime_type=resource.mime_type,
+                        text_content=resource.text,
+                    )
+                )
+            elif isinstance(resource, BlobResourceContents):
+                self._files.setdefault(session_id, []).append(
+                    FilePayload(
+                        name=Path(resource.uri).name or "resource.bin",
+                        mime_type=resource.mime_type,
+                        data_base64=resource.blob,
+                    )
+                )
 
         self._buffers.setdefault(session_id, []).append(text)
 
@@ -250,7 +289,14 @@ class AcpAgentService:
         )
         return session.session_id
 
-    async def prompt(self, *, chat_id: int, text: str) -> AgentReply | None:
+    async def prompt(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        images: tuple[PromptImage, ...] = (),
+        files: tuple[PromptFile, ...] = (),
+    ) -> AgentReply | None:
         live = self._live_by_chat.get(chat_id)
         if live is None:
             return None
@@ -260,10 +306,28 @@ class AcpAgentService:
                 live.active_prompt_auto_approve = True
                 live.next_prompt_auto_approve = False
             live.client.start_capture(live.acp_session_id)
-            await live.connection.prompt(session_id=live.acp_session_id, prompt=[text_block(text)])
-            response_text = live.client.finish_capture(live.acp_session_id)
+            prompt_blocks = [text_block(text)]
+            prompt_blocks.extend(
+                ImageContentBlock(data=image.data_base64, mimeType=image.mime_type, type="image") for image in images
+            )
+            for file in files:
+                if file.text_content is not None:
+                    text_payload = f"File: {file.name}\n\n{file.text_content}"
+                    prompt_blocks.append(text_block(text_payload))
+                    continue
+                if file.data_base64 is not None:
+                    prompt_blocks.append(
+                        text_block(f"Binary file attached: {file.name} ({file.mime_type or 'unknown'})")
+                    )
+
+            await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
+            response = live.client.finish_capture(live.acp_session_id)
             live.active_prompt_auto_approve = False
-            return AgentReply(text=response_text or "(no text response)")
+            return AgentReply(
+                text=response.text or "(no text response)",
+                images=response.images,
+                files=response.files,
+            )
 
     def get_workspace(self, *, chat_id: int) -> Path | None:
         session = self._registry.get(chat_id)

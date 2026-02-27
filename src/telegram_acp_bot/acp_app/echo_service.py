@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy
+from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy, PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 
@@ -20,13 +20,21 @@ class EchoAgentService:
         self._next_prompt_auto_approve[chat_id] = False
         return session.session_id
 
-    async def prompt(self, *, chat_id: int, text: str) -> AgentReply | None:
+    async def prompt(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        images: tuple[PromptImage, ...] = (),
+        files: tuple[PromptFile, ...] = (),
+    ) -> AgentReply | None:
         session = self._registry.get(chat_id)
         if session is None:
             return None
 
+        media_hint = f" [images={len(images)} files={len(files)}]" if images or files else ""
         short_id = session.session_id.split("-", maxsplit=1)[0]
-        return AgentReply(text=f"[{short_id}] {text}")
+        return AgentReply(text=f"[{short_id}] {text}{media_hint}".strip())
 
     def get_workspace(self, *, chat_id: int) -> Path | None:
         session = self._registry.get(chat_id)

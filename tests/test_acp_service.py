@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from acp.schema import (
     AgentMessageChunk,
     AllowedOutcome,
     AudioContentBlock,
+    BlobResourceContents,
     DeniedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
@@ -19,7 +21,10 @@ from acp.schema import (
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient
+from telegram_acp_bot.acp_app.models import PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
+
+EXPECTED_CAPTURED_FILES = 2
 
 
 def make_client() -> _AcpClient:
@@ -90,7 +95,10 @@ def test_acp_client_capture_text_and_media_markers() -> None:
     update = AgentMessageChunk(content=text_block("hello"), sessionUpdate="agent_message_chunk")
     asyncio.run(client.session_update(session_id=session_id, update=update))
 
-    assert client.finish_capture(session_id) == "hello"
+    reply = client.finish_capture(session_id)
+    assert reply.text == "hello"
+    assert reply.images == ()
+    assert reply.files == ()
 
 
 def test_acp_client_ignores_non_message_updates() -> None:
@@ -98,7 +106,7 @@ def test_acp_client_ignores_non_message_updates() -> None:
     session_id = "s-ignore"
     client.start_capture(session_id)
     asyncio.run(client.session_update(session_id=session_id, update=SimpleNamespace()))
-    assert client.finish_capture(session_id) == ""
+    assert client.finish_capture(session_id).text == ""
 
 
 def test_acp_client_capture_non_text_content_markers() -> None:
@@ -126,12 +134,22 @@ def test_acp_client_capture_non_text_content_markers() -> None:
             ),
             sessionUpdate="agent_message_chunk",
         ),
+        AgentMessageChunk(
+            content=EmbeddedResourceContentBlock(
+                resource=BlobResourceContents(uri="mem://blob.bin", blob=base64.b64encode(b"x").decode("ascii")),
+                type="resource",
+            ),
+            sessionUpdate="agent_message_chunk",
+        ),
     ]
 
     for update in updates:
         asyncio.run(client.session_update(session_id=session_id, update=update))
 
-    assert client.finish_capture(session_id) == "<image><audio>file:///tmp/r<resource>"
+    reply = client.finish_capture(session_id)
+    assert reply.text == "<image><audio>file:///tmp/r<resource><resource>"
+    assert len(reply.images) == 1
+    assert len(reply.files) == EXPECTED_CAPTURED_FILES + 1
 
 
 def test_acp_client_permission_decision_auto_approve() -> None:
@@ -304,6 +322,13 @@ def test_permission_policy_session_and_next_prompt(tmp_path: Path) -> None:
     assert policy.next_prompt_auto_approve
 
     assert asyncio.run(service.prompt(chat_id=9, text="hello")) is not None
+    image = PromptImage(data_base64=base64.b64encode(b"i").decode("ascii"), mime_type="image/png")
+    file_text = PromptFile(name="t.txt", text_content="abc")
+    file_bin = PromptFile(name="b.bin", data_base64=base64.b64encode(b"bin").decode("ascii"))
+    assert (
+        asyncio.run(service.prompt(chat_id=9, text="with files", images=(image,), files=(file_text, file_bin)))
+        is not None
+    )
     policy = service.get_permission_policy(chat_id=9)
     assert policy is not None
     assert not policy.next_prompt_auto_approve
