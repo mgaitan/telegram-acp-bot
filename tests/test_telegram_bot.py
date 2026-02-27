@@ -64,6 +64,7 @@ def test_start_and_help() -> None:
     assert update.message is not None
     assert "Use /new" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
+    assert "/cancel" in update.message.replies[1]
 
 
 def test_access_denied() -> None:
@@ -97,10 +98,16 @@ def test_denied_paths_for_other_handlers() -> None:
     asyncio.run(bridge.help(update, context))
     asyncio.run(bridge.new_session(update, make_context(args=["/tmp"])))
     asyncio.run(bridge.session(update, context))
+    asyncio.run(bridge.cancel(update, context))
+    asyncio.run(bridge.stop(update, context))
+    asyncio.run(bridge.clear(update, context))
     asyncio.run(bridge.on_text(update, context))
 
     assert update.message is not None
     assert update.message.replies == [
+        "Access denied for this bot.",
+        "Access denied for this bot.",
+        "Access denied for this bot.",
         "Access denied for this bot.",
         "Access denied for this bot.",
         "Access denied for this bot.",
@@ -204,6 +211,53 @@ def test_on_text_without_and_with_session() -> None:
     assert update.message.replies[0] == "No active session. Use /new first."
     assert update.message.replies[-1].endswith("hello")
     assert context.bot.actions == [(100, "typing"), (100, "typing")]
+
+
+def test_cancel_stop_clear_without_session() -> None:
+    bridge = make_bridge()
+    update = make_update()
+    context = make_context()
+
+    asyncio.run(bridge.cancel(update, context))
+    asyncio.run(bridge.stop(update, context))
+    asyncio.run(bridge.clear(update, context))
+
+    assert update.message is not None
+    assert update.message.replies == [
+        "No active session. Use /new first.",
+        "No active session. Use /new first.",
+        "No active session. Use /new first.",
+    ]
+
+
+def test_cancel_stop_clear_with_session() -> None:
+    bridge = make_bridge()
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context()))
+    asyncio.run(bridge.cancel(update, make_context()))
+    asyncio.run(bridge.stop(update, make_context()))
+    asyncio.run(bridge.clear(update, make_context()))
+
+    assert update.message is not None
+    assert "Session started:" in update.message.replies[0]
+    assert update.message.replies[1:] == [
+        "Cancelled current operation.",
+        "Stopped current session.",
+        "No active session. Use /new first.",
+    ]
+
+
+def test_clear_with_session() -> None:
+    bridge = make_bridge()
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context()))
+    asyncio.run(bridge.clear(update, make_context()))
+
+    assert update.message is not None
+    assert "Session started:" in update.message.replies[0]
+    assert update.message.replies[1] == "Cleared current session."
 
 
 def test_on_text_ignores_empty_message() -> None:

@@ -64,6 +64,9 @@ class FakeConnection:
         await self.client.session_update(session_id=session_id, update=update)
         return SimpleNamespace(stop_reason="end_turn")
 
+    async def cancel(self, *, session_id: str) -> None:
+        self.prompt_calls.append(f"cancel:{session_id}")
+
 
 def test_acp_client_capture_text_and_media_markers() -> None:
     client = _AcpClient(auto_approve_permissions=False)
@@ -216,6 +219,35 @@ def test_prompt_without_active_session_returns_none() -> None:
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     reply = asyncio.run(service.prompt(chat_id=99, text="hi"))
     assert reply is None
+
+
+def test_cancel_and_stop_lifecycle(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="s1")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=7, workspace=tmp_path))
+
+    assert asyncio.run(service.cancel(chat_id=7))
+    assert connection.prompt_calls[-1] == "cancel:s1"
+    assert asyncio.run(service.clear(chat_id=7))
+    assert not asyncio.run(service.stop(chat_id=7))
+    assert not asyncio.run(service.cancel(chat_id=7))
 
 
 def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch) -> None:

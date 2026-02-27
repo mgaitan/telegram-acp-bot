@@ -33,6 +33,12 @@ class AgentService(Protocol):
 
     def get_workspace(self, *, chat_id: int) -> Path | None: ...
 
+    async def cancel(self, *, chat_id: int) -> bool: ...
+
+    async def stop(self, *, chat_id: int) -> bool: ...
+
+    async def clear(self, *, chat_id: int) -> bool: ...
+
 
 class TelegramBridge:
     """Telegram command and message handlers for the MVP bot."""
@@ -46,6 +52,9 @@ class TelegramBridge:
         app.add_handler(CommandHandler("help", self.help))
         app.add_handler(CommandHandler("new", self.new_session))
         app.add_handler(CommandHandler("session", self.session))
+        app.add_handler(CommandHandler("cancel", self.cancel))
+        app.add_handler(CommandHandler("stop", self.stop))
+        app.add_handler(CommandHandler("clear", self.clear))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -58,7 +67,7 @@ class TelegramBridge:
         del context
         if not await self._require_access(update):
             return
-        await self._reply(update, "Commands: /new [workspace], /session, /help")
+        await self._reply(update, "Commands: /new [workspace], /session, /cancel, /stop, /clear, /help")
 
     async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -92,6 +101,39 @@ class TelegramBridge:
             return
 
         await self._reply(update, f"Active session workspace: `{workspace}`")
+
+    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+
+        cancelled = await self._agent_service.cancel(chat_id=self._chat_id(update))
+        if cancelled:
+            await self._reply(update, "Cancelled current operation.")
+            return
+        await self._reply(update, "No active session. Use /new first.")
+
+    async def stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+
+        stopped = await self._agent_service.stop(chat_id=self._chat_id(update))
+        if stopped:
+            await self._reply(update, "Stopped current session.")
+            return
+        await self._reply(update, "No active session. Use /new first.")
+
+    async def clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+
+        cleared = await self._agent_service.clear(chat_id=self._chat_id(update))
+        if cleared:
+            await self._reply(update, "Cleared current session.")
+            return
+        await self._reply(update, "No active session. Use /new first.")
 
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):

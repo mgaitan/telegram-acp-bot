@@ -263,6 +263,26 @@ class AcpAgentService:
         session = self._registry.get(chat_id)
         return None if session is None else session.workspace
 
+    async def cancel(self, *, chat_id: int) -> bool:
+        live = self._live_by_chat.get(chat_id)
+        if live is None:
+            return False
+
+        await live.connection.cancel(session_id=live.acp_session_id)
+        return True
+
+    async def stop(self, *, chat_id: int) -> bool:
+        live = self._live_by_chat.pop(chat_id, None)
+        if live is None:
+            return False
+
+        await self._shutdown(live.process)
+        self._registry.clear(chat_id)
+        return True
+
+    async def clear(self, *, chat_id: int) -> bool:
+        return await self.stop(chat_id=chat_id)
+
     async def _shutdown(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
