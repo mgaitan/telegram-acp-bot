@@ -65,6 +65,7 @@ def test_start_and_help() -> None:
     assert "Use /new" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
+    assert "/perm" in update.message.replies[1]
 
 
 def test_access_denied() -> None:
@@ -230,6 +231,23 @@ def test_cancel_stop_clear_without_session() -> None:
     ]
 
 
+def test_permissions_without_session() -> None:
+    bridge = make_bridge()
+    update = make_update()
+
+    asyncio.run(bridge.permissions(update, make_context()))
+    assert update.message is not None
+    assert update.message.replies == ["No active session. Use /new first."]
+
+
+def test_permissions_access_denied() -> None:
+    bridge = make_bridge(allowed_ids={9})
+    update = make_update(user_id=1)
+    asyncio.run(bridge.permissions(update, make_context()))
+    assert update.message is not None
+    assert update.message.replies == ["Access denied for this bot."]
+
+
 def test_cancel_stop_clear_with_session() -> None:
     bridge = make_bridge()
     update = make_update()
@@ -258,6 +276,56 @@ def test_clear_with_session() -> None:
     assert update.message is not None
     assert "Session started:" in update.message.replies[0]
     assert update.message.replies[1] == "Cleared current session."
+
+
+def test_permissions_show_and_update() -> None:
+    bridge = make_bridge()
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context()))
+    asyncio.run(bridge.permissions(update, make_context()))
+    asyncio.run(bridge.permissions(update, make_context(args=["session", "approve"])))
+    asyncio.run(bridge.permissions(update, make_context(args=["next", "on"])))
+    asyncio.run(bridge.permissions(update, make_context()))
+
+    assert update.message is not None
+    assert update.message.replies[1] == "Permissions: session=deny, next_prompt=False"
+    assert update.message.replies[2] == "Updated session permission mode to approve."
+    assert update.message.replies[3] == "Updated next prompt auto-approve to on."
+    assert update.message.replies[4] == "Permissions: session=approve, next_prompt=True"
+
+
+def test_permissions_usage_errors() -> None:
+    bridge = make_bridge()
+    update = make_update()
+    asyncio.run(bridge.new_session(update, make_context()))
+
+    asyncio.run(bridge.permissions(update, make_context(args=["session"])))
+    asyncio.run(bridge.permissions(update, make_context(args=["session", "maybe"])))
+    asyncio.run(bridge.permissions(update, make_context(args=["next"])))
+    asyncio.run(bridge.permissions(update, make_context(args=["next", "maybe"])))
+    asyncio.run(bridge.permissions(update, make_context(args=["weird"])))
+
+    assert update.message is not None
+    assert update.message.replies[1:] == [
+        "Usage: /perm | /perm session approve|deny | /perm next on|off",
+        "Usage: /perm session approve|deny",
+        "Usage: /perm | /perm session approve|deny | /perm next on|off",
+        "Usage: /perm next on|off",
+        "Usage: /perm | /perm session approve|deny | /perm next on|off",
+    ]
+
+
+def test_permissions_subcommands_without_session() -> None:
+    bridge = make_bridge()
+    update = make_update()
+    asyncio.run(bridge.permissions(update, make_context(args=["session", "approve"])))
+    asyncio.run(bridge.permissions(update, make_context(args=["next", "on"])))
+    assert update.message is not None
+    assert update.message.replies == [
+        "No active session. Use /new first.",
+        "No active session. Use /new first.",
+    ]
 
 
 def test_on_text_ignores_empty_message() -> None:

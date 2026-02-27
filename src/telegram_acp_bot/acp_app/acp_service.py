@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess as aio_subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -42,7 +43,7 @@ from acp.schema import (
     WriteTextFileResponse,
 )
 
-from telegram_acp_bot.acp_app.echo_service import AgentReply
+from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 
@@ -65,14 +66,21 @@ class _LiveSession:
     process: asyncio.subprocess.Process
     connection: ClientSideConnection
     client: _AcpClient
+    permission_mode: PermissionMode = "deny"
+    next_prompt_auto_approve: bool = False
+    active_prompt_auto_approve: bool = False
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class _AcpClient:
     """ACP client callbacks that accumulate agent text chunks per session."""
 
-    def __init__(self, *, auto_approve_permissions: bool) -> None:
-        self._auto_approve_permissions = auto_approve_permissions
+    def __init__(
+        self,
+        *,
+        permission_decider: Callable[[str, list[PermissionOption]], RequestPermissionResponse],
+    ) -> None:
+        self._permission_decider = permission_decider
         self._buffers: dict[str, list[str]] = {}
 
     def start_capture(self, session_id: str) -> None:
@@ -85,13 +93,9 @@ class _AcpClient:
     async def request_permission(
         self, options: list[PermissionOption], session_id: str, tool_call: ToolCall, **kwargs: object
     ) -> RequestPermissionResponse:
-        del session_id, tool_call, kwargs
+        del tool_call, kwargs
 
-        if self._auto_approve_permissions and options:
-            outcome = AllowedOutcome(optionId=options[0].option_id, outcome="selected")
-            return RequestPermissionResponse(outcome=outcome)
-
-        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        return self._permission_decider(session_id, options)
 
     async def session_update(
         self,
@@ -193,20 +197,18 @@ class _AcpClient:
 class AcpAgentService:
     """ACP-backed service to manage one running agent session per Telegram chat."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         registry: SessionRegistry,
         *,
         program: str,
         args: list[str],
-        auto_approve_permissions: bool = False,
         connector: AcpConnectionFactory = connect_to_agent,
         spawner: AcpSpawnFn = asyncio.create_subprocess_exec,
     ) -> None:
         self._registry = registry
         self._program = program
         self._args = args
-        self._auto_approve_permissions = auto_approve_permissions
         self._connector = connector
         self._spawner = spawner
         self._live_by_chat: dict[int, _LiveSession] = {}
@@ -229,7 +231,7 @@ class AcpAgentService:
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
 
-        client = _AcpClient(auto_approve_permissions=self._auto_approve_permissions)
+        client = _AcpClient(permission_decider=self._decide_permission)
         connection = self._connector(client, process.stdin, process.stdout)
         await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -254,9 +256,13 @@ class AcpAgentService:
             return None
 
         async with live.prompt_lock:
+            if live.next_prompt_auto_approve:
+                live.active_prompt_auto_approve = True
+                live.next_prompt_auto_approve = False
             live.client.start_capture(live.acp_session_id)
             await live.connection.prompt(session_id=live.acp_session_id, prompt=[text_block(text)])
             response_text = live.client.finish_capture(live.acp_session_id)
+            live.active_prompt_auto_approve = False
             return AgentReply(text=response_text or "(no text response)")
 
     def get_workspace(self, *, chat_id: int) -> Path | None:
@@ -283,6 +289,29 @@ class AcpAgentService:
     async def clear(self, *, chat_id: int) -> bool:
         return await self.stop(chat_id=chat_id)
 
+    def get_permission_policy(self, *, chat_id: int) -> PermissionPolicy | None:
+        live = self._live_by_chat.get(chat_id)
+        if live is None:
+            return None
+        return PermissionPolicy(
+            session_mode=live.permission_mode,
+            next_prompt_auto_approve=live.next_prompt_auto_approve,
+        )
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode: PermissionMode) -> bool:
+        live = self._live_by_chat.get(chat_id)
+        if live is None:
+            return False
+        live.permission_mode = mode
+        return True
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool) -> bool:
+        live = self._live_by_chat.get(chat_id)
+        if live is None:
+            return False
+        live.next_prompt_auto_approve = enabled
+        return True
+
     async def _shutdown(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
@@ -297,3 +326,17 @@ class AcpAgentService:
     @staticmethod
     def _normalize_workspace(workspace: Path) -> Path:
         return workspace.expanduser().resolve()
+
+    def _decide_permission(self, session_id: str, options: list[PermissionOption]) -> RequestPermissionResponse:
+        if not options:
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+        for live in self._live_by_chat.values():
+            if live.acp_session_id != session_id:
+                continue
+            if live.permission_mode == "approve" or live.active_prompt_auto_approve:
+                outcome = AllowedOutcome(optionId=options[0].option_id, outcome="selected")
+                return RequestPermissionResponse(outcome=outcome)
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))

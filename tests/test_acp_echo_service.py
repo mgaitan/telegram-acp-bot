@@ -30,3 +30,10 @@ def test_get_workspace() -> None:
     assert service.get_workspace(chat_id=1) is None
     asyncio.run(service.new_session(chat_id=1, workspace=Path("/work")))
     assert service.get_workspace(chat_id=1) == Path("/work")
+
+
+def test_permission_policy_updates_without_session() -> None:
+    service = EchoAgentService(SessionRegistry())
+    assert asyncio.run(service.set_session_permission_mode(chat_id=1, mode="approve")) is False
+    assert asyncio.run(service.set_next_prompt_auto_approve(chat_id=1, enabled=True)) is False
+    assert service.get_permission_policy(chat_id=1) is None

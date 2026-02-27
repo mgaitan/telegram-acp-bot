@@ -8,7 +8,9 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from telegram_acp_bot.acp_app.echo_service import AgentReply
+from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy
+
+PERMISSION_SET_ARG_COUNT = 2
 
 
 @dataclass(slots=True, frozen=True)
@@ -39,6 +41,12 @@ class AgentService(Protocol):
 
     async def clear(self, *, chat_id: int) -> bool: ...
 
+    def get_permission_policy(self, *, chat_id: int) -> PermissionPolicy | None: ...
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode: PermissionMode) -> bool: ...
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool) -> bool: ...
+
 
 class TelegramBridge:
     """Telegram command and message handlers for the MVP bot."""
@@ -55,6 +63,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("cancel", self.cancel))
         app.add_handler(CommandHandler("stop", self.stop))
         app.add_handler(CommandHandler("clear", self.clear))
+        app.add_handler(CommandHandler("perm", self.permissions))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -67,7 +76,10 @@ class TelegramBridge:
         del context
         if not await self._require_access(update):
             return
-        await self._reply(update, "Commands: /new [workspace], /session, /cancel, /stop, /clear, /help")
+        await self._reply(
+            update,
+            "Commands: /new [workspace], /session, /cancel, /stop, /clear, /perm, /help",
+        )
 
     async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -134,6 +146,52 @@ class TelegramBridge:
             await self._reply(update, "Cleared current session.")
             return
         await self._reply(update, "No active session. Use /new first.")
+
+    async def permissions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: PLR0911
+        if not await self._require_access(update):
+            return
+
+        chat_id = self._chat_id(update)
+        if not context.args:
+            policy = self._agent_service.get_permission_policy(chat_id=chat_id)
+            if policy is None:
+                await self._reply(update, "No active session. Use /new first.")
+                return
+            await self._reply(
+                update,
+                f"Permissions: session={policy.session_mode}, next_prompt={policy.next_prompt_auto_approve}",
+            )
+            return
+
+        subcommand = context.args[0].lower()
+        if subcommand == "session" and len(context.args) >= PERMISSION_SET_ARG_COUNT:
+            mode = context.args[1].lower()
+            if mode not in {"approve", "deny"}:
+                await self._reply(update, "Usage: /perm session approve|deny")
+                return
+            changed = await self._agent_service.set_session_permission_mode(chat_id=chat_id, mode=mode)
+            if changed:
+                await self._reply(update, f"Updated session permission mode to {mode}.")
+                return
+            await self._reply(update, "No active session. Use /new first.")
+            return
+
+        if subcommand == "next" and len(context.args) >= PERMISSION_SET_ARG_COUNT:
+            raw_value = context.args[1].lower()
+            if raw_value not in {"on", "off"}:
+                await self._reply(update, "Usage: /perm next on|off")
+                return
+            changed = await self._agent_service.set_next_prompt_auto_approve(
+                chat_id=chat_id,
+                enabled=raw_value == "on",
+            )
+            if changed:
+                await self._reply(update, f"Updated next prompt auto-approve to {raw_value}.")
+                return
+            await self._reply(update, "No active session. Use /new first.")
+            return
+
+        await self._reply(update, "Usage: /perm | /perm session approve|deny | /perm next on|off")
 
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):

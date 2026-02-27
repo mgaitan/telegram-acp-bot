@@ -36,12 +36,6 @@ def get_parser() -> argparse.ArgumentParser:
         help="ACP agent command line, e.g. 'codex-acp' or 'uv run examples/echo_agent.py'.",
     )
     parser.add_argument(
-        "--auto-approve-permissions",
-        action="store_true",
-        default=os.getenv("ACP_AUTO_APPROVE_PERMISSIONS", "").lower() in {"1", "true", "yes"},
-        help="Automatically approve tool permission prompts from the ACP agent.",
-    )
-    parser.add_argument(
         "--allowed-user-id",
         action="append",
         default=[],
@@ -80,7 +74,6 @@ def main(args: list[str] | None = None) -> int:
         SessionRegistry(),
         program=command_parts[0],
         args=command_parts[1:],
-        auto_approve_permissions=opts.auto_approve_permissions,
     )
     bridge = TelegramBridge(config=config, agent_service=service)
     return run_polling(config, bridge)

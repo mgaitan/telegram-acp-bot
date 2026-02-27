@@ -8,15 +8,29 @@ import pytest
 from acp import RequestError, text_block
 from acp.schema import (
     AgentMessageChunk,
+    AllowedOutcome,
     AudioContentBlock,
+    DeniedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
+    RequestPermissionResponse,
     ResourceContentBlock,
     TextResourceContents,
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient
 from telegram_acp_bot.core.session_registry import SessionRegistry
+
+
+def make_client() -> _AcpClient:
+    def allow_first(_: str, options: list[object]):
+        if not options:
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+        option_id = options[0].option_id
+        return RequestPermissionResponse(outcome=AllowedOutcome(optionId=option_id, outcome="selected"))
+
+    return _AcpClient(permission_decider=allow_first)
 
 
 class FakeProcess:
@@ -69,7 +83,7 @@ class FakeConnection:
 
 
 def test_acp_client_capture_text_and_media_markers() -> None:
-    client = _AcpClient(auto_approve_permissions=False)
+    client = make_client()
     session_id = "s1"
     client.start_capture(session_id)
 
@@ -80,7 +94,7 @@ def test_acp_client_capture_text_and_media_markers() -> None:
 
 
 def test_acp_client_ignores_non_message_updates() -> None:
-    client = _AcpClient(auto_approve_permissions=False)
+    client = make_client()
     session_id = "s-ignore"
     client.start_capture(session_id)
     asyncio.run(client.session_update(session_id=session_id, update=SimpleNamespace()))
@@ -88,7 +102,7 @@ def test_acp_client_ignores_non_message_updates() -> None:
 
 
 def test_acp_client_capture_non_text_content_markers() -> None:
-    client = _AcpClient(auto_approve_permissions=False)
+    client = make_client()
     session_id = "s2"
     client.start_capture(session_id)
 
@@ -121,14 +135,19 @@ def test_acp_client_capture_non_text_content_markers() -> None:
 
 
 def test_acp_client_permission_decision_auto_approve() -> None:
-    client = _AcpClient(auto_approve_permissions=True)
+    client = make_client()
     option = SimpleNamespace(option_id="opt-1")
     response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=SimpleNamespace()))
     assert response.outcome.outcome == "selected"
 
 
 def test_acp_client_permission_decision_cancelled() -> None:
-    client = _AcpClient(auto_approve_permissions=False)
+    def deny_all(_: str, options: list[object]):
+        del options
+
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    client = _AcpClient(permission_decider=deny_all)
     response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=SimpleNamespace()))
     assert response.outcome.outcome == "cancelled"
 
@@ -146,14 +165,14 @@ def test_acp_client_permission_decision_cancelled() -> None:
     ],
 )
 def test_acp_client_unsupported_methods_raise(method_name: str, args: dict[str, str]) -> None:
-    client = _AcpClient(auto_approve_permissions=False)
+    client = make_client()
     method = getattr(client, method_name)
     with pytest.raises(RequestError):
         asyncio.run(method(**args))
 
 
 def test_acp_client_unsupported_ext_methods_raise() -> None:
-    client = _AcpClient(auto_approve_permissions=False)
+    client = make_client()
     with pytest.raises(RequestError):
         asyncio.run(client.ext_method("x", {}))
     with pytest.raises(RequestError):
@@ -248,6 +267,93 @@ def test_cancel_and_stop_lifecycle(tmp_path: Path) -> None:
     assert asyncio.run(service.clear(chat_id=7))
     assert not asyncio.run(service.stop(chat_id=7))
     assert not asyncio.run(service.cancel(chat_id=7))
+
+
+def test_permission_policy_session_and_next_prompt(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="perm-session")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=9, workspace=tmp_path))
+
+    policy = service.get_permission_policy(chat_id=9)
+    assert policy is not None
+    assert policy.session_mode == "deny"
+    assert not policy.next_prompt_auto_approve
+
+    assert asyncio.run(service.set_session_permission_mode(chat_id=9, mode="approve"))
+    assert asyncio.run(service.set_next_prompt_auto_approve(chat_id=9, enabled=True))
+    policy = service.get_permission_policy(chat_id=9)
+    assert policy is not None
+    assert policy.session_mode == "approve"
+    assert policy.next_prompt_auto_approve
+
+    assert asyncio.run(service.prompt(chat_id=9, text="hello")) is not None
+    policy = service.get_permission_policy(chat_id=9)
+    assert policy is not None
+    assert not policy.next_prompt_auto_approve
+
+    assert not asyncio.run(service.set_session_permission_mode(chat_id=999, mode="deny"))
+    assert not asyncio.run(service.set_next_prompt_auto_approve(chat_id=999, enabled=True))
+    assert service.get_permission_policy(chat_id=999) is None
+
+
+def test_decide_permission_states(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="perm")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    option = SimpleNamespace(option_id="opt")
+
+    denied_no_option = service._decide_permission("perm", [])
+    assert denied_no_option.outcome.outcome == "cancelled"
+
+    denied_unknown_session = service._decide_permission("unknown", [option])
+    assert denied_unknown_session.outcome.outcome == "cancelled"
+
+    denied_mode = service._decide_permission("perm", [option])
+    assert denied_mode.outcome.outcome == "cancelled"
+
+    live = service._live_by_chat[1]
+    live.permission_mode = "approve"
+    approved_session = service._decide_permission("perm", [option])
+    assert approved_session.outcome.outcome == "selected"
+
+    live.permission_mode = "deny"
+    live.active_prompt_auto_approve = True
+    approved_prompt = service._decide_permission("perm", [option])
+    assert approved_prompt.outcome.outcome == "selected"
 
 
 def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch) -> None:
