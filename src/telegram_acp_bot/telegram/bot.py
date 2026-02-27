@@ -107,6 +107,7 @@ class TelegramBridge:
 
         chat_id = self._chat_id(update)
         workspace = self._workspace_from_args(context.args)
+        workspace_was_missing = not workspace.exists()
         try:
             session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
         except ValueError as exc:
@@ -120,7 +121,10 @@ class TelegramBridge:
             await self._reply(update, f"Failed to start session: {exc}")
             return
         active_workspace = self._agent_service.get_workspace(chat_id=chat_id) or workspace
-        await self._reply(update, f"Session started: `{session_id}` in `{active_workspace}`")
+        response = f"Session started: `{session_id}` in `{active_workspace}`"
+        if workspace_was_missing:
+            response = f"{response}\nCreated workspace: `{active_workspace}`"
+        await self._reply(update, response)
 
     async def session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context

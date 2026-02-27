@@ -196,6 +196,20 @@ def test_new_session_and_session_command() -> None:
     assert "Active session workspace:" in update.message.replies[2]
 
 
+def test_new_session_autocreates_relative_workspace_and_reports_it(tmp_path: Path) -> None:
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path))
+    bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context(args=["myproj"])))
+
+    created_path = tmp_path / "myproj"
+    assert created_path.is_dir()
+    assert update.message is not None
+    assert "Session started:" in update.message.replies[0]
+    assert f"Created workspace: `{created_path}`" in update.message.replies[0]
+
+
 def test_new_session_reports_invalid_workspace() -> None:
     class InvalidWorkspaceService:
         async def new_session(self, *, chat_id: int, workspace):

@@ -15,6 +15,7 @@ class EchoAgentService:
         self._next_prompt_auto_approve: dict[int, bool] = {}
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+        workspace = self._prepare_workspace(workspace)
         session = self._registry.create_or_replace(chat_id=chat_id, workspace=workspace)
         self._session_permission_mode[chat_id] = "deny"
         self._next_prompt_auto_approve[chat_id] = False
@@ -73,3 +74,11 @@ class EchoAgentService:
             return False
         self._next_prompt_auto_approve[chat_id] = enabled
         return True
+
+    @staticmethod
+    def _prepare_workspace(workspace: Path) -> Path:
+        resolved = workspace.expanduser()
+        if resolved.exists() and not resolved.is_dir():
+            raise ValueError(resolved)
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved

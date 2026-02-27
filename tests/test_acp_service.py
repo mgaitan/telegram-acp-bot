@@ -197,12 +197,39 @@ def test_acp_client_unsupported_ext_methods_raise() -> None:
         asyncio.run(client.ext_notification("x", {}))
 
 
-def test_new_session_rejects_missing_workspace(tmp_path: Path) -> None:
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+def test_new_session_creates_missing_workspace(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
+    process = FakeProcess()
+    connection = FakeConnection(session_id="created")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    session_id = asyncio.run(service.new_session(chat_id=1, workspace=missing))
+    assert session_id == "created"
+    assert missing.is_dir()
+
+
+def test_new_session_rejects_file_workspace(tmp_path: Path) -> None:
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    invalid = tmp_path / "not-a-dir"
+    invalid.write_text("x")
 
     with pytest.raises(ValueError):
-        asyncio.run(service.new_session(chat_id=1, workspace=missing))
+        asyncio.run(service.new_session(chat_id=1, workspace=invalid))
 
 
 def test_new_session_rejects_process_without_stdio(tmp_path: Path) -> None:

@@ -254,8 +254,9 @@ class AcpAgentService:
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
-        if not workspace.is_dir():
+        if workspace.exists() and not workspace.is_dir():
             raise ValueError(workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
 
         existing = self._live_by_chat.pop(chat_id, None)
         if existing is not None:
