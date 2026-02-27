@@ -325,7 +325,11 @@ class TelegramBridge:
 
     @staticmethod
     async def _reply(update: Update, text: str) -> None:
-        if update.message is not None:
+        if update.message is None:
+            return
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except TelegramError:
             await update.message.reply_text(text)
 
     @staticmethod
