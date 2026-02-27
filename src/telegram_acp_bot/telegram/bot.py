@@ -311,7 +311,13 @@ class TelegramBridge:
         return chat.id
 
     def _workspace_from_args(self, args: list[str]) -> Path:
-        return Path(args[0]).expanduser() if args else self._config.default_workspace
+        if not args:
+            return self._config.default_workspace
+
+        candidate = Path(args[0]).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return self._config.default_workspace / candidate
 
     @staticmethod
     async def _reply(update: Update, text: str) -> None:

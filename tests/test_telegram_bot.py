@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -108,6 +109,14 @@ def test_make_config() -> None:
     assert config.token == "T"
     assert config.allowed_user_ids == {1, 2}
     assert config.default_workspace.name == "tmp"
+
+
+def test_workspace_from_relative_arg_uses_default_workspace() -> None:
+    config = make_config(token="T", allowed_user_ids=[], workspace="/tmp/base")
+    bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+
+    workspace = bridge._workspace_from_args(["foo"])
+    assert workspace == Path("/tmp/base/foo")
 
 
 def test_start_and_help() -> None:
