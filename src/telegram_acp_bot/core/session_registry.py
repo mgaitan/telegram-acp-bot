@@ -20,8 +20,12 @@ class SessionRegistry:
     def __init__(self) -> None:
         self._sessions: dict[int, ChatSession] = {}
 
-    def create_or_replace(self, *, chat_id: int, workspace: Path) -> ChatSession:
-        session = ChatSession(chat_id=chat_id, session_id=str(uuid4()), workspace=workspace)
+    def create_or_replace(self, *, chat_id: int, workspace: Path, session_id: str | None = None) -> ChatSession:
+        session = ChatSession(
+            chat_id=chat_id,
+            session_id=session_id or str(uuid4()),
+            workspace=workspace,
+        )
         self._sessions[chat_id] = session
         return session
 

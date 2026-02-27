@@ -122,6 +122,75 @@ def test_new_session_and_session_command() -> None:
     assert "Active session workspace:" in update.message.replies[2]
 
 
+def test_new_session_reports_invalid_workspace() -> None:
+    class InvalidWorkspaceService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del chat_id, workspace
+            raise ValueError("/missing")
+
+        async def prompt(self, *, chat_id: int, text: str):
+            del chat_id, text
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=InvalidWorkspaceService())
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context(args=["/missing"])))
+
+    assert update.message is not None
+    assert update.message.replies == ["Invalid workspace: /missing"]
+
+
+def test_new_session_reports_process_stdio_error() -> None:
+    class BrokenAgentService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del chat_id, workspace
+            raise RuntimeError
+
+        async def prompt(self, *, chat_id: int, text: str):
+            del chat_id, text
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=BrokenAgentService())
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context(args=["/tmp"])))
+
+    assert update.message is not None
+    assert update.message.replies == ["Failed to start session: agent process did not expose stdio pipes."]
+
+
+def test_new_session_reports_generic_error() -> None:
+    class BoomError(Exception):
+        pass
+
+    class UnexpectedService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del chat_id, workspace
+            raise BoomError("boom")
+
+        async def prompt(self, *, chat_id: int, text: str):
+            del chat_id, text
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=UnexpectedService())
+    update = make_update()
+
+    asyncio.run(bridge.new_session(update, make_context(args=["/tmp"])))
+
+    assert update.message is not None
+    assert update.message.replies == ["Failed to start session: boom"]
+
+
 def test_on_text_without_and_with_session() -> None:
     bridge = make_bridge()
     update = make_update(text="hello")

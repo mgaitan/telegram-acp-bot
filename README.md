@@ -17,10 +17,12 @@ Run directly without installing via `uvx`:
 uvx --with=telegram-acp-bot acp-bot --help
 ```
 
-Run the MVP bot (echo agent placeholder):
+Run the bot with a real ACP agent:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:abc uvx --with=telegram-acp-bot acp-bot
+TELEGRAM_BOT_TOKEN=123456:abc \
+ACP_AGENT_COMMAND="codex-acp" \
+uvx --with=telegram-acp-bot acp-bot
 ```
 
 You can also store variables in a local `.env` file (it is gitignored):

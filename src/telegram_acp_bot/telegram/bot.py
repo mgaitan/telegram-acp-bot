@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from telegram_acp_bot.acp_app.echo_service import EchoAgentService
+from telegram_acp_bot.acp_app.echo_service import AgentReply
 
 
 @dataclass(slots=True, frozen=True)
@@ -23,10 +24,20 @@ class ChatRequiredError(ValueError):
     """Raised when a Telegram update does not include a chat object."""
 
 
+class AgentService(Protocol):
+    """Service interface expected by Telegram handlers."""
+
+    async def new_session(self, *, chat_id: int, workspace: Path) -> str: ...
+
+    async def prompt(self, *, chat_id: int, text: str) -> AgentReply | None: ...
+
+    def get_workspace(self, *, chat_id: int) -> Path | None: ...
+
+
 class TelegramBridge:
     """Telegram command and message handlers for the MVP bot."""
 
-    def __init__(self, config: BotConfig, agent_service: EchoAgentService) -> None:
+    def __init__(self, config: BotConfig, agent_service: AgentService) -> None:
         self._config = config
         self._agent_service = agent_service
 
@@ -55,8 +66,20 @@ class TelegramBridge:
 
         chat_id = self._chat_id(update)
         workspace = self._workspace_from_args(context.args)
-        session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
-        await self._reply(update, f"Session started: `{session_id}` in `{workspace}`")
+        try:
+            session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
+        except ValueError as exc:
+            message = str(exc) or str(workspace)
+            await self._reply(update, f"Invalid workspace: {message}")
+            return
+        except RuntimeError:
+            await self._reply(update, "Failed to start session: agent process did not expose stdio pipes.")
+            return
+        except Exception as exc:  # noqa: BLE001
+            await self._reply(update, f"Failed to start session: {exc}")
+            return
+        active_workspace = self._agent_service.get_workspace(chat_id=chat_id) or workspace
+        await self._reply(update, f"Session started: `{session_id}` in `{active_workspace}`")
 
     async def session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context

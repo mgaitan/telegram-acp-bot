@@ -22,7 +22,7 @@ def test_main_loads_dotenv(isolate_token_sources, mocker) -> None:
     """CLI loads .env before parsing arguments."""
     mocker.patch("telegram_acp_bot.run_polling", return_value=0)
     assert isolate_token_sources is not None
-    assert main(["--telegram-token", "TOKEN"]) == 0
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
     isolate_token_sources.assert_called_once_with(override=False)
 
 
@@ -32,10 +32,16 @@ def test_main_requires_token() -> None:
         main([])
 
 
+def test_main_requires_agent_command() -> None:
+    """Running the bot without ACP agent command should fail fast."""
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN"])
+
+
 def test_main_runs_bot(mocker) -> None:
     """Run path delegates to run_polling."""
     mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
-    assert main(["--telegram-token", "TOKEN"]) == 0
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent --flag"]) == 0
     mock_run_polling.assert_called_once()
 
 
@@ -43,8 +49,16 @@ def test_main_uses_env_token(mocker, monkeypatch) -> None:
     """Run path uses TELEGRAM_BOT_TOKEN when loaded from environment."""
     mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TOKEN")
+    monkeypatch.setenv("ACP_AGENT_COMMAND", "agent")
     assert main([]) == 0
     mock_run_polling.assert_called_once()
+
+
+def test_main_rejects_blank_agent_command(mocker) -> None:
+    """Whitespace-only agent command should be rejected."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN", "--agent-command", "   "])
 
 
 def test_show_help(capsys: pytest.CaptureFixture) -> None:
