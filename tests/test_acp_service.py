@@ -4,6 +4,7 @@ import asyncio
 import base64
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 from acp import RequestError, text_block
@@ -23,7 +24,7 @@ from acp.schema import (
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient
-from telegram_acp_bot.acp_app.models import PromptFile, PromptImage
+from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 EXPECTED_CAPTURED_FILES = 2
@@ -87,6 +88,26 @@ class FakeConnection:
 
     async def cancel(self, *, session_id: str) -> None:
         self.prompt_calls.append(f"cancel:{session_id}")
+
+
+class FileResourceConnection(FakeConnection):
+    def __init__(self, *, session_id: str, resource: ResourceContentBlock) -> None:
+        super().__init__(session_id=session_id)
+        self._resource = resource
+
+    async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
+        self.prompt_calls.append(session_id)
+        assert prompt
+        assert self.client is not None
+        await self.client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("resource reply"), sessionUpdate="agent_message_chunk"),
+        )
+        await self.client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=self._resource, sessionUpdate="agent_message_chunk"),
+        )
+        return SimpleNamespace(stop_reason="end_turn")
 
 
 def test_acp_client_capture_text_and_media_markers() -> None:
@@ -289,6 +310,133 @@ def test_prompt_without_active_session_returns_none() -> None:
     assert reply is None
 
 
+def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    image_path = workspace / "img sample.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"\x89PNG\r\n")
+    uri = image_path.as_uri()
+
+    process = FakeProcess()
+    connection = FileResourceConnection(
+        session_id="file-image",
+        resource=ResourceContentBlock(name="img sample.png", uri=uri, mimeType="image/png", type="resource_link"),
+    )
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
+    reply = asyncio.run(service.prompt(chat_id=1, text="send image"))
+    assert reply is not None
+    assert len(reply.images) == 1
+    assert reply.images[0].mime_type == "image/png"
+    assert reply.files == ()
+
+
+def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    text_file = workspace / "note.txt"
+    text_file.parent.mkdir(parents=True, exist_ok=True)
+    text_file.write_text("hello file")
+
+    process = FakeProcess()
+    connection = FileResourceConnection(
+        session_id="file-doc",
+        resource=ResourceContentBlock(
+            name="note.txt", uri=text_file.as_uri(), mimeType="text/plain", type="resource_link"
+        ),
+    )
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
+    reply = asyncio.run(service.prompt(chat_id=1, text="send doc"))
+    assert reply is not None
+    assert reply.images == ()
+    assert len(reply.files) == 1
+    assert reply.files[0].mime_type == "text/plain"
+    assert reply.files[0].data_base64 == base64.b64encode(b"hello file").decode("ascii")
+
+
+def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"x")
+
+    process = FakeProcess()
+    connection = FileResourceConnection(
+        session_id="file-warning",
+        resource=ResourceContentBlock(
+            name="outside.png", uri=outside.as_uri(), mimeType="image/png", type="resource_link"
+        ),
+    )
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
+    reply = asyncio.run(service.prompt(chat_id=1, text="send outside"))
+    assert reply is not None
+    assert reply.images == ()
+    assert reply.files == ()
+    assert "Attachment warning: outside.png: path is outside active workspace" in reply.text
+
+
+def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    encoded_name = "encoded file.png"
+    encoded_file = workspace / encoded_name
+    encoded_file.write_bytes(b"png-bytes")
+    encoded_uri = f"file://{quote(str(encoded_file), safe='/')}"
+
+    process = FakeProcess()
+    connection = FileResourceConnection(
+        session_id="encoded-uri",
+        resource=ResourceContentBlock(name=encoded_name, uri=encoded_uri, mimeType="image/png", type="resource_link"),
+    )
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
+    reply = asyncio.run(service.prompt(chat_id=1, text="send encoded"))
+    assert reply is not None
+    assert len(reply.images) == 1
+    assert reply.images[0].mime_type == "image/png"
+
+
 def test_cancel_and_stop_lifecycle(tmp_path: Path) -> None:
     process = FakeProcess()
     connection = FakeConnection(session_id="s1")
@@ -450,3 +598,80 @@ def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatc
     finished.returncode = 0
     asyncio.run(service._shutdown(finished))
     assert not finished.terminated
+
+
+def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path) -> None:
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    response = AgentReply(
+        text="ok",
+        files=(
+            FilePayload(name="inline.txt", text_content="plain text"),
+            FilePayload(name="bin.dat", data_base64=base64.b64encode(b"x").decode("ascii")),
+        ),
+    )
+    resolved = service._resolve_file_uri_resources(response=response, workspace=tmp_path)
+    assert resolved.files == response.files
+    assert resolved.images == ()
+
+
+def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    file_path = workspace / "a.txt"
+    file_path.write_text("x")
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    response = AgentReply(
+        text="",
+        files=(FilePayload(name="a.txt", text_content=file_path.as_uri(), mime_type="text/plain"),),
+    )
+
+    def fake_read_bytes(self: Path) -> bytes:
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "read_bytes", fake_read_bytes)
+    resolved = service._resolve_file_uri_resources(response=response, workspace=workspace)
+    assert resolved.files == ()
+    assert "Attachment warning: a.txt: unreadable file" in resolved.text
+
+
+def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    file_path = workspace / "ok.txt"
+    file_path.write_text("ok")
+    folder_path = workspace / "dir"
+    folder_path.mkdir()
+
+    _, warning_scheme = AcpAgentService._resolve_local_file_uri("http://example.com/x", workspace)
+    assert warning_scheme == "unsupported URI scheme `http`"
+
+    _, warning_host = AcpAgentService._resolve_local_file_uri("file://remote/abc", workspace)
+    assert warning_host == "unsupported file URI host `remote`"
+
+    _, warning_empty = AcpAgentService._resolve_local_file_uri("file://", workspace)
+    assert warning_empty == "empty file URI path"
+
+    _, warning_missing = AcpAgentService._resolve_local_file_uri((workspace / "missing.txt").as_uri(), workspace)
+    assert warning_missing == "file not found"
+
+    _, warning_not_file = AcpAgentService._resolve_local_file_uri(folder_path.as_uri(), workspace)
+    assert warning_not_file == "path is not a file"
+
+    def fake_resolve(self: Path, *, strict: bool = False) -> Path:
+        del strict
+        raise OSError("boom")
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    _, warning_os_error = AcpAgentService._resolve_local_file_uri(file_path.as_uri(), workspace)
+    assert warning_os_error.startswith("invalid file path")
+
+    monkeypatch.undo()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    _, warning_outside = AcpAgentService._resolve_local_file_uri(outside.as_uri(), workspace)
+    assert warning_outside == "path is outside active workspace"
+
+    resolved, no_warning = AcpAgentService._resolve_local_file_uri(file_path.as_uri(), workspace)
+    assert resolved == file_path.resolve()
+    assert no_warning is None

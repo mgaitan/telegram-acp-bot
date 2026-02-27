@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.subprocess as aio_subprocess
+import base64
+import mimetypes
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
+from urllib.parse import unquote, urlparse
 
 from acp import PROTOCOL_VERSION, RequestError, connect_to_agent, text_block
 from acp.core import ClientSideConnection
@@ -316,8 +319,10 @@ class AcpAgentService:
             await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
             response = live.client.finish_capture(live.acp_session_id)
             live.active_prompt_auto_approve = False
+            response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
+            text = response.text or "(no text response)"
             return AgentReply(
-                text=response.text or "(no text response)",
+                text=text,
                 images=response.images,
                 files=response.files,
             )
@@ -397,3 +402,84 @@ class AcpAgentService:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
+        """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""
+        images = list(response.images)
+        files: list[FilePayload] = []
+        warnings: list[str] = []
+        workspace_root = workspace.resolve()
+
+        for payload in response.files:
+            if payload.data_base64 is not None or payload.text_content is None:
+                files.append(payload)
+                continue
+            if not payload.text_content.startswith("file://"):
+                files.append(payload)
+                continue
+
+            resolved_path, warning = self._resolve_local_file_uri(payload.text_content, workspace_root)
+            if warning is not None:
+                warnings.append(f"{payload.name}: {warning}")
+                continue
+
+            assert resolved_path is not None
+            try:
+                raw = resolved_path.read_bytes()
+            except OSError as exc:
+                warnings.append(f"{payload.name}: unreadable file ({exc})")
+                continue
+
+            mime_type = payload.mime_type or mimetypes.guess_type(resolved_path.name)[0] or "application/octet-stream"
+            if mime_type.startswith("image/"):
+                images.append(ImagePayload(data_base64=base64.b64encode(raw).decode("ascii"), mime_type=mime_type))
+                continue
+
+            files.append(
+                FilePayload(
+                    name=payload.name or resolved_path.name,
+                    mime_type=mime_type,
+                    data_base64=base64.b64encode(raw).decode("ascii"),
+                )
+            )
+
+        text = response.text
+        if warnings:
+            warning_text = "\n".join(f"Attachment warning: {warning}" for warning in warnings)
+            text = f"{text}\n{warning_text}".strip() if text else warning_text
+
+        return AgentReply(text=text, images=tuple(images), files=tuple(files))
+
+    @staticmethod
+    def _resolve_local_file_uri(uri: str, workspace_root: Path) -> tuple[Path | None, str | None]:
+        parsed = urlparse(uri)
+        warning: str | None = None
+        resolved_path: Path | None = None
+
+        if parsed.scheme != "file":
+            warning = f"unsupported URI scheme `{parsed.scheme}`"
+        elif parsed.netloc not in {"", "localhost"}:
+            warning = f"unsupported file URI host `{parsed.netloc}`"
+        else:
+            decoded_path = unquote(parsed.path)
+            if not decoded_path:
+                warning = "empty file URI path"
+            else:
+                try:
+                    resolved = Path(decoded_path).resolve(strict=True)
+                except FileNotFoundError:
+                    warning = "file not found"
+                except OSError as exc:
+                    warning = f"invalid file path ({exc})"
+                else:
+                    if not resolved.is_file():
+                        warning = "path is not a file"
+                    else:
+                        try:
+                            resolved.relative_to(workspace_root)
+                        except ValueError:
+                            warning = "path is outside active workspace"
+                        else:
+                            resolved_path = resolved
+
+        return resolved_path, warning

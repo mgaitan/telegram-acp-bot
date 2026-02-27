@@ -30,6 +30,7 @@ Current interaction capabilities:
 - Permission controls: `/perm`, `/perm session approve|deny`, `/perm next on|off`
 - Plain text prompts
 - Image and document attachments from Telegram messages
+- ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace
 - Agent markdown output (with fallback to plain text when Telegram rejects entities)
 
 You can also store variables in a local `.env` file (it is gitignored):
