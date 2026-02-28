@@ -695,6 +695,34 @@ def test_on_permission_callback_uses_query_message_chat_when_effective_chat_miss
     assert callback.answers[-1] == "Approved this time."
 
 
+def test_on_permission_callback_handles_unexpected_exception() -> None:
+    class FailingService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            del chat_id, request_id, action
+            raise RuntimeError("boom")
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, FailingService()),
+    )
+    callback = DummyCallbackQuery("perm|req1|once")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Permission action failed."
+
+
 def test_cancel_stop_clear_without_session() -> None:
     bridge = make_bridge()
     update = make_update()

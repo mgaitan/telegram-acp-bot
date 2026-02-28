@@ -442,6 +442,12 @@ class AcpAgentService:
     ) -> bool:
         pending = self._pending_permissions.get(request_id)
         if pending is None or pending.chat_id != chat_id or pending.future.done():
+            logger.warning(
+                "Permission response ignored: request_id=%s chat_id=%s pending=%s",
+                request_id,
+                chat_id,
+                pending is not None,
+            )
             return False
 
         response = self._build_permission_response(
@@ -452,6 +458,7 @@ class AcpAgentService:
             live = self._live_by_chat.get(chat_id)
             if live is not None:
                 live.permission_mode = "approve"
+        logger.info("Permission response accepted: request_id=%s chat_id=%s action=%s", request_id, chat_id, action)
         pending.future.set_result(response)
         return True
 

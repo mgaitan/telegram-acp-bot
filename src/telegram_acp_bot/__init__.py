@@ -7,6 +7,7 @@ A Telegram bot that implements Agent Client Protocol to interact with AI agents.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shlex
 from importlib import metadata
@@ -67,6 +68,8 @@ def get_parser() -> argparse.ArgumentParser:
 def main(args: list[str] | None = None) -> int:
     """Run the main program."""
     load_dotenv(override=False)
+    log_level = os.getenv("ACP_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
     parser = get_parser()
     opts = parser.parse_args(args=args)
 

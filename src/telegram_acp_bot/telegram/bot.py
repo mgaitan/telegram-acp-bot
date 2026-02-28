@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
@@ -26,6 +27,7 @@ from telegram_acp_bot.acp_app.models import (
 
 PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -209,44 +211,51 @@ class TelegramBridge:
         query = update.callback_query
         if query is None:
             return
-        if not await self._require_access(update):
-            await query.answer("Access denied.")
-            return
-
-        data = query.data or ""
-        parts = data.split("|", maxsplit=2)
-        if len(parts) != PERMISSION_CALLBACK_PARTS:
-            await query.answer("Invalid action.")
-            return
-        _, request_id, raw_action = parts
-        if raw_action not in {"once", "always", "deny"}:
-            await query.answer("Invalid action.")
-            return
-
-        chat = update.effective_chat
-        chat_id = chat.id if chat is not None else None
-        query_message = getattr(query, "message", None)
-        if chat_id is None and query_message is not None:
-            chat_id = query_message.chat.id
-        if chat_id is None:
-            await query.answer("Missing chat.")
-            return
-
-        accepted = await self._agent_service.respond_permission_request(
-            chat_id=chat_id,
-            request_id=request_id,
-            action=cast(PermissionDecisionAction, raw_action),
-        )
-        if not accepted:
-            await query.answer("Request expired.")
-            return
-
-        labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
-        await query.answer(labels[raw_action])
         try:
-            await query.edit_message_text(f"Permission decision: {labels[raw_action]}")
-        except TelegramError:
-            await query.edit_message_reply_markup(reply_markup=None)
+            if not await self._require_access(update):
+                await query.answer("Access denied.")
+                return
+
+            data = query.data or ""
+            logger.info("Permission callback received: %s", data)
+            parts = data.split("|", maxsplit=2)
+            if len(parts) != PERMISSION_CALLBACK_PARTS:
+                await query.answer("Invalid action.")
+                return
+            _, request_id, raw_action = parts
+            if raw_action not in {"once", "always", "deny"}:
+                await query.answer("Invalid action.")
+                return
+
+            chat = update.effective_chat
+            chat_id = chat.id if chat is not None else None
+            query_message = getattr(query, "message", None)
+            if chat_id is None and query_message is not None:
+                chat_id = query_message.chat.id
+            if chat_id is None:
+                await query.answer("Missing chat.")
+                return
+
+            accepted = await self._agent_service.respond_permission_request(
+                chat_id=chat_id,
+                request_id=request_id,
+                action=cast(PermissionDecisionAction, raw_action),
+            )
+            if not accepted:
+                logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)
+                await query.answer("Request expired.")
+                return
+
+            labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
+            logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
+            await query.answer(labels[raw_action])
+            try:
+                await query.edit_message_text(f"Permission decision: {labels[raw_action]}")
+            except TelegramError:
+                await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.exception("Unhandled error while processing permission callback")
+            await query.answer("Permission action failed.")
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
