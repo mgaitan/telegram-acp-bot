@@ -5,22 +5,17 @@ import asyncio.subprocess as aio_subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from acp import PROTOCOL_VERSION, RequestError, connect_to_agent, text_block
 from acp.core import ClientSideConnection
 from acp.schema import (
     AgentMessageChunk,
-    AgentPlanUpdate,
-    AgentThoughtChunk,
     AllowedOutcome,
     AudioContentBlock,
-    AvailableCommandsUpdate,
     BlobResourceContents,
     ClientCapabilities,
-    ConfigOptionUpdate,
     CreateTerminalResponse,
-    CurrentModeUpdate,
     DeniedOutcome,
     EmbeddedResourceContentBlock,
     EnvVariable,
@@ -32,15 +27,10 @@ from acp.schema import (
     ReleaseTerminalResponse,
     RequestPermissionResponse,
     ResourceContentBlock,
-    SessionInfoUpdate,
     TerminalOutputResponse,
     TextContentBlock,
     TextResourceContents,
     ToolCall,
-    ToolCallProgress,
-    ToolCallStart,
-    UsageUpdate,
-    UserMessageChunk,
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
@@ -69,11 +59,23 @@ class AcpSpawnFn(Protocol):
     async def __call__(self, program: str, *args: str, **kwargs: object) -> asyncio.subprocess.Process: ...
 
 
+class ProcessLike(Protocol):
+    """Subset of process API used by service shutdown logic."""
+
+    returncode: int | None
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    async def wait(self) -> int: ...
+
+
 @dataclass(slots=True)
 class _LiveSession:
     acp_session_id: str
     workspace: Path
-    process: asyncio.subprocess.Process
+    process: ProcessLike
     connection: ClientSideConnection
     client: _AcpClient
     permission_mode: PermissionMode = "deny"
@@ -116,17 +118,7 @@ class _AcpClient:
     async def session_update(
         self,
         session_id: str,
-        update: UserMessageChunk
-        | AgentMessageChunk
-        | AgentThoughtChunk
-        | ToolCallStart
-        | ToolCallProgress
-        | AgentPlanUpdate
-        | AvailableCommandsUpdate
-        | CurrentModeUpdate
-        | ConfigOptionUpdate
-        | SessionInfoUpdate
-        | UsageUpdate,
+        update: object,
         **kwargs: object,
     ) -> None:
         del kwargs
@@ -242,14 +234,14 @@ class AcpAgentService:
         *,
         program: str,
         args: list[str],
-        connector: AcpConnectionFactory = connect_to_agent,
-        spawner: AcpSpawnFn = asyncio.create_subprocess_exec,
+        connector: AcpConnectionFactory | None = None,
+        spawner: AcpSpawnFn | None = None,
     ) -> None:
         self._registry = registry
         self._program = program
         self._args = args
-        self._connector = connector
-        self._spawner = spawner
+        self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
+        self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
@@ -309,7 +301,7 @@ class AcpAgentService:
             live.client.start_capture(live.acp_session_id)
             prompt_blocks = [text_block(text)]
             prompt_blocks.extend(
-                ImageContentBlock(data=image.data_base64, mimeType=image.mime_type, type="image") for image in images
+                ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images
             )
             for file in files:
                 if file.text_content is not None:
@@ -377,7 +369,7 @@ class AcpAgentService:
         live.next_prompt_auto_approve = enabled
         return True
 
-    async def _shutdown(self, process: asyncio.subprocess.Process) -> None:
+    async def _shutdown(self, process: ProcessLike) -> None:
         if process.returncode is not None:
             return
 
@@ -400,7 +392,7 @@ class AcpAgentService:
             if live.acp_session_id != session_id:
                 continue
             if live.permission_mode == "approve" or live.active_prompt_auto_approve:
-                outcome = AllowedOutcome(optionId=options[0].option_id, outcome="selected")
+                outcome = AllowedOutcome(option_id=options[0].option_id, outcome="selected")
                 return RequestPermissionResponse(outcome=outcome)
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 

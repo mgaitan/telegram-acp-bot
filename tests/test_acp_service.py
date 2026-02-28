@@ -15,9 +15,11 @@ from acp.schema import (
     DeniedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
+    PermissionOption,
     RequestPermissionResponse,
     ResourceContentBlock,
     TextResourceContents,
+    ToolCall,
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient
@@ -28,12 +30,12 @@ EXPECTED_CAPTURED_FILES = 2
 
 
 def make_client() -> _AcpClient:
-    def allow_first(_: str, options: list[object]):
+    def allow_first(_: str, options: list[PermissionOption]) -> RequestPermissionResponse:
         if not options:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
         option_id = options[0].option_id
-        return RequestPermissionResponse(outcome=AllowedOutcome(optionId=option_id, outcome="selected"))
+        return RequestPermissionResponse(outcome=AllowedOutcome(option_id=option_id, outcome="selected"))
 
     return _AcpClient(permission_decider=allow_first)
 
@@ -79,7 +81,7 @@ class FakeConnection:
         self.prompt_calls.append(session_id)
         assert prompt
         assert self.client is not None
-        update = AgentMessageChunk(content=text_block("hello from acp"), sessionUpdate="agent_message_chunk")
+        update = AgentMessageChunk(content=text_block("hello from acp"), session_update="agent_message_chunk")
         await self.client.session_update(session_id=session_id, update=update)
         return SimpleNamespace(stop_reason="end_turn")
 
@@ -92,7 +94,7 @@ def test_acp_client_capture_text_and_media_markers() -> None:
     session_id = "s1"
     client.start_capture(session_id)
 
-    update = AgentMessageChunk(content=text_block("hello"), sessionUpdate="agent_message_chunk")
+    update = AgentMessageChunk(content=text_block("hello"), session_update="agent_message_chunk")
     asyncio.run(client.session_update(session_id=session_id, update=update))
 
     reply = client.finish_capture(session_id)
@@ -116,30 +118,30 @@ def test_acp_client_capture_non_text_content_markers() -> None:
 
     updates = [
         AgentMessageChunk(
-            content=ImageContentBlock(data="AA==", mimeType="image/png", type="image"),
-            sessionUpdate="agent_message_chunk",
+            content=ImageContentBlock(data="AA==", mime_type="image/png", type="image"),
+            session_update="agent_message_chunk",
         ),
         AgentMessageChunk(
-            content=AudioContentBlock(data="AA==", mimeType="audio/wav", type="audio"),
-            sessionUpdate="agent_message_chunk",
+            content=AudioContentBlock(data="AA==", mime_type="audio/wav", type="audio"),
+            session_update="agent_message_chunk",
         ),
         AgentMessageChunk(
             content=ResourceContentBlock(name="r", uri="file:///tmp/r", type="resource_link"),
-            sessionUpdate="agent_message_chunk",
+            session_update="agent_message_chunk",
         ),
         AgentMessageChunk(
             content=EmbeddedResourceContentBlock(
                 resource=TextResourceContents(uri="mem://r", text="x"),
                 type="resource",
             ),
-            sessionUpdate="agent_message_chunk",
+            session_update="agent_message_chunk",
         ),
         AgentMessageChunk(
             content=EmbeddedResourceContentBlock(
                 resource=BlobResourceContents(uri="mem://blob.bin", blob=base64.b64encode(b"x").decode("ascii")),
                 type="resource",
             ),
-            sessionUpdate="agent_message_chunk",
+            session_update="agent_message_chunk",
         ),
     ]
 
@@ -154,19 +156,21 @@ def test_acp_client_capture_non_text_content_markers() -> None:
 
 def test_acp_client_permission_decision_auto_approve() -> None:
     client = make_client()
-    option = SimpleNamespace(option_id="opt-1")
-    response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=SimpleNamespace()))
+    option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt-1")
+    tool_call = ToolCall(title="execute", tool_call_id="tc-1")
+    response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "selected"
 
 
 def test_acp_client_permission_decision_cancelled() -> None:
-    def deny_all(_: str, options: list[object]):
+    def deny_all(_: str, options: list[PermissionOption]) -> RequestPermissionResponse:
         del options
 
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     client = _AcpClient(permission_decider=deny_all)
-    response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=SimpleNamespace()))
+    tool_call = ToolCall(title="execute", tool_call_id="tc-2")
+    response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "cancelled"
 
 
@@ -386,7 +390,7 @@ def test_decide_permission_states(tmp_path: Path) -> None:
         connector=fake_connect,
     )
     asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
-    option = SimpleNamespace(option_id="opt")
+    option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
 
     denied_no_option = service._decide_permission("perm", [])
     assert denied_no_option.outcome.outcome == "cancelled"
