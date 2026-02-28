@@ -815,6 +815,7 @@ def test_build_application_installs_handlers() -> None:
 
     app = build_application(config, bridge)
     assert app.handlers
+    assert app.update_processor.max_concurrent_updates > 1
 
 
 def test_run_polling(monkeypatch) -> None:

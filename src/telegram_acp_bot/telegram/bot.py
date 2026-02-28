@@ -427,7 +427,9 @@ class TelegramBridge:
 
 
 def build_application(config: BotConfig, bridge: TelegramBridge) -> Application:
-    app = Application.builder().token(config.token).build()
+    # Permission prompts are awaited inside message handlers, so callback queries
+    # must be processed concurrently to avoid deadlocking the update loop.
+    app = Application.builder().token(config.token).concurrent_updates(True).build()
     bridge.install(app)
     return app
 
