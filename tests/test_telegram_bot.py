@@ -95,14 +95,19 @@ class DummyBot:
 class DummyCallbackQuery:
     def __init__(self, data: str) -> None:
         self.data = data
+        self.message = None
         self.answers: list[str] = []
         self.reply_markup_cleared = False
+        self.edited_text: str | None = None
 
     async def answer(self, text: str) -> None:
         self.answers.append(text)
 
     async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
         self.reply_markup_cleared = reply_markup is None
+
+    async def edit_message_text(self, text: str) -> None:
+        self.edited_text = text
 
 
 def make_update(  # noqa: PLR0913
@@ -483,7 +488,7 @@ def test_on_permission_request_sends_buttons() -> None:
     assert len(dummy_bot.sent_messages) == 1
     payload = dummy_bot.sent_messages[0]
     assert payload["chat_id"] == TEST_CHAT_ID
-    assert "Permission required." in cast(str, payload["text"])
+    assert "Permission required for:" in cast(str, payload["text"])
     markup = payload["reply_markup"]
     assert markup is not None
 
@@ -525,7 +530,7 @@ def test_on_permission_callback_accepts_action() -> None:
 
     asyncio.run(bridge.on_permission_callback(cast(Update, update), make_context()))
     assert callback.answers[-1] == "Approved this time."
-    assert callback.reply_markup_cleared
+    assert callback.edited_text == "Permission decision: Approved this time."
 
 
 def test_on_permission_callback_invalid_cases() -> None:
@@ -623,6 +628,71 @@ def test_on_permission_callback_expired_request() -> None:
 
     asyncio.run(bridge.on_permission_callback(update, make_context()))
     assert callback.answers[-1] == "Request expired."
+
+
+def test_on_permission_callback_fallback_to_clear_markup_on_edit_error() -> None:
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            del chat_id, request_id, action
+            return True
+
+    class FailingEditCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str) -> None:
+            del text
+            raise MarkdownFailureError
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    callback = FailingEditCallbackQuery("perm|req1|deny")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Denied."
+    assert callback.reply_markup_cleared
+
+
+def test_on_permission_callback_uses_query_message_chat_when_effective_chat_missing() -> None:
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            assert chat_id == TEST_CHAT_ID
+            assert request_id == "req-chat-fallback"
+            assert action == "once"
+            return True
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    callback = DummyCallbackQuery("perm|req-chat-fallback|once")
+    callback.message = SimpleNamespace(chat=SimpleNamespace(id=TEST_CHAT_ID))
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=None,
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Approved this time."
 
 
 def test_cancel_stop_clear_without_session() -> None:

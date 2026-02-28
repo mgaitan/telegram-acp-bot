@@ -197,7 +197,7 @@ class TelegramBridge:
             return
 
         keyboard = self._permission_keyboard(request)
-        message = f"Permission required.\nTool: {request.tool_title}\nCall: {request.tool_call_id}\nChoose an action:"
+        message = f"Permission required for:\n{request.tool_title}"
         await self._app.bot.send_message(
             chat_id=request.chat_id,
             text=message,
@@ -224,12 +224,16 @@ class TelegramBridge:
             return
 
         chat = update.effective_chat
-        if chat is None:
+        chat_id = chat.id if chat is not None else None
+        query_message = getattr(query, "message", None)
+        if chat_id is None and query_message is not None:
+            chat_id = query_message.chat.id
+        if chat_id is None:
             await query.answer("Missing chat.")
             return
 
         accepted = await self._agent_service.respond_permission_request(
-            chat_id=chat.id,
+            chat_id=chat_id,
             request_id=request_id,
             action=cast(PermissionDecisionAction, raw_action),
         )
@@ -239,7 +243,10 @@ class TelegramBridge:
 
         labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
         await query.answer(labels[raw_action])
-        await query.edit_message_reply_markup(reply_markup=None)
+        try:
+            await query.edit_message_text(f"Permission decision: {labels[raw_action]}")
+        except TelegramError:
+            await query.edit_message_reply_markup(reply_markup=None)
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
