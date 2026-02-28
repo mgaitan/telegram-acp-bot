@@ -101,11 +101,11 @@ class FileResourceConnection(FakeConnection):
         assert self.client is not None
         await self.client.session_update(
             session_id=session_id,
-            update=AgentMessageChunk(content=text_block("resource reply"), sessionUpdate="agent_message_chunk"),
+            update=AgentMessageChunk(content=text_block("resource reply"), session_update="agent_message_chunk"),
         )
         await self.client.session_update(
             session_id=session_id,
-            update=AgentMessageChunk(content=self._resource, sessionUpdate="agent_message_chunk"),
+            update=AgentMessageChunk(content=self._resource, session_update="agent_message_chunk"),
         )
         return SimpleNamespace(stop_reason="end_turn")
 
@@ -320,7 +320,7 @@ def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path) -> None:
     process = FakeProcess()
     connection = FileResourceConnection(
         session_id="file-image",
-        resource=ResourceContentBlock(name="img sample.png", uri=uri, mimeType="image/png", type="resource_link"),
+        resource=ResourceContentBlock(name="img sample.png", uri=uri, mime_type="image/png", type="resource_link"),
     )
 
     async def fake_spawn(program: str, *args: str, **kwargs):
@@ -351,7 +351,7 @@ def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path) -> None:
     connection = FileResourceConnection(
         session_id="file-doc",
         resource=ResourceContentBlock(
-            name="note.txt", uri=text_file.as_uri(), mimeType="text/plain", type="resource_link"
+            name="note.txt", uri=text_file.as_uri(), mime_type="text/plain", type="resource_link"
         ),
     )
 
@@ -384,7 +384,7 @@ def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path) -
     connection = FileResourceConnection(
         session_id="file-warning",
         resource=ResourceContentBlock(
-            name="outside.png", uri=outside.as_uri(), mimeType="image/png", type="resource_link"
+            name="outside.png", uri=outside.as_uri(), mime_type="image/png", type="resource_link"
         ),
     )
 
@@ -417,7 +417,7 @@ def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path) -> None:
     process = FakeProcess()
     connection = FileResourceConnection(
         session_id="encoded-uri",
-        resource=ResourceContentBlock(name=encoded_name, uri=encoded_uri, mimeType="image/png", type="resource_link"),
+        resource=ResourceContentBlock(name=encoded_name, uri=encoded_uri, mime_type="image/png", type="resource_link"),
     )
 
     async def fake_spawn(program: str, *args: str, **kwargs):
@@ -664,6 +664,7 @@ def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(Path, "resolve", fake_resolve)
     _, warning_os_error = AcpAgentService._resolve_local_file_uri(file_path.as_uri(), workspace)
+    assert warning_os_error is not None
     assert warning_os_error.startswith("invalid file path")
 
     monkeypatch.undo()
