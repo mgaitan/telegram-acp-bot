@@ -250,7 +250,10 @@ class TelegramBridge:
             logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
             await query.answer(labels[raw_action])
             try:
-                await query.edit_message_text(f"Permission decision: {labels[raw_action]}")
+                query_message = getattr(query, "message", None)
+                original = getattr(query_message, "text", None) if query_message is not None else None
+                base_text = original or "Permission request"
+                await query.edit_message_text(f"{base_text}\nDecision: {labels[raw_action]}")
             except TelegramError:
                 await query.edit_message_reply_markup(reply_markup=None)
         except Exception:

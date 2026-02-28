@@ -95,7 +95,7 @@ class DummyBot:
 class DummyCallbackQuery:
     def __init__(self, data: str) -> None:
         self.data = data
-        self.message = None
+        self.message = SimpleNamespace(text="Permission required for:\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
         self.answers: list[str] = []
         self.reply_markup_cleared = False
         self.edited_text: str | None = None
@@ -530,7 +530,9 @@ def test_on_permission_callback_accepts_action() -> None:
 
     asyncio.run(bridge.on_permission_callback(cast(Update, update), make_context()))
     assert callback.answers[-1] == "Approved this time."
-    assert callback.edited_text == "Permission decision: Approved this time."
+    assert callback.edited_text is not None
+    assert "Permission required for:" in callback.edited_text
+    assert "Decision: Approved this time." in callback.edited_text
 
 
 def test_on_permission_callback_invalid_cases() -> None:
@@ -573,6 +575,7 @@ def test_on_permission_callback_invalid_cases() -> None:
     assert callback_bad_action.answers[-1] == "Invalid action."
 
     callback_missing_chat = DummyCallbackQuery("perm|req1|once")
+    callback_missing_chat.message = None
     update_missing_chat = cast(
         Update,
         SimpleNamespace(
@@ -680,7 +683,7 @@ def test_on_permission_callback_uses_query_message_chat_when_effective_chat_miss
         agent_service=cast(AgentService, PermissionService()),
     )
     callback = DummyCallbackQuery("perm|req-chat-fallback|once")
-    callback.message = SimpleNamespace(chat=SimpleNamespace(id=TEST_CHAT_ID))
+    callback.message = SimpleNamespace(text="Permission required for:\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
     update = cast(
         Update,
         SimpleNamespace(
@@ -693,6 +696,8 @@ def test_on_permission_callback_uses_query_message_chat_when_effective_chat_miss
 
     asyncio.run(bridge.on_permission_callback(update, make_context()))
     assert callback.answers[-1] == "Approved this time."
+    assert callback.edited_text is not None
+    assert "Decision: Approved this time." in callback.edited_text
 
 
 def test_on_permission_callback_handles_unexpected_exception() -> None:
