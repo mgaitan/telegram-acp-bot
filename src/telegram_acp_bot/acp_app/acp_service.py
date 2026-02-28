@@ -34,6 +34,8 @@ from acp.schema import (
     TextContentBlock,
     TextResourceContents,
     ToolCall,
+    ToolCallProgress,
+    ToolCallStart,
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
@@ -99,24 +101,44 @@ class _AcpClient:
         self._buffers: dict[str, list[str]] = {}
         self._images: dict[str, list[ImagePayload]] = {}
         self._files: dict[str, list[FilePayload]] = {}
+        self._events: dict[str, list[str]] = {}
 
     def start_capture(self, session_id: str) -> None:
         self._buffers[session_id] = []
         self._images[session_id] = []
         self._files[session_id] = []
+        self._events[session_id] = []
 
     def finish_capture(self, session_id: str) -> AgentReply:
         chunks = self._buffers.pop(session_id, [])
         images = tuple(self._images.pop(session_id, []))
         files = tuple(self._files.pop(session_id, []))
-        return AgentReply(text="".join(chunks).strip(), images=images, files=files)
+        events = self._events.pop(session_id, [])
+        text = "".join(chunks).strip()
+        if events:
+            event_lines = "\n".join(events)
+            events_block = f"ACP events:\n{event_lines}"
+            text = f"{text}\n\n{events_block}".strip() if text else events_block
+        return AgentReply(text=text, images=images, files=files)
 
     async def request_permission(
         self, options: list[PermissionOption], session_id: str, tool_call: ToolCall, **kwargs: object
     ) -> RequestPermissionResponse:
-        del tool_call, kwargs
+        del kwargs
 
-        return self._permission_decider(session_id, options)
+        response = self._permission_decider(session_id, options)
+        outcome = response.outcome
+        if isinstance(outcome, AllowedOutcome):
+            decision = "approved"
+            selection = outcome.option_id
+        else:
+            decision = "denied"
+            selection = "-"
+
+        self._events.setdefault(session_id, []).append(
+            f"[permission] {tool_call.title} ({tool_call.tool_call_id}) -> {decision} [{selection}]"
+        )
+        return response
 
     async def session_update(
         self,
@@ -126,9 +148,26 @@ class _AcpClient:
     ) -> None:
         del kwargs
 
+        if isinstance(update, ToolCallStart | ToolCallProgress):
+            self._capture_tool_event(session_id=session_id, update=update)
+            return
         if not isinstance(update, AgentMessageChunk):
             return
 
+        self._capture_agent_message(session_id=session_id, update=update)
+
+    def _capture_tool_event(self, *, session_id: str, update: ToolCallStart | ToolCallProgress) -> None:
+        if isinstance(update, ToolCallStart):
+            label = update.kind or "other"
+            self._events.setdefault(session_id, []).append(
+                f"[tool:start] {update.tool_call_id} {update.title} ({label})"
+            )
+            return
+        status = update.status or "in_progress"
+        title = update.title or "tool"
+        self._events.setdefault(session_id, []).append(f"[tool:{status}] {update.tool_call_id} {title}")
+
+    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:
         content = update.content
         text = "<content>"
         if isinstance(content, TextContentBlock):

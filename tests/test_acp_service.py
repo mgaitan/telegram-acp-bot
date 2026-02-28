@@ -21,6 +21,8 @@ from acp.schema import (
     ResourceContentBlock,
     TextResourceContents,
     ToolCall,
+    ToolCallProgress,
+    ToolCallStart,
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient
@@ -179,8 +181,11 @@ def test_acp_client_permission_decision_auto_approve() -> None:
     client = make_client()
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt-1")
     tool_call = ToolCall(title="execute", tool_call_id="tc-1")
+    client.start_capture("s")
     response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "selected"
+    reply = client.finish_capture("s")
+    assert "[permission] execute (tc-1) -> approved [opt-1]" in reply.text
 
 
 def test_acp_client_permission_decision_cancelled() -> None:
@@ -191,8 +196,31 @@ def test_acp_client_permission_decision_cancelled() -> None:
 
     client = _AcpClient(permission_decider=deny_all)
     tool_call = ToolCall(title="execute", tool_call_id="tc-2")
+    client.start_capture("s")
     response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "cancelled"
+    reply = client.finish_capture("s")
+    assert "[permission] execute (tc-2) -> denied [-]" in reply.text
+
+
+def test_acp_client_capture_tool_events() -> None:
+    client = make_client()
+    session_id = "s-tool"
+    client.start_capture(session_id)
+
+    start = ToolCallStart(title="read file", tool_call_id="tool-1", kind="read", session_update="tool_call")
+    progress = ToolCallProgress(
+        tool_call_id="tool-1",
+        title="read file",
+        status="completed",
+        session_update="tool_call_update",
+    )
+
+    asyncio.run(client.session_update(session_id=session_id, update=start))
+    asyncio.run(client.session_update(session_id=session_id, update=progress))
+    reply = client.finish_capture(session_id)
+    assert "[tool:start] tool-1 read file (read)" in reply.text
+    assert "[tool:completed] tool-1 read file" in reply.text
 
 
 @pytest.mark.parametrize(
