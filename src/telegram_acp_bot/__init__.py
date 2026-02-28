@@ -10,10 +10,12 @@ import argparse
 import os
 import shlex
 from importlib import metadata
+from typing import cast
 
 from dotenv import load_dotenv
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService
+from telegram_acp_bot.acp_app.models import PermissionEventOutput, PermissionMode
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram.bot import TelegramBridge, make_config, run_polling
 
@@ -47,6 +49,18 @@ def get_parser() -> argparse.ArgumentParser:
         default=os.getcwd(),
         help="Default workspace path for /new when path is not provided.",
     )
+    parser.add_argument(
+        "--permission-mode",
+        default=os.getenv("ACP_PERMISSION_MODE", "ask"),
+        choices=["ask", "approve", "deny"],
+        help="Default ACP permission mode.",
+    )
+    parser.add_argument(
+        "--permission-event-output",
+        default=os.getenv("ACP_PERMISSION_EVENT_OUTPUT", "stdout"),
+        choices=["stdout", "off"],
+        help="Where ACP permission/tool event logs are emitted.",
+    )
     return parser
 
 
@@ -74,6 +88,8 @@ def main(args: list[str] | None = None) -> int:
         SessionRegistry(),
         program=command_parts[0],
         args=command_parts[1:],
+        default_permission_mode=cast(PermissionMode, opts.permission_mode),
+        permission_event_output=cast(PermissionEventOutput, opts.permission_event_output),
     )
     bridge = TelegramBridge(config=config, agent_service=service)
     return run_polling(config, bridge)

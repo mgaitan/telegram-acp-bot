@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-PermissionMode = Literal["deny", "approve"]
+PermissionMode = Literal["deny", "approve", "ask"]
+PermissionDecisionAction = Literal["once", "always", "deny"]
+PermissionEventOutput = Literal["stdout", "off"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -57,3 +59,14 @@ class PermissionPolicy:
 
     session_mode: PermissionMode
     next_prompt_auto_approve: bool
+
+
+@dataclass(slots=True, frozen=True)
+class PermissionRequest:
+    """A runtime permission request awaiting user confirmation."""
+
+    chat_id: int
+    request_id: str
+    tool_title: str
+    tool_call_id: str
+    available_actions: tuple[PermissionDecisionAction, ...]

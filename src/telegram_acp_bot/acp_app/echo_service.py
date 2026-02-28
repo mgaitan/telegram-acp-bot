@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from telegram_acp_bot.acp_app.models import AgentReply, PermissionMode, PermissionPolicy, PromptFile, PromptImage
+from telegram_acp_bot.acp_app.models import (
+    AgentReply,
+    PermissionDecisionAction,
+    PermissionMode,
+    PermissionPolicy,
+    PermissionRequest,
+    PromptFile,
+    PromptImage,
+)
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 
@@ -13,11 +22,12 @@ class EchoAgentService:
         self._registry = registry
         self._session_permission_mode: dict[int, PermissionMode] = {}
         self._next_prompt_auto_approve: dict[int, bool] = {}
+        self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._prepare_workspace(workspace)
         session = self._registry.create_or_replace(chat_id=chat_id, workspace=workspace)
-        self._session_permission_mode[chat_id] = "deny"
+        self._session_permission_mode[chat_id] = "ask"
         self._next_prompt_auto_approve[chat_id] = False
         return session.session_id
 
@@ -74,6 +84,22 @@ class EchoAgentService:
             return False
         self._next_prompt_auto_approve[chat_id] = enabled
         return True
+
+    def set_permission_request_handler(
+        self,
+        handler: Callable[[PermissionRequest], Awaitable[None]] | None,
+    ) -> None:
+        self._permission_prompt_handler = handler
+
+    async def respond_permission_request(
+        self,
+        *,
+        chat_id: int,
+        request_id: str,
+        action: PermissionDecisionAction,
+    ) -> bool:
+        del chat_id, request_id, action
+        return False
 
     @staticmethod
     def _prepare_workspace(workspace: Path) -> Path:
