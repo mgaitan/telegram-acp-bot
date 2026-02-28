@@ -45,6 +45,10 @@ Supported bot commands:
 - `/clear`
 - `/perm`, `/perm session approve|deny`, `/perm next on|off`
 
+Attachment behavior:
+- Telegram inbound photos/documents are forwarded to ACP prompts.
+- ACP `file://` resources are delivered back as Telegram attachments when the file is inside the active workspace.
+
 
 ```{toctree}
 :maxdepth: 2
