@@ -9,9 +9,10 @@ from typing import cast
 import pytest
 from telegram import Update
 from telegram.error import TelegramError
+from telegram.ext import Application
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
-from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, ImagePayload
+from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, ImagePayload, PermissionRequest
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
@@ -24,6 +25,7 @@ from telegram_acp_bot.telegram.bot import (
 )
 
 EXPECTED_OUTBOUND_DOCUMENTS = 2
+TEST_CHAT_ID = 100
 
 
 class MarkdownFailureError(TelegramError):
@@ -78,12 +80,34 @@ class DummyBot:
     def __init__(self) -> None:
         self.actions: list[tuple[int, str]] = []
         self.files: dict[str, bytes] = {}
+        self.sent_messages: list[dict[str, object]] = []
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         self.actions.append((chat_id, action))
 
     async def get_file(self, file_id: str) -> DummyDownloadedFile:
         return DummyDownloadedFile(self.files[file_id])
+
+    async def send_message(self, **kwargs: object) -> None:
+        self.sent_messages.append(kwargs)
+
+
+class DummyCallbackQuery:
+    def __init__(self, data: str) -> None:
+        self.data = data
+        self.message = SimpleNamespace(text="Permission required for:\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
+        self.answers: list[str] = []
+        self.reply_markup_cleared = False
+        self.edited_text: str | None = None
+
+    async def answer(self, text: str) -> None:
+        self.answers.append(text)
+
+    async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
+        self.reply_markup_cleared = reply_markup is None
+
+    async def edit_message_text(self, text: str) -> None:
+        self.edited_text = text
 
 
 def make_update(  # noqa: PLR0913
@@ -140,7 +164,7 @@ def test_start_and_help() -> None:
     assert "Use /new" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
-    assert "/perm" in update.message.replies[1]
+    assert "/perm" not in update.message.replies[1]
 
 
 def test_access_denied() -> None:
@@ -419,7 +443,7 @@ def test_outbound_agent_attachments_are_sent() -> None:
             return False
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=AttachmentService())
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, AttachmentService()))
     update = make_update(text="hello")
 
     asyncio.run(bridge.on_message(update, make_context()))
@@ -447,6 +471,263 @@ def test_send_file_with_empty_payload() -> None:
     assert len(update.message.documents) == 1
 
 
+def test_on_permission_request_sends_buttons() -> None:
+    bridge = make_bridge()
+    dummy_bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=dummy_bot))
+
+    request = PermissionRequest(
+        chat_id=TEST_CHAT_ID,
+        request_id="abc123",
+        tool_title="Run ls",
+        tool_call_id="call-1",
+        available_actions=("always", "once", "deny"),
+    )
+    asyncio.run(bridge.on_permission_request(request))
+
+    assert len(dummy_bot.sent_messages) == 1
+    payload = dummy_bot.sent_messages[0]
+    assert payload["chat_id"] == TEST_CHAT_ID
+    assert "Permission required for:" in cast(str, payload["text"])
+    markup = payload["reply_markup"]
+    assert markup is not None
+
+
+def test_on_permission_request_without_app_is_noop() -> None:
+    bridge = make_bridge()
+    request = PermissionRequest(
+        chat_id=TEST_CHAT_ID,
+        request_id="noop",
+        tool_title="Run ls",
+        tool_call_id="call-noop",
+        available_actions=("once", "deny"),
+    )
+    asyncio.run(bridge.on_permission_request(request))
+
+
+def test_on_permission_callback_accepts_action() -> None:
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            assert chat_id == TEST_CHAT_ID
+            assert request_id == "req1"
+            assert action == "once"
+            return True
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    callback = DummyCallbackQuery("perm|req1|once")
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=1),
+        effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+        callback_query=callback,
+        message=None,
+    )
+
+    asyncio.run(bridge.on_permission_callback(cast(Update, update), make_context()))
+    assert callback.answers[-1] == "Approved this time."
+    assert callback.edited_text is not None
+    assert "Permission required for:" in callback.edited_text
+    assert "Decision: Approved this time." in callback.edited_text
+
+
+def test_on_permission_callback_invalid_cases() -> None:
+    bridge = make_bridge()
+    update_no_query = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=None,
+            message=None,
+        ),
+    )
+    asyncio.run(bridge.on_permission_callback(update_no_query, make_context()))
+
+    callback = DummyCallbackQuery("invalid")
+    update_invalid = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    asyncio.run(bridge.on_permission_callback(update_invalid, make_context()))
+    assert callback.answers[-1] == "Invalid action."
+
+    callback_bad_action = DummyCallbackQuery("perm|req1|weird")
+    update_bad_action = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback_bad_action,
+            message=None,
+        ),
+    )
+    asyncio.run(bridge.on_permission_callback(update_bad_action, make_context()))
+    assert callback_bad_action.answers[-1] == "Invalid action."
+
+    callback_missing_chat = DummyCallbackQuery("perm|req1|once")
+    callback_missing_chat.message = None
+    update_missing_chat = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=None,
+            callback_query=callback_missing_chat,
+            message=None,
+        ),
+    )
+    asyncio.run(bridge.on_permission_callback(update_missing_chat, make_context()))
+    assert callback_missing_chat.answers[-1] == "Missing chat."
+
+
+def test_on_permission_callback_access_denied() -> None:
+    bridge = make_bridge(allowed_ids={9})
+    callback = DummyCallbackQuery("perm|req1|deny")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Access denied."
+
+
+def test_on_permission_callback_expired_request() -> None:
+    class ExpiredService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            del chat_id, request_id, action
+            return False
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, ExpiredService()),
+    )
+    callback = DummyCallbackQuery("perm|req1|deny")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Request expired."
+
+
+def test_on_permission_callback_fallback_to_clear_markup_on_edit_error() -> None:
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            del chat_id, request_id, action
+            return True
+
+    class FailingEditCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str) -> None:
+            del text
+            raise MarkdownFailureError
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    callback = FailingEditCallbackQuery("perm|req1|deny")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Denied."
+    assert callback.reply_markup_cleared
+
+
+def test_on_permission_callback_uses_query_message_chat_when_effective_chat_missing() -> None:
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            assert chat_id == TEST_CHAT_ID
+            assert request_id == "req-chat-fallback"
+            assert action == "once"
+            return True
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    callback = DummyCallbackQuery("perm|req-chat-fallback|once")
+    callback.message = SimpleNamespace(text="Permission required for:\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=None,
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Approved this time."
+    assert callback.edited_text is not None
+    assert "Decision: Approved this time." in callback.edited_text
+
+
+def test_on_permission_callback_handles_unexpected_exception() -> None:
+    class FailingService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            del chat_id, request_id, action
+            raise RuntimeError("boom")
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, FailingService()),
+    )
+    callback = DummyCallbackQuery("perm|req1|once")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    asyncio.run(bridge.on_permission_callback(update, make_context()))
+    assert callback.answers[-1] == "Permission action failed."
+
+
 def test_cancel_stop_clear_without_session() -> None:
     bridge = make_bridge()
     update = make_update()
@@ -462,23 +743,6 @@ def test_cancel_stop_clear_without_session() -> None:
         "No active session. Use /new first.",
         "No active session. Use /new first.",
     ]
-
-
-def test_permissions_without_session() -> None:
-    bridge = make_bridge()
-    update = make_update()
-
-    asyncio.run(bridge.permissions(update, make_context()))
-    assert update.message is not None
-    assert update.message.replies == ["No active session. Use /new first."]
-
-
-def test_permissions_access_denied() -> None:
-    bridge = make_bridge(allowed_ids={9})
-    update = make_update(user_id=1)
-    asyncio.run(bridge.permissions(update, make_context()))
-    assert update.message is not None
-    assert update.message.replies == ["Access denied for this bot."]
 
 
 def test_cancel_stop_clear_with_session() -> None:
@@ -509,56 +773,6 @@ def test_clear_with_session() -> None:
     assert update.message is not None
     assert "Session started:" in update.message.replies[0]
     assert update.message.replies[1] == "Cleared current session."
-
-
-def test_permissions_show_and_update() -> None:
-    bridge = make_bridge()
-    update = make_update()
-
-    asyncio.run(bridge.new_session(update, make_context()))
-    asyncio.run(bridge.permissions(update, make_context()))
-    asyncio.run(bridge.permissions(update, make_context(args=["session", "approve"])))
-    asyncio.run(bridge.permissions(update, make_context(args=["next", "on"])))
-    asyncio.run(bridge.permissions(update, make_context()))
-
-    assert update.message is not None
-    assert update.message.replies[1] == "Permissions: session=deny, next_prompt=False"
-    assert update.message.replies[2] == "Updated session permission mode to approve."
-    assert update.message.replies[3] == "Updated next prompt auto-approve to on."
-    assert update.message.replies[4] == "Permissions: session=approve, next_prompt=True"
-
-
-def test_permissions_usage_errors() -> None:
-    bridge = make_bridge()
-    update = make_update()
-    asyncio.run(bridge.new_session(update, make_context()))
-
-    asyncio.run(bridge.permissions(update, make_context(args=["session"])))
-    asyncio.run(bridge.permissions(update, make_context(args=["session", "maybe"])))
-    asyncio.run(bridge.permissions(update, make_context(args=["next"])))
-    asyncio.run(bridge.permissions(update, make_context(args=["next", "maybe"])))
-    asyncio.run(bridge.permissions(update, make_context(args=["weird"])))
-
-    assert update.message is not None
-    assert update.message.replies[1:] == [
-        "Usage: /perm | /perm session approve|deny | /perm next on|off",
-        "Usage: /perm session approve|deny",
-        "Usage: /perm | /perm session approve|deny | /perm next on|off",
-        "Usage: /perm next on|off",
-        "Usage: /perm | /perm session approve|deny | /perm next on|off",
-    ]
-
-
-def test_permissions_subcommands_without_session() -> None:
-    bridge = make_bridge()
-    update = make_update()
-    asyncio.run(bridge.permissions(update, make_context(args=["session", "approve"])))
-    asyncio.run(bridge.permissions(update, make_context(args=["next", "on"])))
-    assert update.message is not None
-    assert update.message.replies == [
-        "No active session. Use /new first.",
-        "No active session. Use /new first.",
-    ]
 
 
 def test_on_text_ignores_empty_message() -> None:
@@ -606,6 +820,7 @@ def test_build_application_installs_handlers() -> None:
 
     app = build_application(config, bridge)
     assert app.handlers
+    assert app.update_processor.max_concurrent_updates > 1
 
 
 def test_run_polling(monkeypatch) -> None:

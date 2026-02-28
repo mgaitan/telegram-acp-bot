@@ -27,7 +27,7 @@ uvx --with=telegram-acp-bot acp-bot
 
 Current interaction capabilities:
 - `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`
-- Permission controls: `/perm`, `/perm session approve|deny`, `/perm next on|off`
+- Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
 - Plain text prompts
 - Image and document attachments from Telegram messages
 - ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace
@@ -37,6 +37,8 @@ You can also store variables in a local `.env` file (it is gitignored):
 
 ```env
 TELEGRAM_BOT_TOKEN=123456:abc
+ACP_PERMISSION_MODE=ask
+ACP_PERMISSION_EVENT_OUTPUT=stdout
 ```
 
 To install the tool permanently:

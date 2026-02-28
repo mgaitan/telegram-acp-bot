@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -21,9 +22,11 @@ from acp.schema import (
     ResourceContentBlock,
     TextResourceContents,
     ToolCall,
+    ToolCallProgress,
+    ToolCallStart,
 )
 
-from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient
+from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _PendingPermission
 from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
@@ -31,7 +34,8 @@ EXPECTED_CAPTURED_FILES = 2
 
 
 def make_client() -> _AcpClient:
-    def allow_first(_: str, options: list[PermissionOption]) -> RequestPermissionResponse:
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del tool_call
         if not options:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
@@ -179,20 +183,50 @@ def test_acp_client_permission_decision_auto_approve() -> None:
     client = make_client()
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt-1")
     tool_call = ToolCall(title="execute", tool_call_id="tc-1")
+    client.start_capture("s")
     response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "selected"
+    assert client.finish_capture("s").text == ""
 
 
 def test_acp_client_permission_decision_cancelled() -> None:
-    def deny_all(_: str, options: list[PermissionOption]) -> RequestPermissionResponse:
+    async def deny_all(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del tool_call
         del options
 
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     client = _AcpClient(permission_decider=deny_all)
     tool_call = ToolCall(title="execute", tool_call_id="tc-2")
+    client.start_capture("s")
     response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "cancelled"
+    assert client.finish_capture("s").text == ""
+
+
+def test_acp_client_capture_tool_events() -> None:
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    events: list[str] = []
+    client = _AcpClient(permission_decider=allow_first, event_reporter=events.append)
+    session_id = "s-tool"
+    client.start_capture(session_id)
+
+    start = ToolCallStart(title="read file", tool_call_id="tool-1", kind="read", session_update="tool_call")
+    progress = ToolCallProgress(
+        tool_call_id="tool-1",
+        title="read file",
+        status="completed",
+        session_update="tool_call_update",
+    )
+
+    asyncio.run(client.session_update(session_id=session_id, update=start))
+    asyncio.run(client.session_update(session_id=session_id, update=progress))
+    _ = client.finish_capture(session_id)
+    assert "tool start tool-1 read file (read)" in events[0]
+    assert "tool completed tool-1 read file" in events[1]
 
 
 @pytest.mark.parametrize(
@@ -490,7 +524,7 @@ def test_permission_policy_session_and_next_prompt(tmp_path: Path) -> None:
 
     policy = service.get_permission_policy(chat_id=9)
     assert policy is not None
-    assert policy.session_mode == "deny"
+    assert policy.session_mode == "ask"
     assert not policy.next_prompt_auto_approve
 
     assert asyncio.run(service.set_session_permission_mode(chat_id=9, mode="approve"))
@@ -540,24 +574,205 @@ def test_decide_permission_states(tmp_path: Path) -> None:
     asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
 
-    denied_no_option = service._decide_permission("perm", [])
+    tool_call = ToolCall(title="run", tool_call_id="tc")
+
+    denied_no_option = asyncio.run(service._decide_permission("perm", [], tool_call))
     assert denied_no_option.outcome.outcome == "cancelled"
 
-    denied_unknown_session = service._decide_permission("unknown", [option])
+    denied_unknown_session = asyncio.run(service._decide_permission("unknown", [option], tool_call))
     assert denied_unknown_session.outcome.outcome == "cancelled"
 
-    denied_mode = service._decide_permission("perm", [option])
-    assert denied_mode.outcome.outcome == "cancelled"
+    asked_mode = asyncio.run(service._decide_permission("perm", [option], tool_call))
+    assert asked_mode.outcome.outcome == "cancelled"
 
     live = service._live_by_chat[1]
     live.permission_mode = "approve"
-    approved_session = service._decide_permission("perm", [option])
+    approved_session = asyncio.run(service._decide_permission("perm", [option], tool_call))
     assert approved_session.outcome.outcome == "selected"
 
     live.permission_mode = "deny"
+    denied_session = asyncio.run(service._decide_permission("perm", [option], tool_call))
+    assert denied_session.outcome.outcome == "cancelled"
+
     live.active_prompt_auto_approve = True
-    approved_prompt = service._decide_permission("perm", [option])
+    approved_prompt = asyncio.run(service._decide_permission("perm", [option], tool_call))
     assert approved_prompt.outcome.outcome == "selected"
+
+
+def test_decide_permission_ask_mode_with_handler(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="ask")
+    captured: list[tuple[str, tuple[str, ...]]] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+
+    async def handler(request):
+        captured.append((request.request_id, request.available_actions))
+        await service.respond_permission_request(chat_id=1, request_id=request.request_id, action="once")
+
+    service.set_permission_request_handler(handler)
+    option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
+    tool_call = ToolCall(title="run", tool_call_id="tc-ask")
+    response = asyncio.run(service._decide_permission("ask", [option], tool_call))
+    assert response.outcome.outcome == "selected"
+    assert captured
+    assert "once" in captured[0][1]
+    assert "deny" in captured[0][1]
+
+
+def test_respond_permission_request_always_enables_session_approve(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="always")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+
+    async def handler(request):
+        await service.respond_permission_request(chat_id=1, request_id=request.request_id, action="always")
+
+    service.set_permission_request_handler(handler)
+    option = PermissionOption(kind="allow_always", name="Always", option_id="opt-always")
+    tool_call = ToolCall(title="run", tool_call_id="tc-always")
+    response = asyncio.run(service._decide_permission("always", [option], tool_call))
+    assert response.outcome.outcome == "selected"
+    policy = service.get_permission_policy(chat_id=1)
+    assert policy is not None
+    assert policy.session_mode == "approve"
+
+
+def test_respond_permission_request_rejects_unknown_request(tmp_path: Path) -> None:
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], default_permission_mode="ask")
+    assert not asyncio.run(service.respond_permission_request(chat_id=1, request_id="missing", action="deny"))
+
+
+def test_stop_cancels_pending_permission_requests(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="pending")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=7, workspace=tmp_path))
+
+    async def scenario() -> None:
+        future: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
+        service._pending_permissions["req"] = _PendingPermission(
+            request_id="req",
+            chat_id=7,
+            acp_session_id="pending",
+            tool_title="run",
+            tool_call_id="tc",
+            options=(),
+            future=future,
+        )
+        assert await service.stop(chat_id=7)
+        assert future.done()
+        assert future.result().outcome.outcome == "cancelled"
+
+    asyncio.run(scenario())
+
+
+def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="timeout")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+
+    async def handler(request):
+        del request
+
+    service.set_permission_request_handler(handler)
+
+    async def fake_wait_for(awaitable, **kwargs):
+        del kwargs
+        awaitable.cancel()
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
+    tool_call = ToolCall(title="run", tool_call_id="tc-timeout")
+    response = asyncio.run(service._decide_permission("timeout", [option], tool_call))
+    assert response.outcome.outcome == "cancelled"
+
+
+def test_build_permission_response_fallbacks() -> None:
+    deny = AcpAgentService._build_permission_response(options=(), action="deny")
+    assert deny.outcome.outcome == "cancelled"
+
+    fallback = AcpAgentService._build_permission_response(options=(), action="once")
+    assert fallback.outcome.outcome == "cancelled"
+
+
+def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture) -> None:
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], permission_event_output="off")
+    with caplog.at_level(logging.INFO):
+        service._report_permission_event("x")
+    assert not caplog.records
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], permission_event_output="stdout")
+    with caplog.at_level(logging.INFO):
+        service._report_permission_event("y")
+    assert any("ACP permission event: y" in record.message for record in caplog.records)
 
 
 def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch) -> None:

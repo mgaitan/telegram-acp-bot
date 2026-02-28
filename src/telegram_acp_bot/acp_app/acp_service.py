@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess as aio_subprocess
 import base64
+import logging
 import mimetypes
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 from acp import PROTOCOL_VERSION, RequestError, connect_to_agent, text_block
 from acp.core import ClientSideConnection
@@ -34,6 +36,8 @@ from acp.schema import (
     TextContentBlock,
     TextResourceContents,
     ToolCall,
+    ToolCallProgress,
+    ToolCallStart,
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
@@ -42,12 +46,17 @@ from telegram_acp_bot.acp_app.models import (
     AgentReply,
     FilePayload,
     ImagePayload,
+    PermissionDecisionAction,
+    PermissionEventOutput,
     PermissionMode,
     PermissionPolicy,
+    PermissionRequest,
     PromptFile,
     PromptImage,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class AcpConnectionFactory(Protocol):
@@ -87,15 +96,28 @@ class _LiveSession:
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+@dataclass(slots=True)
+class _PendingPermission:
+    request_id: str
+    chat_id: int
+    acp_session_id: str
+    tool_title: str
+    tool_call_id: str
+    options: tuple[PermissionOption, ...]
+    future: asyncio.Future[RequestPermissionResponse]
+
+
 class _AcpClient:
     """ACP client callbacks that accumulate agent text chunks per session."""
 
     def __init__(
         self,
         *,
-        permission_decider: Callable[[str, list[PermissionOption]], RequestPermissionResponse],
+        permission_decider: Callable[[str, list[PermissionOption], ToolCall], Awaitable[RequestPermissionResponse]],
+        event_reporter: Callable[[str], None] | None = None,
     ) -> None:
         self._permission_decider = permission_decider
+        self._event_reporter = event_reporter
         self._buffers: dict[str, list[str]] = {}
         self._images: dict[str, list[ImagePayload]] = {}
         self._files: dict[str, list[FilePayload]] = {}
@@ -114,9 +136,11 @@ class _AcpClient:
     async def request_permission(
         self, options: list[PermissionOption], session_id: str, tool_call: ToolCall, **kwargs: object
     ) -> RequestPermissionResponse:
-        del tool_call, kwargs
-
-        return self._permission_decider(session_id, options)
+        del kwargs
+        self._report_event(
+            f"permission requested for {tool_call.title} ({tool_call.tool_call_id}), options={len(options)}"
+        )
+        return await self._permission_decider(session_id, options, tool_call)
 
     async def session_update(
         self,
@@ -126,9 +150,21 @@ class _AcpClient:
     ) -> None:
         del kwargs
 
+        if isinstance(update, ToolCallStart):
+            label = update.kind or "other"
+            self._report_event(f"tool start {update.tool_call_id} {update.title} ({label})")
+            return
+        if isinstance(update, ToolCallProgress):
+            status = update.status or "in_progress"
+            title = update.title or "tool"
+            self._report_event(f"tool {status} {update.tool_call_id} {title}")
+            return
         if not isinstance(update, AgentMessageChunk):
             return
 
+        self._capture_agent_message(session_id=session_id, update=update)
+
+    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:
         content = update.content
         text = "<content>"
         if isinstance(content, TextContentBlock):
@@ -166,6 +202,10 @@ class _AcpClient:
                 )
 
         self._buffers.setdefault(session_id, []).append(text)
+
+    def _report_event(self, event: str) -> None:
+        if self._event_reporter is not None:
+            self._event_reporter(event)
 
     async def write_text_file(
         self, content: str, path: str, session_id: str, **kwargs: object
@@ -231,21 +271,27 @@ class _AcpClient:
 class AcpAgentService:
     """ACP-backed service to manage one running agent session per Telegram chat."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         registry: SessionRegistry,
         *,
         program: str,
         args: list[str],
+        default_permission_mode: PermissionMode = "ask",
+        permission_event_output: PermissionEventOutput = "stdout",
         connector: AcpConnectionFactory | None = None,
         spawner: AcpSpawnFn | None = None,
     ) -> None:
         self._registry = registry
         self._program = program
         self._args = args
+        self._default_permission_mode = default_permission_mode
+        self._permission_event_output = permission_event_output
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
         self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
+        self._pending_permissions: dict[str, _PendingPermission] = {}
+        self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
@@ -266,7 +312,7 @@ class AcpAgentService:
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
 
-        client = _AcpClient(permission_decider=self._decide_permission)
+        client = _AcpClient(permission_decider=self._decide_permission, event_reporter=self._report_permission_event)
         connection = self._connector(client, process.stdin, process.stdout)
         await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -282,6 +328,7 @@ class AcpAgentService:
             process=process,
             connection=connection,
             client=client,
+            permission_mode=self._default_permission_mode,
         )
         return session.session_id
 
@@ -344,6 +391,12 @@ class AcpAgentService:
         if live is None:
             return False
 
+        stale = [request_id for request_id, pending in self._pending_permissions.items() if pending.chat_id == chat_id]
+        for request_id in stale:
+            pending = self._pending_permissions.pop(request_id)
+            if not pending.future.done():
+                pending.future.set_result(RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled")))
+
         await self._shutdown(live.process)
         self._registry.clear(chat_id)
         return True
@@ -374,6 +427,41 @@ class AcpAgentService:
         live.next_prompt_auto_approve = enabled
         return True
 
+    def set_permission_request_handler(
+        self,
+        handler: Callable[[PermissionRequest], Awaitable[None]] | None,
+    ) -> None:
+        self._permission_prompt_handler = handler
+
+    async def respond_permission_request(
+        self,
+        *,
+        chat_id: int,
+        request_id: str,
+        action: PermissionDecisionAction,
+    ) -> bool:
+        pending = self._pending_permissions.get(request_id)
+        if pending is None or pending.chat_id != chat_id or pending.future.done():
+            logger.warning(
+                "Permission response ignored: request_id=%s chat_id=%s pending=%s",
+                request_id,
+                chat_id,
+                pending is not None,
+            )
+            return False
+
+        response = self._build_permission_response(
+            options=pending.options,
+            action=action,
+        )
+        if action == "always":
+            live = self._live_by_chat.get(chat_id)
+            if live is not None:
+                live.permission_mode = "approve"
+        logger.info("Permission response accepted: request_id=%s chat_id=%s action=%s", request_id, chat_id, action)
+        pending.future.set_result(response)
+        return True
+
     async def _shutdown(self, process: ProcessLike) -> None:
         if process.returncode is not None:
             return
@@ -389,19 +477,89 @@ class AcpAgentService:
     def _normalize_workspace(workspace: Path) -> Path:
         return workspace.expanduser().resolve()
 
-    def _decide_permission(self, session_id: str, options: list[PermissionOption]) -> RequestPermissionResponse:
+    async def _decide_permission(
+        self,
+        session_id: str,
+        options: list[PermissionOption],
+        tool_call: ToolCall,
+    ) -> RequestPermissionResponse:
         if not options:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
-        for live in self._live_by_chat.values():
+        for chat_id, live in self._live_by_chat.items():
             if live.acp_session_id != session_id:
                 continue
             if live.permission_mode == "approve" or live.active_prompt_auto_approve:
-                outcome = AllowedOutcome(option_id=options[0].option_id, outcome="selected")
-                return RequestPermissionResponse(outcome=outcome)
-            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+                return self._build_permission_response(options=tuple(options), action="once")
+            if live.permission_mode == "deny":
+                return self._build_permission_response(options=tuple(options), action="deny")
+
+            request_id = uuid4().hex[:12]
+            future: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
+            pending = _PendingPermission(
+                request_id=request_id,
+                chat_id=chat_id,
+                acp_session_id=session_id,
+                tool_title=tool_call.title,
+                tool_call_id=tool_call.tool_call_id,
+                options=tuple(options),
+                future=future,
+            )
+            self._pending_permissions[request_id] = pending
+            if self._permission_prompt_handler is None:
+                self._pending_permissions.pop(request_id, None)
+                return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+            request = PermissionRequest(
+                chat_id=pending.chat_id,
+                request_id=request_id,
+                tool_title=pending.tool_title,
+                tool_call_id=pending.tool_call_id,
+                available_actions=self._available_actions(options=pending.options),
+            )
+            await self._permission_prompt_handler(request)
+
+            try:
+                response = await asyncio.wait_for(future, timeout=300)
+            except TimeoutError:
+                response = RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+            finally:
+                self._pending_permissions.pop(request_id, None)
+            return response
 
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    @staticmethod
+    def _available_actions(options: tuple[PermissionOption, ...]) -> tuple[PermissionDecisionAction, ...]:
+        kinds = {option.kind for option in options}
+        actions: list[PermissionDecisionAction] = []
+        if "allow_once" in kinds or "allow_always" in kinds:
+            actions.append("once")
+        if "allow_always" in kinds:
+            actions.append("always")
+        actions.append("deny")
+        return tuple(actions)
+
+    @staticmethod
+    def _build_permission_response(
+        *,
+        options: tuple[PermissionOption, ...],
+        action: PermissionDecisionAction,
+    ) -> RequestPermissionResponse:
+        if action == "deny":
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+        preferred_kinds = ("allow_always", "allow_once") if action == "always" else ("allow_once", "allow_always")
+        for kind in preferred_kinds:
+            for option in options:
+                if option.kind == kind:
+                    return RequestPermissionResponse(
+                        outcome=AllowedOutcome(option_id=option.option_id, outcome="selected")
+                    )
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    def _report_permission_event(self, event: str) -> None:
+        if self._permission_event_output == "stdout":
+            logger.info("ACP permission event: %s", event)
 
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""

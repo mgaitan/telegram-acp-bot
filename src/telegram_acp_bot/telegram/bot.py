@@ -1,27 +1,33 @@
 from __future__ import annotations
 
 import base64
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol, cast
 
-from telegram import InputFile, Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_acp_bot.acp_app.models import (
     AgentReply,
     FilePayload,
     ImagePayload,
+    PermissionDecisionAction,
     PermissionMode,
     PermissionPolicy,
+    PermissionRequest,
     PromptFile,
     PromptImage,
 )
 
-PERMISSION_SET_ARG_COUNT = 2
+PERMISSION_CALLBACK_PREFIX = "perm"
+PERMISSION_CALLBACK_PARTS = 3
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -65,6 +71,19 @@ class AgentService(Protocol):
 
     async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool) -> bool: ...
 
+    def set_permission_request_handler(
+        self,
+        handler: Callable[[PermissionRequest], Awaitable[None]] | None,
+    ) -> None: ...
+
+    async def respond_permission_request(
+        self,
+        *,
+        chat_id: int,
+        request_id: str,
+        action: PermissionDecisionAction,
+    ) -> bool: ...
+
 
 class TelegramBridge:
     """Telegram command and message handlers for the MVP bot."""
@@ -72,8 +91,12 @@ class TelegramBridge:
     def __init__(self, config: BotConfig, agent_service: AgentService) -> None:
         self._config = config
         self._agent_service = agent_service
+        self._app: Application | None = None
+        if hasattr(self._agent_service, "set_permission_request_handler"):
+            self._agent_service.set_permission_request_handler(self.on_permission_request)
 
     def install(self, app: Application) -> None:
+        self._app = app
         app.add_handler(CommandHandler("start", self.start))
         app.add_handler(CommandHandler("help", self.help))
         app.add_handler(CommandHandler("new", self.new_session))
@@ -81,7 +104,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("cancel", self.cancel))
         app.add_handler(CommandHandler("stop", self.stop))
         app.add_handler(CommandHandler("clear", self.clear))
-        app.add_handler(CommandHandler("perm", self.permissions))
+        app.add_handler(CallbackQueryHandler(self.on_permission_callback, pattern=r"^perm\|"))
         app.add_handler(
             MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
         )
@@ -98,7 +121,7 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /session, /cancel, /stop, /clear, /perm, /help",
+            "Commands: /new [workspace], /session, /cancel, /stop, /clear, /help",
         )
 
     async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -171,55 +194,71 @@ class TelegramBridge:
             return
         await self._reply(update, "No active session. Use /new first.")
 
-    async def permissions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: PLR0911
-        if not await self._require_access(update):
+    async def on_permission_request(self, request: PermissionRequest) -> None:
+        if self._app is None:
             return
 
-        chat_id = self._chat_id(update)
-        args = self._context_args(context)
-        if not args:
-            policy = self._agent_service.get_permission_policy(chat_id=chat_id)
-            if policy is None:
-                await self._reply(update, "No active session. Use /new first.")
-                return
-            await self._reply(
-                update,
-                f"Permissions: session={policy.session_mode}, next_prompt={policy.next_prompt_auto_approve}",
-            )
-            return
+        keyboard = self._permission_keyboard(request)
+        message = f"Permission required for:\n{request.tool_title}"
+        await self._app.bot.send_message(
+            chat_id=request.chat_id,
+            text=message,
+            reply_markup=keyboard,
+        )
 
-        subcommand = args[0].lower()
-        if subcommand == "session" and len(args) >= PERMISSION_SET_ARG_COUNT:
-            mode = args[1].lower()
-            if mode not in {"approve", "deny"}:
-                await self._reply(update, "Usage: /perm session approve|deny")
+    async def on_permission_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        query = update.callback_query
+        if query is None:
+            return
+        try:
+            if not await self._require_access(update):
+                await query.answer("Access denied.")
                 return
-            changed = await self._agent_service.set_session_permission_mode(
+
+            data = query.data or ""
+            logger.info("Permission callback received: %s", data)
+            parts = data.split("|", maxsplit=2)
+            if len(parts) != PERMISSION_CALLBACK_PARTS:
+                await query.answer("Invalid action.")
+                return
+            _, request_id, raw_action = parts
+            if raw_action not in {"once", "always", "deny"}:
+                await query.answer("Invalid action.")
+                return
+
+            chat = update.effective_chat
+            chat_id = chat.id if chat is not None else None
+            query_message = getattr(query, "message", None)
+            if chat_id is None and query_message is not None:
+                chat_id = query_message.chat.id
+            if chat_id is None:
+                await query.answer("Missing chat.")
+                return
+
+            accepted = await self._agent_service.respond_permission_request(
                 chat_id=chat_id,
-                mode=cast(PermissionMode, mode),
+                request_id=request_id,
+                action=cast(PermissionDecisionAction, raw_action),
             )
-            if changed:
-                await self._reply(update, f"Updated session permission mode to {mode}.")
+            if not accepted:
+                logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)
+                await query.answer("Request expired.")
                 return
-            await self._reply(update, "No active session. Use /new first.")
-            return
 
-        if subcommand == "next" and len(args) >= PERMISSION_SET_ARG_COUNT:
-            raw_value = args[1].lower()
-            if raw_value not in {"on", "off"}:
-                await self._reply(update, "Usage: /perm next on|off")
-                return
-            changed = await self._agent_service.set_next_prompt_auto_approve(
-                chat_id=chat_id,
-                enabled=raw_value == "on",
-            )
-            if changed:
-                await self._reply(update, f"Updated next prompt auto-approve to {raw_value}.")
-                return
-            await self._reply(update, "No active session. Use /new first.")
-            return
-
-        await self._reply(update, "Usage: /perm | /perm session approve|deny | /perm next on|off")
+            labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
+            logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
+            await query.answer(labels[raw_action])
+            try:
+                query_message = getattr(query, "message", None)
+                original = getattr(query_message, "text", None) if query_message is not None else None
+                base_text = original or "Permission request"
+                await query.edit_message_text(f"{base_text}\nDecision: {labels[raw_action]}")
+            except TelegramError:
+                await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.exception("Unhandled error while processing permission callback")
+            await query.answer("Permission action failed.")
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -298,6 +337,17 @@ class TelegramBridge:
             await self._send_image(update, image)
         for file_payload in reply.files:
             await self._send_file(update, file_payload)
+
+    @staticmethod
+    def _permission_keyboard(request: PermissionRequest) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        buttons: list[InlineKeyboardButton] = []
+        for action in request.available_actions:
+            label = {"always": "Always", "once": "This time", "deny": "Deny"}[action]
+            callback_data = f"{PERMISSION_CALLBACK_PREFIX}|{request.request_id}|{action}"
+            buttons.append(InlineKeyboardButton(text=label, callback_data=callback_data))
+        rows.append(buttons)
+        return InlineKeyboardMarkup(rows)
 
     async def _require_access(self, update: Update) -> bool:
         allowed = self._config.allowed_user_ids
@@ -380,7 +430,9 @@ class TelegramBridge:
 
 
 def build_application(config: BotConfig, bridge: TelegramBridge) -> Application:
-    app = Application.builder().token(config.token).build()
+    # Permission prompts are awaited inside message handlers, so callback queries
+    # must be processed concurrently to avoid deadlocking the update loop.
+    app = Application.builder().token(config.token).concurrent_updates(True).build()
     bridge.install(app)
     return app
 
