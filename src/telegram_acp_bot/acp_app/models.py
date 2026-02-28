@@ -6,6 +6,7 @@ from typing import Literal
 PermissionMode = Literal["deny", "approve", "ask"]
 PermissionDecisionAction = Literal["once", "always", "deny"]
 PermissionEventOutput = Literal["stdout", "off"]
+StreamEventKind = Literal["message_chunk", "tool_start", "tool_progress", "plan_update"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -70,3 +71,11 @@ class PermissionRequest:
     tool_title: str
     tool_call_id: str
     available_actions: tuple[PermissionDecisionAction, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class AgentStreamEvent:
+    """Incremental session update emitted while an ACP prompt is running."""
+
+    kind: StreamEventKind
+    text: str

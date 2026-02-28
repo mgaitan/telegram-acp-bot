@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from telegram import Update
+from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
-from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, ImagePayload, PermissionRequest
+from telegram_acp_bot.acp_app.models import AgentReply, AgentStreamEvent, FilePayload, ImagePayload, PermissionRequest
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
@@ -26,6 +26,8 @@ from telegram_acp_bot.telegram.bot import (
 
 EXPECTED_OUTBOUND_DOCUMENTS = 2
 TEST_CHAT_ID = 100
+EXPECTED_TWO_MESSAGES = 2
+EXPECTED_TAIL_LEN = 2
 
 
 class MarkdownFailureError(TelegramError):
@@ -53,13 +55,19 @@ class DummyMessage:
         self.fail_markdown = False
         self.photos: list[object] = []
         self.documents: list[object] = []
+        self.stream_edits: list[str] = []
 
-    async def reply_text(self, text: str, **kwargs: object) -> None:
+    async def reply_text(self, text: str, **kwargs: object) -> object | None:
         if self.fail_markdown and kwargs.get("parse_mode") is not None:
             self.reply_kwargs.append(kwargs)
             raise MarkdownFailureError
         self.reply_kwargs.append(kwargs)
         self.replies.append(text)
+        return SimpleNamespace(edit_text=self._edit_stream_text)
+
+    async def _edit_stream_text(self, text: str, **kwargs: object) -> None:
+        del kwargs
+        self.stream_edits.append(text)
 
     async def reply_photo(self, *, photo: object) -> None:
         self.photos.append(photo)
@@ -90,6 +98,70 @@ class DummyBot:
 
     async def send_message(self, **kwargs: object) -> None:
         self.sent_messages.append(kwargs)
+
+
+class BaseStreamService:
+    def __init__(self) -> None:
+        self._stream_handler = None
+
+    async def new_session(self, *, chat_id: int, workspace):
+        del workspace
+        return f"s-{chat_id}"
+
+    def get_workspace(self, *, chat_id: int):
+        del chat_id
+        return Path(".")
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+    def set_permission_request_handler(self, handler):
+        del handler
+
+    def set_stream_event_handler(self, handler):
+        self._stream_handler = handler
+
+    async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+        del chat_id, request_id, action
+        return False
+
+
+class TextStreamingService(BaseStreamService):
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del text, images, files
+        assert self._stream_handler is not None
+        await self._stream_handler(chat_id, AgentStreamEvent(kind="message_chunk", text="Hola "))
+        await self._stream_handler(chat_id, AgentStreamEvent(kind="message_chunk", text="mundo"))
+        return AgentReply(text="Hola mundo")
+
+
+class FollowStreamingService(BaseStreamService):
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del text, images, files
+        assert self._stream_handler is not None
+        await self._stream_handler(chat_id, AgentStreamEvent(kind="tool_start", text="Tool: ls"))
+        await self._stream_handler(chat_id, AgentStreamEvent(kind="message_chunk", text="done"))
+        return AgentReply(text="done")
 
 
 class DummyCallbackQuery:
@@ -198,6 +270,7 @@ def test_denied_paths_for_other_handlers() -> None:
     asyncio.run(bridge.help(update, context))
     asyncio.run(bridge.new_session(update, make_context(args=["/tmp"])))
     asyncio.run(bridge.session(update, context))
+    asyncio.run(bridge.follow(update, make_context(args=["on"])))
     asyncio.run(bridge.cancel(update, context))
     asyncio.run(bridge.stop(update, context))
     asyncio.run(bridge.clear(update, context))
@@ -205,6 +278,7 @@ def test_denied_paths_for_other_handlers() -> None:
 
     assert update.message is not None
     assert update.message.replies == [
+        "Access denied for this bot.",
         "Access denied for this bot.",
         "Access denied for this bot.",
         "Access denied for this bot.",
@@ -341,6 +415,139 @@ def test_on_text_markdown_fallback_to_plain() -> None:
     assert update.message.replies[-1].endswith("hello")
     assert update.message.reply_kwargs[-2] == {"parse_mode": "Markdown"}
     assert update.message.reply_kwargs[-1] == {}
+
+
+def test_on_text_streams_chunks_and_avoids_duplicate_final_reply() -> None:
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, TextStreamingService()),
+    )
+    update = make_update(text="hola")
+    context = make_context()
+
+    asyncio.run(bridge.on_message(update, context))
+
+    assert update.message is not None
+    assert update.message.replies == ["Hola "]
+    assert update.message.stream_edits == ["Hola mundo"]
+
+
+def test_follow_mode_controls_tool_progress_visibility() -> None:
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, FollowStreamingService()),
+    )
+    update = make_update(text="run")
+    context = make_context()
+
+    asyncio.run(bridge.on_message(update, context))
+    assert update.message is not None
+    assert "Tool: ls" not in update.message.replies
+
+    asyncio.run(bridge.follow(update, make_context(args=["on"])))
+    asyncio.run(bridge.on_message(update, context))
+    assert "Tool: ls" in update.message.replies
+
+
+def test_follow_command_usage_and_state() -> None:
+    bridge = make_bridge()
+    update = make_update()
+
+    asyncio.run(bridge.follow(update, make_context()))
+    asyncio.run(bridge.follow(update, make_context(args=["invalid"])))
+    asyncio.run(bridge.follow(update, make_context(args=["on"])))
+    asyncio.run(bridge.follow(update, make_context()))
+    asyncio.run(bridge.follow(update, make_context(args=["off"])))
+
+    assert update.message is not None
+    assert "Follow mode is `off`" in update.message.replies[0]
+    assert update.message.replies[1] == "Usage: `/follow on|off`"
+    assert update.message.replies[2] == "Follow mode enabled."
+    assert "Follow mode is `on`" in update.message.replies[3]
+    assert update.message.replies[4] == "Follow mode disabled."
+
+
+def test_on_stream_event_ignores_missing_active_state() -> None:
+    bridge = make_bridge()
+    asyncio.run(bridge.on_stream_event(123, AgentStreamEvent(kind="message_chunk", text="ignored")))
+
+
+def test_stream_append_rolls_over_message_limit() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    long_chunk = "x" * (bot_module.TELEGRAM_SAFE_TEXT_LIMIT + 2)
+    asyncio.run(bridge._append_stream_text(state, long_chunk))
+
+    assert len(update.message.replies) == EXPECTED_TWO_MESSAGES
+    assert len(update.message.replies[0]) == bot_module.TELEGRAM_SAFE_TEXT_LIMIT
+    assert len(update.message.replies[1]) == EXPECTED_TAIL_LEN
+
+
+def test_render_stream_text_ignores_edit_errors() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+
+    class FailingSentMessage:
+        async def edit_text(self, text: str) -> None:
+            del text
+            raise MarkdownFailureError
+
+    state = bot_module._StreamingRenderState(
+        source_message=update.message,
+        follow_mode=False,
+        text_message=cast(Message, FailingSentMessage()),
+        text_buffer="value",
+    )
+    asyncio.run(bridge._render_stream_text(state))
+
+
+def test_finalize_streamed_text_paths() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+
+    asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="a", stream_state=None))
+
+    empty_state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="b", stream_state=empty_state))
+
+    prefix_state = bot_module._StreamingRenderState(
+        source_message=update.message,
+        follow_mode=False,
+        text_buffer="prefix",
+    )
+    asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="prefix + suffix", stream_state=prefix_state))
+
+    mismatch_state = bot_module._StreamingRenderState(
+        source_message=update.message,
+        follow_mode=False,
+        text_buffer="different",
+    )
+    asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="whole", stream_state=mismatch_state))
+
+    assert " + suffix" in update.message.replies
+    assert "whole" in update.message.replies
+
+
+def test_stream_helpers_cover_empty_inputs() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=True)
+    asyncio.run(bridge._append_stream_text(state, ""))
+    asyncio.run(bridge._send_follow_event(state, ""))
+
+    assert update.message.replies == []
+
+
+def test_split_text_handles_empty_and_newline_chunks() -> None:
+    assert TelegramBridge._split_text("") == [""]
+    chunks = TelegramBridge._split_text("a\nb\nc", limit=2)
+    assert chunks == ["a", "\nb", "\nc"]
 
 
 def test_on_message_with_photo_attachment() -> None:

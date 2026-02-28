@@ -15,6 +15,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from telegram_acp_bot.acp_app.models import (
     AgentReply,
+    AgentStreamEvent,
     FilePayload,
     ImagePayload,
     PermissionDecisionAction,
@@ -27,6 +28,7 @@ from telegram_acp_bot.acp_app.models import (
 
 PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
+TELEGRAM_SAFE_TEXT_LIMIT = 4000
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,14 @@ class BotConfig:
 
 class ChatRequiredError(ValueError):
     """Raised when a Telegram update does not include a chat object."""
+
+
+@dataclass(slots=True)
+class _StreamingRenderState:
+    source_message: Message
+    follow_mode: bool
+    text_message: Message | None = None
+    text_buffer: str = ""
 
 
 class AgentService(Protocol):
@@ -76,6 +86,11 @@ class AgentService(Protocol):
         handler: Callable[[PermissionRequest], Awaitable[None]] | None,
     ) -> None: ...
 
+    def set_stream_event_handler(
+        self,
+        handler: Callable[[int, AgentStreamEvent], Awaitable[None]] | None,
+    ) -> None: ...
+
     async def respond_permission_request(
         self,
         *,
@@ -92,8 +107,12 @@ class TelegramBridge:
         self._config = config
         self._agent_service = agent_service
         self._app: Application | None = None
+        self._follow_mode_by_chat: dict[int, bool] = {}
+        self._active_streams: dict[int, _StreamingRenderState] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
+        if hasattr(self._agent_service, "set_stream_event_handler"):
+            self._agent_service.set_stream_event_handler(self.on_stream_event)
 
     def install(self, app: Application) -> None:
         self._app = app
@@ -101,6 +120,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("help", self.help))
         app.add_handler(CommandHandler("new", self.new_session))
         app.add_handler(CommandHandler("session", self.session))
+        app.add_handler(CommandHandler("follow", self.follow))
         app.add_handler(CommandHandler("cancel", self.cancel))
         app.add_handler(CommandHandler("stop", self.stop))
         app.add_handler(CommandHandler("clear", self.clear))
@@ -121,7 +141,7 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /session, /cancel, /stop, /clear, /help",
+            "Commands: /new [workspace], /session, /follow on|off, /cancel, /stop, /clear, /help",
         )
 
     async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -160,6 +180,28 @@ class TelegramBridge:
             return
 
         await self._reply(update, f"Active session workspace: `{workspace}`")
+
+    async def follow(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._require_access(update):
+            return
+
+        chat_id = self._chat_id(update)
+        args = self._context_args(context)
+        if not args:
+            enabled = self._follow_mode_by_chat.get(chat_id, False)
+            state = "on" if enabled else "off"
+            await self._reply(update, f"Follow mode is `{state}`. Use `/follow on` or `/follow off`.")
+            return
+
+        value = args[0].strip().lower()
+        if value not in {"on", "off"}:
+            await self._reply(update, "Usage: `/follow on|off`")
+            return
+
+        enabled = value == "on"
+        self._follow_mode_by_chat[chat_id] = enabled
+        state = "enabled" if enabled else "disabled"
+        await self._reply(update, f"Follow mode {state}.")
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -276,13 +318,90 @@ class TelegramBridge:
 
         chat_id = self._chat_id(update)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
+        self._active_streams[chat_id] = _StreamingRenderState(
+            source_message=message,
+            follow_mode=self._follow_mode_by_chat.get(chat_id, False),
+        )
+        try:
+            reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
+        finally:
+            stream_state = self._active_streams.pop(chat_id, None)
         if reply is None:
             await self._reply(update, "No active session. Use /new first.")
             return
 
-        await self._reply_agent(update, reply.text)
+        await self._finalize_streamed_text(update=update, reply_text=reply.text, stream_state=stream_state)
         await self._send_attachments(update, reply)
+
+    async def on_stream_event(self, chat_id: int, event: AgentStreamEvent) -> None:
+        state = self._active_streams.get(chat_id)
+        if state is None:
+            return
+
+        if event.kind == "message_chunk":
+            await self._append_stream_text(state, event.text)
+            return
+        if not state.follow_mode:
+            return
+        await self._send_follow_event(state, event.text)
+
+    async def _append_stream_text(self, state: _StreamingRenderState, chunk: str) -> None:
+        if not chunk:
+            return
+        remaining = chunk
+        while remaining:
+            space_left = TELEGRAM_SAFE_TEXT_LIMIT - len(state.text_buffer)
+            if space_left <= 0:
+                state.text_message = None
+                state.text_buffer = ""
+                space_left = TELEGRAM_SAFE_TEXT_LIMIT
+            part = remaining[:space_left]
+            remaining = remaining[space_left:]
+            state.text_buffer += part
+            await self._render_stream_text(state)
+
+    async def _render_stream_text(self, state: _StreamingRenderState) -> None:
+        if state.text_message is None:
+            state.text_message = await state.source_message.reply_text(state.text_buffer)
+            return
+        try:
+            await state.text_message.edit_text(state.text_buffer)
+        except TelegramError:
+            # Some clients reject no-op or transient edits; keep streaming forward.
+            return
+
+    async def _send_follow_event(self, state: _StreamingRenderState, text: str) -> None:
+        if not text:
+            return
+        for chunk in self._split_text(text):
+            await state.source_message.reply_text(chunk)
+
+    async def _finalize_streamed_text(
+        self,
+        *,
+        update: Update,
+        reply_text: str,
+        stream_state: _StreamingRenderState | None,
+    ) -> None:
+        if stream_state is None:
+            await self._reply_agent(update, reply_text)
+            return
+
+        if not stream_state.text_buffer:
+            await self._reply_agent(update, reply_text)
+            return
+        if stream_state.text_buffer == reply_text:
+            return
+
+        # Post-processing in ACP can append warnings/resources after streamed text.
+        if reply_text.startswith(stream_state.text_buffer):
+            suffix = reply_text[len(stream_state.text_buffer) :]
+            if suffix:
+                for chunk in self._split_text(suffix):
+                    await stream_state.source_message.reply_text(chunk)
+            return
+
+        await self._reply_agent(update, reply_text)
 
     async def _extract_prompt_images(
         self,
@@ -385,23 +504,42 @@ class TelegramBridge:
         return list(args)
 
     @staticmethod
+    def _split_text(text: str, *, limit: int = TELEGRAM_SAFE_TEXT_LIMIT) -> list[str]:
+        if not text:
+            return [""]
+        chunks: list[str] = []
+        pending = text
+        while pending:
+            if len(pending) <= limit:
+                chunks.append(pending)
+                break
+            split_at = pending.rfind("\n", 0, limit)
+            if split_at <= 0:
+                split_at = limit
+            chunks.append(pending[:split_at])
+            pending = pending[split_at:]
+        return chunks
+
+    @staticmethod
     async def _reply(update: Update, text: str) -> None:
         if update.message is None:
             return
-        try:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        except TelegramError:
-            await update.message.reply_text(text)
+        for chunk in TelegramBridge._split_text(text):
+            try:
+                await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            except TelegramError:
+                await update.message.reply_text(chunk)
 
     @staticmethod
     async def _reply_agent(update: Update, text: str) -> None:
         if update.message is None:
             return
 
-        try:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        except TelegramError:
-            await update.message.reply_text(text)
+        for chunk in TelegramBridge._split_text(text):
+            try:
+                await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            except TelegramError:
+                await update.message.reply_text(chunk)
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:

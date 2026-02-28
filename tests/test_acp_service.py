@@ -11,6 +11,7 @@ import pytest
 from acp import RequestError, text_block
 from acp.schema import (
     AgentMessageChunk,
+    AgentPlanUpdate,
     AllowedOutcome,
     AudioContentBlock,
     BlobResourceContents,
@@ -18,6 +19,7 @@ from acp.schema import (
     EmbeddedResourceContentBlock,
     ImageContentBlock,
     PermissionOption,
+    PlanEntry,
     RequestPermissionResponse,
     ResourceContentBlock,
     TextResourceContents,
@@ -27,7 +29,7 @@ from acp.schema import (
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _PendingPermission
-from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, PromptFile, PromptImage
+from telegram_acp_bot.acp_app.models import AgentReply, AgentStreamEvent, FilePayload, PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 EXPECTED_CAPTURED_FILES = 2
@@ -229,6 +231,64 @@ def test_acp_client_capture_tool_events() -> None:
     assert "tool completed tool-1 read file" in events[1]
 
 
+def test_acp_client_emits_stream_events() -> None:
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    stream_events: list[tuple[str, str, str]] = []
+
+    async def stream_reporter(session_id: str, event: AgentStreamEvent) -> None:
+        stream_events.append((session_id, event.kind, event.text))
+
+    client = _AcpClient(permission_decider=allow_first, stream_reporter=stream_reporter)
+    session_id = "s-stream"
+    client.start_capture(session_id)
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("hello"), session_update="agent_message_chunk"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(title="read file", tool_call_id="tool-1", kind="read", session_update="tool_call"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallProgress(
+                tool_call_id="tool-1",
+                title="read file",
+                status="completed",
+                session_update="tool_call_update",
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentPlanUpdate(
+                entries=[
+                    PlanEntry(content="run tests", priority="high", status="in_progress"),
+                    PlanEntry(content="open PR", priority="medium", status="pending"),
+                ],
+                session_update="plan",
+            ),
+        )
+    )
+
+    assert stream_events[0] == (session_id, "message_chunk", "hello")
+    assert stream_events[1] == (session_id, "tool_start", "Tool: read file")
+    assert stream_events[2] == (session_id, "tool_progress", "Tool completed: read file")
+    assert stream_events[3][0] == session_id
+    assert stream_events[3][1] == "plan_update"
+    assert "[in_progress] run tests" in stream_events[3][2]
+
+
 @pytest.mark.parametrize(
     "method_name,args",
     [
@@ -336,6 +396,38 @@ def test_new_session_and_prompt(tmp_path: Path) -> None:
     assert reply is not None
     assert reply.text == "hello from acp"
     assert connection.prompt_calls == ["real-session"]
+
+
+def test_stream_handler_receives_chat_scoped_updates(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="stream-session")
+    captured: list[tuple[int, str, str]] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=12, workspace=tmp_path))
+
+    async def handler(chat_id: int, event: AgentStreamEvent) -> None:
+        captured.append((chat_id, event.kind, event.text))
+
+    service.set_stream_event_handler(handler)
+    reply = asyncio.run(service.prompt(chat_id=12, text="stream"))
+    assert reply is not None
+    assert captured == [(12, "message_chunk", "hello from acp")]
 
 
 def test_prompt_without_active_session_returns_none() -> None:

@@ -16,6 +16,7 @@ from acp import PROTOCOL_VERSION, RequestError, connect_to_agent, text_block
 from acp.core import ClientSideConnection
 from acp.schema import (
     AgentMessageChunk,
+    AgentPlanUpdate,
     AllowedOutcome,
     AudioContentBlock,
     BlobResourceContents,
@@ -44,6 +45,7 @@ from acp.schema import (
 
 from telegram_acp_bot.acp_app.models import (
     AgentReply,
+    AgentStreamEvent,
     FilePayload,
     ImagePayload,
     PermissionDecisionAction,
@@ -115,9 +117,11 @@ class _AcpClient:
         *,
         permission_decider: Callable[[str, list[PermissionOption], ToolCall], Awaitable[RequestPermissionResponse]],
         event_reporter: Callable[[str], None] | None = None,
+        stream_reporter: Callable[[str, AgentStreamEvent], Awaitable[None]] | None = None,
     ) -> None:
         self._permission_decider = permission_decider
         self._event_reporter = event_reporter
+        self._stream_reporter = stream_reporter
         self._buffers: dict[str, list[str]] = {}
         self._images: dict[str, list[ImagePayload]] = {}
         self._files: dict[str, list[FilePayload]] = {}
@@ -153,22 +157,42 @@ class _AcpClient:
         if isinstance(update, ToolCallStart):
             label = update.kind or "other"
             self._report_event(f"tool start {update.tool_call_id} {update.title} ({label})")
+            await self._emit_stream(
+                session_id,
+                AgentStreamEvent(kind="tool_start", text=f"Tool: {update.title}"),
+            )
             return
         if isinstance(update, ToolCallProgress):
             status = update.status or "in_progress"
             title = update.title or "tool"
             self._report_event(f"tool {status} {update.tool_call_id} {title}")
+            await self._emit_stream(
+                session_id,
+                AgentStreamEvent(kind="tool_progress", text=f"Tool {status}: {title}"),
+            )
+            return
+        if isinstance(update, AgentPlanUpdate):
+            entries = [f"- [{entry.status}] {entry.content}" for entry in update.entries]
+            if entries:
+                await self._emit_stream(
+                    session_id,
+                    AgentStreamEvent(kind="plan_update", text="Plan update:\n" + "\n".join(entries)),
+                )
             return
         if not isinstance(update, AgentMessageChunk):
             return
 
-        self._capture_agent_message(session_id=session_id, update=update)
+        maybe_text = self._capture_agent_message(session_id=session_id, update=update)
+        if maybe_text:
+            await self._emit_stream(session_id, AgentStreamEvent(kind="message_chunk", text=maybe_text))
 
-    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:
+    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> str | None:
         content = update.content
         text = "<content>"
+        streamed_text: str | None = None
         if isinstance(content, TextContentBlock):
             text = content.text
+            streamed_text = content.text
         elif isinstance(content, ImageContentBlock):
             text = "<image>"
             self._images.setdefault(session_id, []).append(
@@ -202,10 +226,16 @@ class _AcpClient:
                 )
 
         self._buffers.setdefault(session_id, []).append(text)
+        return streamed_text
 
     def _report_event(self, event: str) -> None:
         if self._event_reporter is not None:
             self._event_reporter(event)
+
+    async def _emit_stream(self, session_id: str, event: AgentStreamEvent) -> None:
+        if self._stream_reporter is None:
+            return
+        await self._stream_reporter(session_id, event)
 
     async def write_text_file(
         self, content: str, path: str, session_id: str, **kwargs: object
@@ -292,6 +322,7 @@ class AcpAgentService:
         self._live_by_chat: dict[int, _LiveSession] = {}
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
+        self._stream_event_handler: Callable[[int, AgentStreamEvent], Awaitable[None]] | None = None
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
@@ -312,7 +343,11 @@ class AcpAgentService:
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
 
-        client = _AcpClient(permission_decider=self._decide_permission, event_reporter=self._report_permission_event)
+        client = _AcpClient(
+            permission_decider=self._decide_permission,
+            event_reporter=self._report_permission_event,
+            stream_reporter=self._forward_stream_event,
+        )
         connection = self._connector(client, process.stdin, process.stdout)
         await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -432,6 +467,12 @@ class AcpAgentService:
         handler: Callable[[PermissionRequest], Awaitable[None]] | None,
     ) -> None:
         self._permission_prompt_handler = handler
+
+    def set_stream_event_handler(
+        self,
+        handler: Callable[[int, AgentStreamEvent], Awaitable[None]] | None,
+    ) -> None:
+        self._stream_event_handler = handler
 
     async def respond_permission_request(
         self,
@@ -560,6 +601,15 @@ class AcpAgentService:
     def _report_permission_event(self, event: str) -> None:
         if self._permission_event_output == "stdout":
             logger.info("ACP permission event: %s", event)
+
+    async def _forward_stream_event(self, session_id: str, event: AgentStreamEvent) -> None:
+        handler = self._stream_event_handler
+        if handler is None:
+            return
+        for chat_id, live in self._live_by_chat.items():
+            if live.acp_session_id == session_id:
+                await handler(chat_id, event)
+                return
 
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""

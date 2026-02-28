@@ -40,6 +40,7 @@ You can also set `TELEGRAM_BOT_TOKEN` and `ACP_AGENT_COMMAND` in a local `.env` 
 Supported bot commands:
 - `/new [workspace]`
 - `/session`
+- `/follow on|off`
 - `/cancel`
 - `/stop`
 - `/clear`
@@ -47,6 +48,10 @@ Supported bot commands:
 Attachment behavior:
 - Telegram inbound photos/documents are forwarded to ACP prompts.
 - ACP `file://` resources are delivered back as Telegram attachments when the file is inside the active workspace.
+
+Streaming behavior:
+- Assistant text is streamed incrementally by editing a single Telegram message.
+- Tool and plan progress updates are hidden by default; enable them with `/follow on`.
 
 Permission behavior:
 - By default (`ACP_PERMISSION_MODE=ask`), permission requests are shown in Telegram with inline buttons.
