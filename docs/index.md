@@ -58,6 +58,7 @@ Permission behavior:
 - You can set startup defaults with:
   - `ACP_PERMISSION_MODE=ask|approve|deny`
   - `ACP_PERMISSION_EVENT_OUTPUT=stdout|off`
+  - `ACP_STDIO_LIMIT=1048576` (increase if ACP agent emits very large JSON lines on stdio)
 
 
 ```{toctree}

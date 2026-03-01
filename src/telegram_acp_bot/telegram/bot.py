@@ -32,6 +32,7 @@ PERMISSION_CALLBACK_PARTS = 3
 TELEGRAM_SAFE_TEXT_LIMIT = 4000
 STREAM_RENDER_INTERVAL_SECONDS = 0.4
 STREAM_RENDER_MIN_DELTA_CHARS = 120
+SPLIT_PREFER_CHARS = "\n.!?;:,)]}"
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +58,8 @@ class _StreamingRenderState:
     assembled_text: str = ""
     last_chunk: str = ""
     last_render_at: float = 0.0
+    segment_start: int = 0
+    render_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class AgentService(Protocol):
@@ -246,6 +249,11 @@ class TelegramBridge:
         if self._app is None:
             return
 
+        state = self._active_streams.get(request.chat_id)
+        if state is not None:
+            async with state.render_lock:
+                self._start_new_stream_segment(state)
+
         keyboard = self._permission_keyboard(request)
         message = f"Permission required for:\n{request.tool_title}"
         await self._app.bot.send_message(
@@ -344,12 +352,13 @@ class TelegramBridge:
         if state is None:
             return
 
-        if event.kind == "message_chunk":
-            await self._append_stream_text(state, event.text)
-            return
-        if not state.follow_mode:
-            return
-        await self._send_follow_event(state, event.text)
+        async with state.render_lock:
+            if event.kind == "message_chunk":
+                await self._append_stream_text(state, event.text)
+                return
+            if not state.follow_mode:
+                return
+            await self._send_follow_event(state, event.text)
 
     async def _append_stream_text(self, state: _StreamingRenderState, chunk: str) -> None:
         if not self._merge_stream_chunk(state, chunk):
@@ -374,20 +383,53 @@ class TelegramBridge:
             # Ignore regressive partial chunks to prevent visual flicker.
             changed = False
         else:
-            state.assembled_text += chunk
+            state.assembled_text = TelegramBridge._merge_text_with_separator(state.assembled_text, chunk)
             changed = True
 
         state.last_chunk = chunk
         return changed
 
+    @staticmethod
+    def _merge_text_with_separator(current: str, incoming: str) -> str:
+        if not current or not incoming:
+            return f"{current}{incoming}"
+        current_last = current[-1]
+        incoming_first = incoming[0]
+        stripped_incoming = incoming.lstrip()
+        merge = f"{current}{incoming}"
+        spaced = f"{current} {incoming}"
+
+        if incoming_first.isspace() or current_last.isspace():
+            result = merge
+        elif current_last.isalnum() and incoming_first.isalnum():
+            # Keep words flowing when chunks are token-like fragments.
+            result = merge
+        elif current_last in ",)]}" and incoming_first.isalnum():
+            # Preserve natural sentence continuity for commas and brackets.
+            result = spaced
+        elif current_last in ".!?;:":
+            is_block_like = stripped_incoming.startswith(("- ", "* ", "1. ", "2. ", "3. "))
+            result = f"{current}\n\n{incoming}" if (is_block_like or incoming_first.isupper()) else spaced
+        else:
+            result = spaced
+        return result
+
+    @staticmethod
+    def _start_new_stream_segment(state: _StreamingRenderState) -> None:
+        state.segment_start = len(state.assembled_text)
+        state.text_messages.clear()
+        state.rendered_chunks.clear()
+        state.last_render_at = 0.0
+
     async def _maybe_render_stream_text(self, state: _StreamingRenderState, *, force: bool) -> None:
-        chunks = self._split_text(state.assembled_text)
+        current_segment = state.assembled_text[state.segment_start :]
+        chunks = self._split_text(current_segment)
         if chunks == state.rendered_chunks:
             return
 
         loop_time = asyncio.get_running_loop().time()
         rendered_size = sum(len(chunk) for chunk in state.rendered_chunks)
-        delta_chars = len(state.assembled_text) - rendered_size
+        delta_chars = len(current_segment) - rendered_size
         if (
             not force
             and state.last_render_at > 0
@@ -400,7 +442,7 @@ class TelegramBridge:
         state.last_render_at = loop_time
 
     async def _render_stream_text(self, state: _StreamingRenderState, chunks: list[str] | None = None) -> None:
-        rendered_chunks = self._split_text(state.assembled_text) if chunks is None else chunks
+        rendered_chunks = self._split_text(state.assembled_text[state.segment_start :]) if chunks is None else chunks
         if not rendered_chunks:
             return
 
@@ -441,20 +483,33 @@ class TelegramBridge:
             await self._reply_agent(update, reply_text)
             return
 
-        await self._maybe_render_stream_text(stream_state, force=True)
-        if stream_state.assembled_text == reply_text:
-            return
+        async with stream_state.render_lock:
+            await self._maybe_render_stream_text(stream_state, force=True)
+            if stream_state.assembled_text == reply_text:
+                await self._apply_final_markdown(stream_state)
+                return
 
-        # Post-processing in ACP can append warnings/resources after streamed text.
-        if reply_text.startswith(stream_state.assembled_text):
-            suffix = reply_text[len(stream_state.assembled_text) :]
-            if suffix:
-                for chunk in self._split_text(suffix):
-                    await stream_state.source_message.reply_text(chunk)
-            return
+            # Post-processing in ACP can append warnings/resources after streamed text.
+            if reply_text.startswith(stream_state.assembled_text):
+                suffix = reply_text[len(stream_state.assembled_text) :]
+                if suffix:
+                    for chunk in self._split_text(suffix):
+                        await stream_state.source_message.reply_text(chunk)
+                await self._apply_final_markdown(stream_state)
+                return
 
-        stream_state.assembled_text = reply_text
-        await self._maybe_render_stream_text(stream_state, force=True)
+            stream_state.assembled_text = reply_text
+            await self._maybe_render_stream_text(stream_state, force=True)
+            await self._apply_final_markdown(stream_state)
+
+    @staticmethod
+    async def _apply_final_markdown(state: _StreamingRenderState) -> None:
+        for idx, chunk in enumerate(state.rendered_chunks):
+            try:
+                await state.text_messages[idx].edit_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            except TelegramError:
+                # Keep the plain-text rendered chunk if markdown parsing fails.
+                continue
 
     async def _extract_prompt_images(
         self,
@@ -566,12 +621,28 @@ class TelegramBridge:
             if len(pending) <= limit:
                 chunks.append(pending)
                 break
-            split_at = pending.rfind("\n", 0, limit)
-            if split_at <= 0:
-                split_at = limit
+            split_at = TelegramBridge._find_split_boundary(pending, limit=limit)
             chunks.append(pending[:split_at])
             pending = pending[split_at:]
         return chunks
+
+    @staticmethod
+    def _find_split_boundary(text: str, *, limit: int) -> int:
+        if len(text) <= limit:
+            return len(text)
+
+        for idx in range(limit - 1, max(limit - 240, 0), -1):
+            if text[idx] in SPLIT_PREFER_CHARS:
+                return idx + 1
+
+        split_at = text.rfind("\n", 0, limit)
+        if split_at > 0:
+            return split_at
+
+        split_at = text.rfind(" ", 0, limit)
+        if split_at > 0:
+            return split_at
+        return limit
 
     @staticmethod
     async def _reply(update: Update, text: str) -> None:

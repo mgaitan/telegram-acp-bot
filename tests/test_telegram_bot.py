@@ -28,6 +28,11 @@ EXPECTED_OUTBOUND_DOCUMENTS = 2
 TEST_CHAT_ID = 100
 EXPECTED_TWO_MESSAGES = 2
 EXPECTED_TAIL_LEN = 2
+EXPECTED_SPLIT_BOUNDARY_AFTER_DELIMITER = 3
+EXPECTED_SPLIT_BOUNDARY_WHITESPACE = 2
+EXPECTED_SPLIT_BOUNDARY_LIMIT = 4
+EXPECTED_SHORT_TEXT_LEN = 3
+EXPECTED_NEWLINE_FALLBACK_INDEX = 2
 
 
 class MarkdownFailureError(TelegramError):
@@ -56,6 +61,7 @@ class DummyMessage:
         self.photos: list[object] = []
         self.documents: list[object] = []
         self.stream_edits: list[str] = []
+        self.stream_edit_kwargs: list[dict[str, object]] = []
 
     async def reply_text(self, text: str, **kwargs: object) -> object | None:
         if self.fail_markdown and kwargs.get("parse_mode") is not None:
@@ -66,7 +72,7 @@ class DummyMessage:
         return SimpleNamespace(edit_text=self._edit_stream_text)
 
     async def _edit_stream_text(self, text: str, **kwargs: object) -> None:
-        del kwargs
+        self.stream_edit_kwargs.append(kwargs)
         self.stream_edits.append(text)
 
     async def reply_photo(self, *, photo: object) -> None:
@@ -429,7 +435,8 @@ def test_on_text_streams_chunks_and_avoids_duplicate_final_reply() -> None:
 
     assert update.message is not None
     assert update.message.replies == ["Hola "]
-    assert update.message.stream_edits == ["Hola mundo"]
+    assert update.message.stream_edits
+    assert update.message.stream_edits[-1] == "Hola mundo"
 
 
 def test_follow_mode_controls_tool_progress_visibility() -> None:
@@ -526,6 +533,22 @@ def test_finalize_streamed_text_paths() -> None:
 
     assert " + suffix" in update.message.replies
     assert "whole" in update.message.stream_edits
+    assert {"parse_mode": "Markdown"} in update.message.stream_edit_kwargs
+
+
+def test_apply_final_markdown_fallbacks_on_error() -> None:
+    update = make_update(text="x")
+    assert update.message is not None
+
+    class FailingMarkdownEdit:
+        async def edit_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
+            raise MarkdownFailureError
+
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    state.text_messages = [cast(Message, FailingMarkdownEdit())]
+    state.rendered_chunks = ["*bold*"]
+    asyncio.run(TelegramBridge._apply_final_markdown(state))
 
 
 def test_stream_helpers_cover_empty_inputs() -> None:
@@ -543,7 +566,37 @@ def test_stream_helpers_cover_empty_inputs() -> None:
 def test_split_text_handles_empty_and_newline_chunks() -> None:
     assert TelegramBridge._split_text("") == [""]
     chunks = TelegramBridge._split_text("a\nb\nc", limit=2)
-    assert chunks == ["a", "\nb", "\nc"]
+    assert chunks == ["a\n", "b\n", "c"]
+
+
+def test_split_text_prefers_sentence_delimiters() -> None:
+    text = "uno. dos. tres."
+    chunks = TelegramBridge._split_text(text, limit=9)
+    assert chunks == ["uno. dos.", " tres."]
+
+
+def test_find_split_boundary_fallbacks() -> None:
+    assert (
+        TelegramBridge._find_split_boundary("aa\nbb", limit=EXPECTED_SPLIT_BOUNDARY_LIMIT)
+        == EXPECTED_SPLIT_BOUNDARY_AFTER_DELIMITER
+    )
+    assert (
+        TelegramBridge._find_split_boundary("aa bb", limit=EXPECTED_SPLIT_BOUNDARY_LIMIT)
+        == EXPECTED_SPLIT_BOUNDARY_WHITESPACE
+    )
+    assert (
+        TelegramBridge._find_split_boundary("aabbcc", limit=EXPECTED_SPLIT_BOUNDARY_LIMIT)
+        == EXPECTED_SPLIT_BOUNDARY_LIMIT
+    )
+
+
+def test_find_split_boundary_short_text_returns_length() -> None:
+    assert TelegramBridge._find_split_boundary("abc", limit=10) == EXPECTED_SHORT_TEXT_LEN
+
+
+def test_find_split_boundary_uses_newline_outside_preferred_window() -> None:
+    text = "ab\n" + ("x" * 400)
+    assert TelegramBridge._find_split_boundary(text, limit=300) == EXPECTED_NEWLINE_FALLBACK_INDEX
 
 
 def test_merge_stream_chunk_handles_accumulative_and_regressive_chunks() -> None:
@@ -559,6 +612,28 @@ def test_merge_stream_chunk_handles_accumulative_and_regressive_chunks() -> None
     assert state.assembled_text == "Voy a revisar"
 
 
+def test_merge_stream_chunk_inserts_separator_for_non_accumulative_chunks() -> None:
+    update = make_update(text="hello")
+    assert update.message is not None
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    state.assembled_text = "Primera oración."
+    state.last_chunk = "Primera oración."
+
+    assert TelegramBridge._merge_stream_chunk(state, "Segunda oración.") is True
+    assert state.assembled_text == "Primera oración.\n\nSegunda oración."
+
+
+def test_merge_text_with_separator_edge_cases() -> None:
+    assert TelegramBridge._merge_text_with_separator("", "abc") == "abc"
+    assert TelegramBridge._merge_text_with_separator("abc", "") == "abc"
+    assert TelegramBridge._merge_text_with_separator("abc", "def") == "abcdef"
+    assert TelegramBridge._merge_text_with_separator("abc,", "def") == "abc, def"
+    assert TelegramBridge._merge_text_with_separator("abc.", "def") == "abc. def"
+    assert TelegramBridge._merge_text_with_separator("abc.", "Def") == "abc.\n\nDef"
+    assert TelegramBridge._merge_text_with_separator("abc.", "- item") == "abc.\n\n- item"
+    assert TelegramBridge._merge_text_with_separator("abc-", "def") == "abc- def"
+
+
 def test_render_stream_text_ignores_empty_chunks() -> None:
     bridge = make_bridge()
     update = make_update(text="hello")
@@ -566,6 +641,52 @@ def test_render_stream_text_ignores_empty_chunks() -> None:
     state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
     asyncio.run(bridge._render_stream_text(state, []))
     assert update.message.replies == []
+
+
+def test_stream_event_render_is_serialized_per_chat() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    bridge._active_streams[TEST_CHAT_ID] = state
+
+    async def run_events() -> None:
+        await asyncio.gather(
+            bridge.on_stream_event(TEST_CHAT_ID, AgentStreamEvent(kind="message_chunk", text="Hola")),
+            bridge.on_stream_event(TEST_CHAT_ID, AgentStreamEvent(kind="message_chunk", text="Hola mundo")),
+        )
+
+    asyncio.run(run_events())
+    assert len(update.message.replies) == 1
+    assert state.assembled_text == "Hola mundo"
+
+
+def test_permission_request_starts_new_stream_segment() -> None:
+    bridge = make_bridge()
+    dummy_bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=dummy_bot))
+    update = make_update(text="hello", chat_id=TEST_CHAT_ID)
+    assert update.message is not None
+
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    state.assembled_text = "contenido previo"
+    state.text_messages = [cast(Message, SimpleNamespace(edit_text=update.message._edit_stream_text))]
+    state.rendered_chunks = ["contenido previo"]
+    bridge._active_streams[TEST_CHAT_ID] = state
+
+    request = PermissionRequest(
+        chat_id=TEST_CHAT_ID,
+        request_id="perm-segment",
+        tool_title="Run ls",
+        tool_call_id="call-segment",
+        available_actions=("once", "deny"),
+    )
+    asyncio.run(bridge.on_permission_request(request))
+
+    assert state.segment_start == len("contenido previo")
+    assert state.text_messages == []
+    assert state.rendered_chunks == []
+    assert len(dummy_bot.sent_messages) == 1
 
 
 def test_on_message_with_photo_attachment() -> None:

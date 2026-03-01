@@ -10,6 +10,8 @@ import pytest
 
 from telegram_acp_bot import get_version, main
 
+STDIO_LIMIT_TEST_VALUE = 2_097_152
+
 
 @pytest.fixture(autouse=True)
 def isolate_token_sources(monkeypatch: pytest.MonkeyPatch, mocker):
@@ -45,6 +47,27 @@ def test_main_runs_bot(mocker) -> None:
     mock_run_polling.assert_called_once()
 
 
+def test_main_passes_stdio_limit_to_service(mocker) -> None:
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    service_ctor = mocker.patch("telegram_acp_bot.AcpAgentService")
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--acp-stdio-limit",
+                str(STDIO_LIMIT_TEST_VALUE),
+            ]
+        )
+        == 0
+    )
+    service_ctor.assert_called_once()
+    assert service_ctor.call_args.kwargs["stdio_limit"] == STDIO_LIMIT_TEST_VALUE
+
+
 def test_main_uses_env_token(mocker, monkeypatch) -> None:
     """Run path uses TELEGRAM_BOT_TOKEN when loaded from environment."""
     mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
@@ -59,6 +82,12 @@ def test_main_rejects_blank_agent_command(mocker) -> None:
     mocker.patch("telegram_acp_bot.run_polling", return_value=0)
     with pytest.raises(SystemExit):
         main(["--telegram-token", "TOKEN", "--agent-command", "   "])
+
+
+def test_main_rejects_non_positive_stdio_limit(mocker) -> None:
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--acp-stdio-limit", "0"])
 
 
 def test_show_help(capsys: pytest.CaptureFixture) -> None:

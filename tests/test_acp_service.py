@@ -398,6 +398,34 @@ def test_new_session_and_prompt(tmp_path: Path) -> None:
     assert connection.prompt_calls == ["real-session"]
 
 
+def test_new_session_passes_configured_stdio_limit(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="limit-session")
+    captured_limits: list[int | None] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args
+        captured_limits.append(kwargs.get("limit"))
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        stdio_limit=2_097_152,
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    session_id = asyncio.run(service.new_session(chat_id=99, workspace=tmp_path))
+    assert session_id == "limit-session"
+    assert captured_limits == [2_097_152]
+
+
 def test_stream_handler_receives_chat_scoped_updates(tmp_path: Path) -> None:
     process = FakeProcess()
     connection = FakeConnection(session_id="stream-session")
@@ -434,6 +462,11 @@ def test_prompt_without_active_session_returns_none() -> None:
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     reply = asyncio.run(service.prompt(chat_id=99, text="hi"))
     assert reply is None
+
+
+def test_service_rejects_non_positive_stdio_limit() -> None:
+    with pytest.raises(ValueError):
+        AcpAgentService(SessionRegistry(), program="agent", args=[], stdio_limit=0)
 
 
 def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path) -> None:

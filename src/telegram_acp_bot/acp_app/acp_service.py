@@ -309,14 +309,18 @@ class AcpAgentService:
         args: list[str],
         default_permission_mode: PermissionMode = "ask",
         permission_event_output: PermissionEventOutput = "stdout",
+        stdio_limit: int = 1_048_576,
         connector: AcpConnectionFactory | None = None,
         spawner: AcpSpawnFn | None = None,
     ) -> None:
+        if stdio_limit <= 0:
+            raise ValueError(stdio_limit)
         self._registry = registry
         self._program = program
         self._args = args
         self._default_permission_mode = default_permission_mode
         self._permission_event_output = permission_event_output
+        self._stdio_limit = stdio_limit
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
         self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
@@ -339,6 +343,7 @@ class AcpAgentService:
             *self._args,
             stdin=aio_subprocess.PIPE,
             stdout=aio_subprocess.PIPE,
+            limit=self._stdio_limit,
         )
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
