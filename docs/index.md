@@ -48,6 +48,10 @@ Attachment behavior:
 - Telegram inbound photos/documents are forwarded to ACP prompts.
 - ACP `file://` resources are delivered back as Telegram attachments when the file is inside the active workspace.
 
+Tool activity behavior:
+- ACP tool updates are emitted as separate Telegram messages grouped by tool kind (`think`, `execute`, `read`, etc.).
+- The final assistant answer is sent as a separate message after those activity blocks.
+
 Permission behavior:
 - By default (`ACP_PERMISSION_MODE=ask`), permission requests are shown in Telegram with inline buttons.
 - You can set startup defaults with:

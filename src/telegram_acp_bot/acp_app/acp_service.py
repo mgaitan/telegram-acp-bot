@@ -43,6 +43,7 @@ from acp.schema import (
 )
 
 from telegram_acp_bot.acp_app.models import (
+    AgentActivityBlock,
     AgentReply,
     FilePayload,
     ImagePayload,
@@ -53,10 +54,12 @@ from telegram_acp_bot.acp_app.models import (
     PermissionRequest,
     PromptFile,
     PromptImage,
+    ToolCallStatus,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 logger = logging.getLogger(__name__)
+TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 
 
 class AcpConnectionFactory(Protocol):
@@ -107,6 +110,14 @@ class _PendingPermission:
     future: asyncio.Future[RequestPermissionResponse]
 
 
+@dataclass(slots=True)
+class _ActiveToolBlock:
+    tool_call_id: str
+    kind: str
+    title: str
+    chunks: list[str] = field(default_factory=list)
+
+
 class _AcpClient:
     """ACP client callbacks that accumulate agent text chunks per session."""
 
@@ -115,23 +126,36 @@ class _AcpClient:
         *,
         permission_decider: Callable[[str, list[PermissionOption], ToolCall], Awaitable[RequestPermissionResponse]],
         event_reporter: Callable[[str], None] | None = None,
+        activity_reporter: Callable[[str, AgentActivityBlock], Awaitable[None]] | None = None,
     ) -> None:
         self._permission_decider = permission_decider
         self._event_reporter = event_reporter
+        self._activity_reporter = activity_reporter
         self._buffers: dict[str, list[str]] = {}
+        self._pending_non_tool_text: dict[str, list[str]] = {}
         self._images: dict[str, list[ImagePayload]] = {}
         self._files: dict[str, list[FilePayload]] = {}
+        self._active_tool_blocks: dict[str, _ActiveToolBlock | None] = {}
+        self._completed_tool_blocks: dict[str, list[AgentActivityBlock]] = {}
 
     def start_capture(self, session_id: str) -> None:
         self._buffers[session_id] = []
+        self._pending_non_tool_text[session_id] = []
         self._images[session_id] = []
         self._files[session_id] = []
+        self._active_tool_blocks[session_id] = None
+        self._completed_tool_blocks[session_id] = []
 
-    def finish_capture(self, session_id: str) -> AgentReply:
+    async def finish_capture(self, session_id: str) -> AgentReply:
+        await self._close_active_tool_block(session_id=session_id, status="in_progress")
         chunks = self._buffers.pop(session_id, [])
+        pending_text = self._pending_non_tool_text.pop(session_id, [])
         images = tuple(self._images.pop(session_id, []))
         files = tuple(self._files.pop(session_id, []))
-        return AgentReply(text="".join(chunks).strip(), images=images, files=files)
+        activity_blocks = tuple(self._completed_tool_blocks.pop(session_id, []))
+        self._active_tool_blocks.pop(session_id, None)
+        final_text = "".join(chunks + pending_text).strip()
+        return AgentReply(text=final_text, activity_blocks=activity_blocks, images=images, files=files)
 
     async def request_permission(
         self, options: list[PermissionOption], session_id: str, tool_call: ToolCall, **kwargs: object
@@ -153,11 +177,28 @@ class _AcpClient:
         if isinstance(update, ToolCallStart):
             label = update.kind or "other"
             self._report_event(f"tool start {update.tool_call_id} {update.title} ({label})")
+            await self._flush_pending_non_tool_text(session_id=session_id)
+            await self._open_tool_block(
+                session_id=session_id,
+                tool_call_id=update.tool_call_id,
+                kind=label,
+                title=update.title,
+            )
+            if label != "think":
+                await self._emit_activity_block(
+                    session_id=session_id,
+                    block=AgentActivityBlock(kind=label, title=update.title, status="in_progress"),
+                )
             return
         if isinstance(update, ToolCallProgress):
             status = update.status or "in_progress"
             title = update.title or "tool"
             self._report_event(f"tool {status} {update.tool_call_id} {title}")
+            active_block = self._active_tool_blocks.get(session_id)
+            if status in TERMINAL_TOOL_STATUSES and active_block is not None:
+                if active_block.tool_call_id != update.tool_call_id:
+                    return
+                await self._close_active_tool_block(session_id=session_id, status=status)
             return
         if not isinstance(update, AgentMessageChunk):
             return
@@ -167,6 +208,7 @@ class _AcpClient:
     def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:
         content = update.content
         text = "<content>"
+        is_text_chunk = isinstance(content, TextContentBlock)
         if isinstance(content, TextContentBlock):
             text = content.text
         elif isinstance(content, ImageContentBlock):
@@ -201,11 +243,61 @@ class _AcpClient:
                     )
                 )
 
+        active_block = self._active_tool_blocks.get(session_id)
+        if active_block is not None:
+            active_block.chunks.append(text)
+            return
+
+        if is_text_chunk:
+            self._pending_non_tool_text.setdefault(session_id, []).append(text)
+            return
         self._buffers.setdefault(session_id, []).append(text)
+
+    async def _open_tool_block(self, *, session_id: str, tool_call_id: str, kind: str, title: str) -> None:
+        await self._close_active_tool_block(session_id=session_id, status="in_progress")
+        self._active_tool_blocks[session_id] = _ActiveToolBlock(
+            tool_call_id=tool_call_id,
+            kind=kind,
+            title=title,
+        )
+
+    async def _close_active_tool_block(self, *, session_id: str, status: str) -> None:
+        active_block = self._active_tool_blocks.get(session_id)
+        if active_block is None:
+            return
+
+        normalized_status = status if status in TERMINAL_TOOL_STATUSES else "in_progress"
+        block = AgentActivityBlock(
+            kind=active_block.kind,
+            title=active_block.title,
+            status=cast(ToolCallStatus, normalized_status),
+            text="".join(active_block.chunks).strip(),
+        )
+        self._completed_tool_blocks.setdefault(session_id, []).append(block)
+        self._active_tool_blocks[session_id] = None
+        if block.kind == "think" or block.text:
+            await self._emit_activity_block(session_id=session_id, block=block)
 
     def _report_event(self, event: str) -> None:
         if self._event_reporter is not None:
             self._event_reporter(event)
+
+    async def _emit_activity_block(self, *, session_id: str, block: AgentActivityBlock) -> None:
+        if self._activity_reporter is None:
+            return
+        await self._activity_reporter(session_id, block)
+
+    async def _flush_pending_non_tool_text(self, *, session_id: str) -> None:
+        pending = self._pending_non_tool_text.get(session_id)
+        if not pending:
+            return
+        text = "".join(pending).strip()
+        pending.clear()
+        if not text:
+            return
+        block = AgentActivityBlock(kind="think", title="Reasoning", status="completed", text=text)
+        self._completed_tool_blocks.setdefault(session_id, []).append(block)
+        await self._emit_activity_block(session_id=session_id, block=block)
 
     async def write_text_file(
         self, content: str, path: str, session_id: str, **kwargs: object
@@ -292,6 +384,7 @@ class AcpAgentService:
         self._live_by_chat: dict[int, _LiveSession] = {}
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
+        self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
@@ -312,7 +405,11 @@ class AcpAgentService:
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
 
-        client = _AcpClient(permission_decider=self._decide_permission, event_reporter=self._report_permission_event)
+        client = _AcpClient(
+            permission_decider=self._decide_permission,
+            event_reporter=self._report_permission_event,
+            activity_reporter=self._forward_activity_event,
+        )
         connection = self._connector(client, process.stdin, process.stdout)
         await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -364,7 +461,7 @@ class AcpAgentService:
                     )
 
             await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
-            response = live.client.finish_capture(live.acp_session_id)
+            response = await live.client.finish_capture(live.acp_session_id)
             live.active_prompt_auto_approve = False
             response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
             text = response.text or "(no text response)"
@@ -432,6 +529,12 @@ class AcpAgentService:
         handler: Callable[[PermissionRequest], Awaitable[None]] | None,
     ) -> None:
         self._permission_prompt_handler = handler
+
+    def set_activity_event_handler(
+        self,
+        handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
+    ) -> None:
+        self._activity_event_handler = handler
 
     async def respond_permission_request(
         self,
@@ -561,6 +664,15 @@ class AcpAgentService:
         if self._permission_event_output == "stdout":
             logger.info("ACP permission event: %s", event)
 
+    async def _forward_activity_event(self, session_id: str, block: AgentActivityBlock) -> None:
+        handler = self._activity_event_handler
+        if handler is None:
+            return
+        for chat_id, live in self._live_by_chat.items():
+            if live.acp_session_id == session_id:
+                await handler(chat_id, block)
+                return
+
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""
         images = list(response.images)
@@ -606,7 +718,12 @@ class AcpAgentService:
             warning_text = "\n".join(f"Attachment warning: {warning}" for warning in warnings)
             text = f"{text}\n{warning_text}".strip() if text else warning_text
 
-        return AgentReply(text=text, images=tuple(images), files=tuple(files))
+        return AgentReply(
+            text=text,
+            activity_blocks=response.activity_blocks,
+            images=tuple(images),
+            files=tuple(files),
+        )
 
     @staticmethod
     def _resolve_local_file_uri(uri: str, workspace_root: Path) -> tuple[Path | None, str | None]:

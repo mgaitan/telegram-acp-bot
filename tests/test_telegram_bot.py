@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -12,7 +13,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
-from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, ImagePayload, PermissionRequest
+from telegram_acp_bot.acp_app.models import AgentActivityBlock, AgentReply, FilePayload, ImagePayload, PermissionRequest
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
@@ -26,6 +27,7 @@ from telegram_acp_bot.telegram.bot import (
 
 EXPECTED_OUTBOUND_DOCUMENTS = 2
 TEST_CHAT_ID = 100
+EXPECTED_ACTIVITY_MESSAGES = 3
 
 
 class MarkdownFailureError(TelegramError):
@@ -92,6 +94,13 @@ class DummyBot:
         self.sent_messages.append(kwargs)
 
 
+class FailingMarkdownBot(DummyBot):
+    async def send_message(self, **kwargs: object) -> None:
+        if kwargs.get("parse_mode") is not None:
+            raise MarkdownFailureError
+        await super().send_message(**kwargs)
+
+
 class DummyCallbackQuery:
     def __init__(self, data: str) -> None:
         self.data = data
@@ -108,6 +117,58 @@ class DummyCallbackQuery:
 
     async def edit_message_text(self, text: str) -> None:
         self.edited_text = text
+
+
+class LiveActivityService:
+    def __init__(self) -> None:
+        self._activity_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
+
+    async def new_session(self, *, chat_id: int, workspace):
+        del workspace
+        return f"s-{chat_id}"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del text, images, files
+        if self._activity_handler is not None:
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(
+                    kind="think",
+                    title="Inspecting history",
+                    status="completed",
+                    text="Checking latest commit touching tests.",
+                ),
+            )
+        return AgentReply(text="Final response.")
+
+    def get_workspace(self, *, chat_id: int):
+        del chat_id
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+    def set_activity_event_handler(self, handler):
+        self._activity_handler = handler
 
 
 def make_update(  # noqa: PLR0913
@@ -454,6 +515,106 @@ def test_outbound_agent_attachments_are_sent() -> None:
     assert len(update.message.documents) == EXPECTED_OUTBOUND_DOCUMENTS
 
 
+def test_on_message_renders_activity_blocks_before_final_reply() -> None:
+    class ActivityService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del workspace
+            return f"s-{chat_id}"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            return AgentReply(
+                text="Done.",
+                activity_blocks=(
+                    AgentActivityBlock(
+                        kind="think",
+                        title="Draft plan",
+                        status="completed",
+                        text="Need to inspect repository files.",
+                    ),
+                    AgentActivityBlock(
+                        kind="execute",
+                        title="Run tests",
+                        status="completed",
+                        text="uv run pytest",
+                    ),
+                ),
+            )
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, ActivityService()))
+    update = make_update(text="hello")
+
+    asyncio.run(bridge.on_message(update, make_context()))
+
+    assert update.message is not None
+    assert len(update.message.replies) == EXPECTED_ACTIVITY_MESSAGES
+    assert "*💡 Thinking...*" in update.message.replies[0]
+    assert "Draft plan" in update.message.replies[0]
+    assert "*⚙️ Tool call*" in update.message.replies[1]
+    assert update.message.replies[2] == "Done."
+
+
+def test_on_message_sends_live_activity_events_via_app_bot() -> None:
+    service = LiveActivityService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update = make_update(text="hello")
+    context = make_context()
+    bridge._app = cast(Application, SimpleNamespace(bot=context.bot))
+
+    asyncio.run(bridge.on_message(update, context))
+
+    assert update.message is not None
+    assert update.message.replies[-1] == "Final response."
+    assert context.bot.sent_messages
+    assert "*💡 Thinking...*" in cast(str, context.bot.sent_messages[0]["text"])
+
+
+def test_on_activity_event_without_app_is_noop() -> None:
+    bridge = make_bridge()
+    block = AgentActivityBlock(kind="think", title="x", status="completed", text="y")
+    asyncio.run(bridge.on_activity_event(TEST_CHAT_ID, block))
+
+
+def test_on_activity_event_markdown_fallback() -> None:
+    bridge = make_bridge()
+    failing_bot = FailingMarkdownBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=failing_bot))
+    block = AgentActivityBlock(kind="execute", title="Run cmd", status="in_progress", text="")
+
+    asyncio.run(bridge.on_activity_event(TEST_CHAT_ID, block))
+
+    assert failing_bot.sent_messages
+    assert "parse_mode" not in failing_bot.sent_messages[-1]
+
+
 def test_send_helpers_with_no_message() -> None:
     update = make_update(with_message=False)
     image = ImagePayload(data_base64=base64.b64encode(b"img").decode("ascii"), mime_type="image/jpeg")
@@ -461,6 +622,25 @@ def test_send_helpers_with_no_message() -> None:
 
     asyncio.run(TelegramBridge._send_image(update, image))
     asyncio.run(TelegramBridge._send_file(update, file_payload))
+
+
+def test_reply_activity_block_with_no_message_is_noop() -> None:
+    update = make_update(with_message=False)
+    block = AgentActivityBlock(kind="think", title="t", status="completed", text="x")
+    asyncio.run(TelegramBridge._reply_activity_block(update, block))
+
+
+def test_reply_activity_block_failed_status_with_markdown_fallback() -> None:
+    update = make_update()
+    assert update.message is not None
+    update.message.fail_markdown = True
+    block = AgentActivityBlock(kind="other", title="Run command", status="failed", text="boom")
+
+    asyncio.run(TelegramBridge._reply_activity_block(update, block))
+
+    assert update.message.replies[-1].endswith("_Failed_")
+    assert update.message.reply_kwargs[-2] == {"parse_mode": "Markdown"}
+    assert update.message.reply_kwargs[-1] == {}
 
 
 def test_send_file_with_empty_payload() -> None:

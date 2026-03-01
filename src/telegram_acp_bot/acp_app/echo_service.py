@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from telegram_acp_bot.acp_app.models import (
+    AgentActivityBlock,
     AgentReply,
     PermissionDecisionAction,
     PermissionMode,
@@ -23,6 +24,7 @@ class EchoAgentService:
         self._session_permission_mode: dict[int, PermissionMode] = {}
         self._next_prompt_auto_approve: dict[int, bool] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
+        self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._prepare_workspace(workspace)
@@ -90,6 +92,12 @@ class EchoAgentService:
         handler: Callable[[PermissionRequest], Awaitable[None]] | None,
     ) -> None:
         self._permission_prompt_handler = handler
+
+    def set_activity_event_handler(
+        self,
+        handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
+    ) -> None:
+        self._activity_event_handler = handler
 
     async def respond_permission_request(
         self,

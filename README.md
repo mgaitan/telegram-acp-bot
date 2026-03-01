@@ -29,6 +29,7 @@ Current interaction capabilities:
 - `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`
 - Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
 - Plain text prompts
+- Tool activity updates are sent as separate messages per ACP tool kind (for example `💡 Thinking`, `⚙️ Executing`)
 - Image and document attachments from Telegram messages
 - ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace
 - Agent markdown output (with fallback to plain text when Telegram rejects entities)

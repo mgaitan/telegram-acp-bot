@@ -27,7 +27,7 @@ from acp.schema import (
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _PendingPermission
-from telegram_acp_bot.acp_app.models import AgentReply, FilePayload, PromptFile, PromptImage
+from telegram_acp_bot.acp_app.models import AgentActivityBlock, AgentReply, FilePayload, PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 EXPECTED_CAPTURED_FILES = 2
@@ -122,7 +122,7 @@ def test_acp_client_capture_text_and_media_markers() -> None:
     update = AgentMessageChunk(content=text_block("hello"), session_update="agent_message_chunk")
     asyncio.run(client.session_update(session_id=session_id, update=update))
 
-    reply = client.finish_capture(session_id)
+    reply = asyncio.run(client.finish_capture(session_id))
     assert reply.text == "hello"
     assert reply.images == ()
     assert reply.files == ()
@@ -133,7 +133,7 @@ def test_acp_client_ignores_non_message_updates() -> None:
     session_id = "s-ignore"
     client.start_capture(session_id)
     asyncio.run(client.session_update(session_id=session_id, update=SimpleNamespace()))
-    assert client.finish_capture(session_id).text == ""
+    assert asyncio.run(client.finish_capture(session_id)).text == ""
 
 
 def test_acp_client_capture_non_text_content_markers() -> None:
@@ -173,7 +173,7 @@ def test_acp_client_capture_non_text_content_markers() -> None:
     for update in updates:
         asyncio.run(client.session_update(session_id=session_id, update=update))
 
-    reply = client.finish_capture(session_id)
+    reply = asyncio.run(client.finish_capture(session_id))
     assert reply.text == "<image><audio>file:///tmp/r<resource><resource>"
     assert len(reply.images) == 1
     assert len(reply.files) == EXPECTED_CAPTURED_FILES + 1
@@ -186,7 +186,7 @@ def test_acp_client_permission_decision_auto_approve() -> None:
     client.start_capture("s")
     response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "selected"
-    assert client.finish_capture("s").text == ""
+    assert asyncio.run(client.finish_capture("s")).text == ""
 
 
 def test_acp_client_permission_decision_cancelled() -> None:
@@ -201,7 +201,7 @@ def test_acp_client_permission_decision_cancelled() -> None:
     client.start_capture("s")
     response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=tool_call))
     assert response.outcome.outcome == "cancelled"
-    assert client.finish_capture("s").text == ""
+    assert asyncio.run(client.finish_capture("s")).text == ""
 
 
 def test_acp_client_capture_tool_events() -> None:
@@ -224,9 +224,206 @@ def test_acp_client_capture_tool_events() -> None:
 
     asyncio.run(client.session_update(session_id=session_id, update=start))
     asyncio.run(client.session_update(session_id=session_id, update=progress))
-    _ = client.finish_capture(session_id)
+    _ = asyncio.run(client.finish_capture(session_id))
     assert "tool start tool-1 read file (read)" in events[0]
     assert "tool completed tool-1 read file" in events[1]
+
+
+def test_acp_client_emits_live_activity_blocks() -> None:
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-live"
+    client.start_capture(session_id)
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(
+                title="step think", tool_call_id="tool-think", kind="think", session_update="tool_call"
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("plan first"), session_update="agent_message_chunk"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(
+                title="Run command", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
+            ),
+        )
+    )
+
+    assert events[0] == AgentActivityBlock(kind="think", title="step think", status="in_progress", text="plan first")
+    assert events[1] == AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="")
+
+
+def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool() -> None:
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-pending-think"
+    client.start_capture(session_id)
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("first thought"), session_update="agent_message_chunk"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(
+                title="Run git log", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallProgress(
+                tool_call_id="tool-exec",
+                title="Run git log",
+                status="completed",
+                session_update="tool_call_update",
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("final output"), session_update="agent_message_chunk"),
+        )
+    )
+
+    reply = asyncio.run(client.finish_capture(session_id))
+    assert events[0] == AgentActivityBlock(kind="think", title="Reasoning", status="completed", text="first thought")
+    assert events[1] == AgentActivityBlock(kind="execute", title="Run git log", status="in_progress", text="")
+    assert reply.text == "final output"
+
+
+def test_acp_client_drops_empty_non_tool_text_when_flushing() -> None:
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-empty-pending"
+    client.start_capture(session_id)
+    client._pending_non_tool_text[session_id] = ["   "]
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(title="Run cmd", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
+        )
+    )
+
+    assert events == [AgentActivityBlock(kind="execute", title="Run cmd", status="in_progress", text="")]
+
+
+def test_acp_client_groups_tool_output_into_activity_blocks() -> None:
+    client = make_client()
+    session_id = "s-blocks"
+    client.start_capture(session_id)
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(
+                title="thinking step", tool_call_id="tool-think", kind="think", session_update="tool_call"
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("draft plan"), session_update="agent_message_chunk"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallProgress(
+                tool_call_id="tool-think",
+                title="thinking step",
+                status="completed",
+                session_update="tool_call_update",
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("final answer"), session_update="agent_message_chunk"),
+        )
+    )
+
+    reply = asyncio.run(client.finish_capture(session_id))
+    assert reply.text == "final answer"
+    assert reply.activity_blocks == (
+        AgentActivityBlock(kind="think", title="thinking step", status="completed", text="draft plan"),
+    )
+
+
+def test_acp_client_ignores_terminal_progress_for_different_tool() -> None:
+    client = make_client()
+    session_id = "s-mismatch"
+    client.start_capture(session_id)
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(title="tool one", tool_call_id="tool-1", kind="read", session_update="tool_call"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("partial output"), session_update="agent_message_chunk"),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallProgress(
+                tool_call_id="tool-2",
+                title="tool two",
+                status="completed",
+                session_update="tool_call_update",
+            ),
+        )
+    )
+
+    reply = asyncio.run(client.finish_capture(session_id))
+    assert reply.activity_blocks == (
+        AgentActivityBlock(kind="read", title="tool one", status="in_progress", text="partial output"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -773,6 +970,38 @@ def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureF
     with caplog.at_level(logging.INFO):
         service._report_permission_event("y")
     assert any("ACP permission event: y" in record.message for record in caplog.records)
+
+
+def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = FakeConnection(session_id="activity-session")
+    received: list[tuple[int, AgentActivityBlock]] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    async def capture(chat_id: int, block: AgentActivityBlock) -> None:
+        received.append((chat_id, block))
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    asyncio.run(service.new_session(chat_id=7, workspace=tmp_path))
+
+    block = AgentActivityBlock(kind="think", title="t", status="completed", text="x")
+    asyncio.run(service._forward_activity_event("activity-session", block))
+    assert received == []
+
+    service.set_activity_event_handler(capture)
+    asyncio.run(service._forward_activity_event("unknown-session", block))
+    assert received == []
+
+    asyncio.run(service._forward_activity_event("activity-session", block))
+    assert received == [(7, block)]
 
 
 def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch) -> None:

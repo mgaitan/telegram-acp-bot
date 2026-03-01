@@ -14,6 +14,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_acp_bot.acp_app.models import (
+    AgentActivityBlock,
     AgentReply,
     FilePayload,
     ImagePayload,
@@ -28,6 +29,12 @@ from telegram_acp_bot.acp_app.models import (
 PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
 logger = logging.getLogger(__name__)
+KIND_LABELS = {
+    "think": "💡 Thinking...",
+    "execute": "⚙️ Tool call",
+    "read": "📖 Reading",
+    "write": "✍️ Writing",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -76,6 +83,11 @@ class AgentService(Protocol):
         handler: Callable[[PermissionRequest], Awaitable[None]] | None,
     ) -> None: ...
 
+    def set_activity_event_handler(
+        self,
+        handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
+    ) -> None: ...
+
     async def respond_permission_request(
         self,
         *,
@@ -94,6 +106,8 @@ class TelegramBridge:
         self._app: Application | None = None
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
+        if hasattr(self._agent_service, "set_activity_event_handler"):
+            self._agent_service.set_activity_event_handler(self.on_activity_event)
 
     def install(self, app: Application) -> None:
         self._app = app
@@ -206,6 +220,17 @@ class TelegramBridge:
             reply_markup=keyboard,
         )
 
+    async def on_activity_event(self, chat_id: int, block: AgentActivityBlock) -> None:
+        app = self._app
+        if app is None:
+            return
+
+        text = self._format_activity_block(block)
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+        except TelegramError:
+            await app.bot.send_message(chat_id=chat_id, text=text)
+
     async def on_permission_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
         query = update.callback_query
@@ -281,6 +306,9 @@ class TelegramBridge:
             await self._reply(update, "No active session. Use /new first.")
             return
 
+        if self._app is None:
+            for block in reply.activity_blocks:
+                await self._reply_activity_block(update, block)
         await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
 
@@ -402,6 +430,29 @@ class TelegramBridge:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         except TelegramError:
             await update.message.reply_text(text)
+
+    @staticmethod
+    async def _reply_activity_block(update: Update, block: AgentActivityBlock) -> None:
+        if update.message is None:
+            return
+
+        text = TelegramBridge._format_activity_block(block)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except TelegramError:
+            await update.message.reply_text(text)
+
+    @staticmethod
+    def _format_activity_block(block: AgentActivityBlock) -> str:
+        label = KIND_LABELS.get(block.kind, "🧠 Working")
+        text_parts = [f"*{label}*"]
+        if block.title:
+            text_parts.append(block.title)
+        if block.text:
+            text_parts.append(block.text)
+        if block.status == "failed":
+            text_parts.append("_Failed_")
+        return "\n\n".join(text_parts)
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:
