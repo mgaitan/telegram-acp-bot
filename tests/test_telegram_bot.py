@@ -495,13 +495,11 @@ def test_render_stream_text_ignores_edit_errors() -> None:
             del text
             raise MarkdownFailureError
 
-    state = bot_module._StreamingRenderState(
-        source_message=update.message,
-        follow_mode=False,
-        text_message=cast(Message, FailingSentMessage()),
-        text_buffer="value",
-    )
-    asyncio.run(bridge._render_stream_text(state))
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    state.assembled_text = "value"
+    state.text_messages = [cast(Message, FailingSentMessage())]
+    state.rendered_chunks = ["old"]
+    asyncio.run(bridge._render_stream_text(state, ["value"]))
 
 
 def test_finalize_streamed_text_paths() -> None:
@@ -514,22 +512,20 @@ def test_finalize_streamed_text_paths() -> None:
     empty_state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
     asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="b", stream_state=empty_state))
 
-    prefix_state = bot_module._StreamingRenderState(
-        source_message=update.message,
-        follow_mode=False,
-        text_buffer="prefix",
-    )
+    prefix_state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    prefix_state.assembled_text = "prefix"
+    prefix_state.text_messages = [cast(Message, SimpleNamespace(edit_text=update.message._edit_stream_text))]
+    prefix_state.rendered_chunks = ["prefix"]
     asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="prefix + suffix", stream_state=prefix_state))
 
-    mismatch_state = bot_module._StreamingRenderState(
-        source_message=update.message,
-        follow_mode=False,
-        text_buffer="different",
-    )
+    mismatch_state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    mismatch_state.assembled_text = "different"
+    mismatch_state.text_messages = [cast(Message, SimpleNamespace(edit_text=update.message._edit_stream_text))]
+    mismatch_state.rendered_chunks = ["different"]
     asyncio.run(bridge._finalize_streamed_text(update=update, reply_text="whole", stream_state=mismatch_state))
 
     assert " + suffix" in update.message.replies
-    assert "whole" in update.message.replies
+    assert "whole" in update.message.stream_edits
 
 
 def test_stream_helpers_cover_empty_inputs() -> None:
@@ -548,6 +544,28 @@ def test_split_text_handles_empty_and_newline_chunks() -> None:
     assert TelegramBridge._split_text("") == [""]
     chunks = TelegramBridge._split_text("a\nb\nc", limit=2)
     assert chunks == ["a", "\nb", "\nc"]
+
+
+def test_merge_stream_chunk_handles_accumulative_and_regressive_chunks() -> None:
+    update = make_update(text="hello")
+    assert update.message is not None
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+
+    assert TelegramBridge._merge_stream_chunk(state, "Voy") is True
+    assert state.assembled_text == "Voy"
+    assert TelegramBridge._merge_stream_chunk(state, "Voy a revisar") is True
+    assert state.assembled_text == "Voy a revisar"
+    assert TelegramBridge._merge_stream_chunk(state, "Voy a") is False
+    assert state.assembled_text == "Voy a revisar"
+
+
+def test_render_stream_text_ignores_empty_chunks() -> None:
+    bridge = make_bridge()
+    update = make_update(text="hello")
+    assert update.message is not None
+    state = bot_module._StreamingRenderState(source_message=update.message, follow_mode=False)
+    asyncio.run(bridge._render_stream_text(state, []))
+    assert update.message.replies == []
 
 
 def test_on_message_with_photo_attachment() -> None:

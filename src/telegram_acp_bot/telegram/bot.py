@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol, cast
@@ -29,6 +30,8 @@ from telegram_acp_bot.acp_app.models import (
 PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
 TELEGRAM_SAFE_TEXT_LIMIT = 4000
+STREAM_RENDER_INTERVAL_SECONDS = 0.4
+STREAM_RENDER_MIN_DELTA_CHARS = 120
 logger = logging.getLogger(__name__)
 
 
@@ -49,8 +52,11 @@ class ChatRequiredError(ValueError):
 class _StreamingRenderState:
     source_message: Message
     follow_mode: bool
-    text_message: Message | None = None
-    text_buffer: str = ""
+    text_messages: list[Message] = field(default_factory=list)
+    rendered_chunks: list[str] = field(default_factory=list)
+    assembled_text: str = ""
+    last_chunk: str = ""
+    last_render_at: float = 0.0
 
 
 class AgentService(Protocol):
@@ -346,29 +352,73 @@ class TelegramBridge:
         await self._send_follow_event(state, event.text)
 
     async def _append_stream_text(self, state: _StreamingRenderState, chunk: str) -> None:
-        if not chunk:
+        if not self._merge_stream_chunk(state, chunk):
             return
-        remaining = chunk
-        while remaining:
-            space_left = TELEGRAM_SAFE_TEXT_LIMIT - len(state.text_buffer)
-            if space_left <= 0:
-                state.text_message = None
-                state.text_buffer = ""
-                space_left = TELEGRAM_SAFE_TEXT_LIMIT
-            part = remaining[:space_left]
-            remaining = remaining[space_left:]
-            state.text_buffer += part
-            await self._render_stream_text(state)
+        await self._maybe_render_stream_text(state, force=False)
 
-    async def _render_stream_text(self, state: _StreamingRenderState) -> None:
-        if state.text_message is None:
-            state.text_message = await state.source_message.reply_text(state.text_buffer)
+    @staticmethod
+    def _merge_stream_chunk(state: _StreamingRenderState, chunk: str) -> bool:
+        if not chunk:
+            return False
+
+        changed = False
+        if not state.assembled_text:
+            state.assembled_text = chunk
+            changed = True
+        elif state.last_chunk and chunk.startswith(state.last_chunk):
+            delta = chunk[len(state.last_chunk) :]
+            if delta:
+                state.assembled_text += delta
+                changed = True
+        elif state.last_chunk and state.last_chunk.startswith(chunk):
+            # Ignore regressive partial chunks to prevent visual flicker.
+            changed = False
+        else:
+            state.assembled_text += chunk
+            changed = True
+
+        state.last_chunk = chunk
+        return changed
+
+    async def _maybe_render_stream_text(self, state: _StreamingRenderState, *, force: bool) -> None:
+        chunks = self._split_text(state.assembled_text)
+        if chunks == state.rendered_chunks:
             return
-        try:
-            await state.text_message.edit_text(state.text_buffer)
-        except TelegramError:
-            # Some clients reject no-op or transient edits; keep streaming forward.
+
+        loop_time = asyncio.get_running_loop().time()
+        rendered_size = sum(len(chunk) for chunk in state.rendered_chunks)
+        delta_chars = len(state.assembled_text) - rendered_size
+        if (
+            not force
+            and state.last_render_at > 0
+            and loop_time - state.last_render_at < STREAM_RENDER_INTERVAL_SECONDS
+            and delta_chars < STREAM_RENDER_MIN_DELTA_CHARS
+        ):
             return
+
+        await self._render_stream_text(state, chunks)
+        state.last_render_at = loop_time
+
+    async def _render_stream_text(self, state: _StreamingRenderState, chunks: list[str] | None = None) -> None:
+        rendered_chunks = self._split_text(state.assembled_text) if chunks is None else chunks
+        if not rendered_chunks:
+            return
+
+        while len(state.text_messages) < len(rendered_chunks):
+            idx = len(state.text_messages)
+            sent = await state.source_message.reply_text(rendered_chunks[idx])
+            state.text_messages.append(sent)
+            state.rendered_chunks.append(rendered_chunks[idx])
+
+        for idx, chunk in enumerate(rendered_chunks):
+            if state.rendered_chunks[idx] == chunk:
+                continue
+            try:
+                await state.text_messages[idx].edit_text(chunk)
+                state.rendered_chunks[idx] = chunk
+            except TelegramError:
+                # Best effort update; keep state as-is and continue.
+                continue
 
     async def _send_follow_event(self, state: _StreamingRenderState, text: str) -> None:
         if not text:
@@ -387,21 +437,24 @@ class TelegramBridge:
             await self._reply_agent(update, reply_text)
             return
 
-        if not stream_state.text_buffer:
+        if not stream_state.assembled_text:
             await self._reply_agent(update, reply_text)
             return
-        if stream_state.text_buffer == reply_text:
+
+        await self._maybe_render_stream_text(stream_state, force=True)
+        if stream_state.assembled_text == reply_text:
             return
 
         # Post-processing in ACP can append warnings/resources after streamed text.
-        if reply_text.startswith(stream_state.text_buffer):
-            suffix = reply_text[len(stream_state.text_buffer) :]
+        if reply_text.startswith(stream_state.assembled_text):
+            suffix = reply_text[len(stream_state.assembled_text) :]
             if suffix:
                 for chunk in self._split_text(suffix):
                     await stream_state.source_message.reply_text(chunk)
             return
 
-        await self._reply_agent(update, reply_text)
+        stream_state.assembled_text = reply_text
+        await self._maybe_render_stream_text(stream_state, force=True)
 
     async def _extract_prompt_images(
         self,
