@@ -62,6 +62,12 @@ def get_parser() -> argparse.ArgumentParser:
         choices=["stdout", "off"],
         help="Where ACP permission/tool event logs are emitted.",
     )
+    parser.add_argument(
+        "--acp-stdio-limit",
+        default=int(os.getenv("ACP_STDIO_LIMIT", "8388608")),
+        type=int,
+        help="Asyncio StreamReader limit in bytes for ACP stdio transport.",
+    )
     return parser
 
 
@@ -77,6 +83,8 @@ def main(args: list[str] | None = None) -> int:
         parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")
     if not opts.agent_command:
         parser.error("--agent-command (or ACP_AGENT_COMMAND) is required")
+    if opts.acp_stdio_limit <= 0:
+        parser.error("--acp-stdio-limit must be a positive integer")
 
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
@@ -93,6 +101,7 @@ def main(args: list[str] | None = None) -> int:
         args=command_parts[1:],
         default_permission_mode=cast(PermissionMode, opts.permission_mode),
         permission_event_output=cast(PermissionEventOutput, opts.permission_event_output),
+        stdio_limit=opts.acp_stdio_limit,
     )
     bridge = TelegramBridge(config=config, agent_service=service)
     return run_polling(config, bridge)

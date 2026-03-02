@@ -14,6 +14,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from telegram_acp_bot.acp_app.models import (
+    AgentActivityBlock,
     AgentReply,
     FilePayload,
     ImagePayload,
@@ -28,6 +29,14 @@ from telegram_acp_bot.acp_app.models import (
 PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
 logger = logging.getLogger(__name__)
+KIND_LABELS = {
+    "think": "💡 Thinking",
+    "execute": "⚙️ Tool call",
+    "read": "📖 Reading",
+    "search": "🔎 Searching",
+    "edit": "✏️ Editing",
+    "write": "✍️ Writing",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -76,6 +85,11 @@ class AgentService(Protocol):
         handler: Callable[[PermissionRequest], Awaitable[None]] | None,
     ) -> None: ...
 
+    def set_activity_event_handler(
+        self,
+        handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None,
+    ) -> None: ...
+
     async def respond_permission_request(
         self,
         *,
@@ -94,6 +108,8 @@ class TelegramBridge:
         self._app: Application | None = None
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
+        if hasattr(self._agent_service, "set_activity_event_handler"):
+            self._agent_service.set_activity_event_handler(self.on_activity_event)
 
     def install(self, app: Application) -> None:
         self._app = app
@@ -206,6 +222,17 @@ class TelegramBridge:
             reply_markup=keyboard,
         )
 
+    async def on_activity_event(self, chat_id: int, block: AgentActivityBlock) -> None:
+        app = self._app
+        if app is None:
+            return
+
+        text = self._format_activity_block(block)
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+        except TelegramError:
+            await app.bot.send_message(chat_id=chat_id, text=text)
+
     async def on_permission_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
         query = update.callback_query
@@ -276,12 +303,27 @@ class TelegramBridge:
 
         chat_id = self._chat_id(update)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
+        try:
+            reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
+        except ValueError as exc:
+            message = str(exc)
+            if "chunk is longer than limit" in message:
+                await self._reply(
+                    update,
+                    "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
+                    "(or `ACP_STDIO_LIMIT`).",
+                )
+                return
+            raise
         if reply is None:
             await self._reply(update, "No active session. Use /new first.")
             return
 
-        await self._reply_agent(update, reply.text)
+        if self._app is None:
+            for block in reply.activity_blocks:
+                await self._reply_activity_block(update, block)
+        if reply.text.strip():
+            await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
 
     async def _extract_prompt_images(
@@ -402,6 +444,72 @@ class TelegramBridge:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         except TelegramError:
             await update.message.reply_text(text)
+
+    @staticmethod
+    async def _reply_activity_block(update: Update, block: AgentActivityBlock) -> None:
+        if update.message is None:
+            return
+
+        text = TelegramBridge._format_activity_block(block)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except TelegramError:
+            await update.message.reply_text(text)
+
+    @staticmethod
+    def _format_activity_block(block: AgentActivityBlock) -> str:
+        label = KIND_LABELS.get(block.kind, "⚙️ Tool call")
+        text_parts = [f"*{label}*"]
+        normalized_title = TelegramBridge._normalize_activity_title(block)
+        normalized_text = TelegramBridge._normalize_activity_text(block)
+        if normalized_title and normalized_text and normalized_title == normalized_text:
+            normalized_title = ""
+        if normalized_title:
+            text_parts.append(TelegramBridge._escape_markdown_preserving_code(normalized_title))
+        if normalized_text:
+            text_parts.append(TelegramBridge._escape_markdown_preserving_code(normalized_text))
+        if block.status == "failed":
+            text_parts.append("_Failed_")
+        return "\n\n".join(text_parts)
+
+    @staticmethod
+    def _normalize_activity_title(block: AgentActivityBlock) -> str:
+        title = block.title.strip()
+        if block.kind == "think":
+            return ""
+        if block.kind == "execute" and title.startswith("Run "):
+            command = title[4:].strip()
+            if command:
+                safe_command = command.replace("`", "\\`")
+                return f"Run `{safe_command}`"
+        if block.kind == "read" and title.startswith("Read "):
+            return title[5:]
+        return title
+
+    @staticmethod
+    def _normalize_activity_text(block: AgentActivityBlock) -> str:
+        text = block.text.strip()
+        if block.kind == "read" and text.startswith("Read ") and "\n" not in text:
+            return text[5:]
+        return text
+
+    @staticmethod
+    def _escape_markdown_preserving_code(text: str) -> str:
+        escaped: list[str] = []
+        in_code = False
+        for char in text:
+            if char == "`":
+                in_code = not in_code
+                escaped.append(char)
+                continue
+            if in_code:
+                escaped.append(char)
+                continue
+            if char in {"\\", "_", "*", "["}:
+                escaped.append(f"\\{char}")
+                continue
+            escaped.append(char)
+        return "".join(escaped)
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:

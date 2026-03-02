@@ -6,6 +6,7 @@ from typing import Literal
 PermissionMode = Literal["deny", "approve", "ask"]
 PermissionDecisionAction = Literal["once", "always", "deny"]
 PermissionEventOutput = Literal["stdout", "off"]
+ToolCallStatus = Literal["in_progress", "completed", "failed"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -13,8 +14,19 @@ class AgentReply:
     """Normalized response from the agent layer."""
 
     text: str
+    activity_blocks: tuple[AgentActivityBlock, ...] = ()
     images: tuple[ImagePayload, ...] = ()
     files: tuple[FilePayload, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class AgentActivityBlock:
+    """Captured output for one ACP tool-call segment."""
+
+    kind: str
+    title: str
+    status: ToolCallStatus
+    text: str = ""
 
 
 @dataclass(slots=True, frozen=True)

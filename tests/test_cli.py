@@ -10,6 +10,8 @@ import pytest
 
 from telegram_acp_bot import get_version, main
 
+CUSTOM_STDIO_LIMIT = 12_345
+
 
 @pytest.fixture(autouse=True)
 def isolate_token_sources(monkeypatch: pytest.MonkeyPatch, mocker):
@@ -59,6 +61,35 @@ def test_main_rejects_blank_agent_command(mocker) -> None:
     mocker.patch("telegram_acp_bot.run_polling", return_value=0)
     with pytest.raises(SystemExit):
         main(["--telegram-token", "TOKEN", "--agent-command", "   "])
+
+
+def test_main_rejects_non_positive_stdio_limit(mocker) -> None:
+    """ACP stdio limit must be a positive integer."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--acp-stdio-limit", "0"])
+
+
+def test_main_passes_stdio_limit_to_service(mocker) -> None:
+    """CLI forwards acp stdio limit to service constructor."""
+    mock_service = mocker.patch("telegram_acp_bot.AcpAgentService")
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--acp-stdio-limit",
+                str(CUSTOM_STDIO_LIMIT),
+            ]
+        )
+        == 0
+    )
+    assert mock_service.call_args is not None
+    assert mock_service.call_args.kwargs["stdio_limit"] == CUSTOM_STDIO_LIMIT
 
 
 def test_show_help(capsys: pytest.CaptureFixture) -> None:
