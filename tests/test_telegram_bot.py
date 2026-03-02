@@ -199,14 +199,14 @@ def make_bridge(*, allowed_ids: set[int] | None = None) -> TelegramBridge:
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
-def test_make_config() -> None:
+def test_make_config():
     config = make_config(token="T", allowed_user_ids=[1, 2, 2], workspace="~/tmp")
     assert config.token == "T"
     assert config.allowed_user_ids == {1, 2}
     assert config.default_workspace.name == "tmp"
 
 
-def test_workspace_from_relative_arg_uses_default_workspace() -> None:
+def test_workspace_from_relative_arg_uses_default_workspace():
     config = make_config(token="T", allowed_user_ids=[], workspace="/tmp/base")
     bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
@@ -214,7 +214,7 @@ def test_workspace_from_relative_arg_uses_default_workspace() -> None:
     assert workspace == Path("/tmp/base/foo")
 
 
-def test_start_and_help() -> None:
+def test_start_and_help():
     bridge = make_bridge()
     update = make_update(with_message=True)
     context = make_context()
@@ -229,7 +229,7 @@ def test_start_and_help() -> None:
     assert "/perm" not in update.message.replies[1]
 
 
-def test_access_denied() -> None:
+def test_access_denied():
     bridge = make_bridge(allowed_ids={99})
     update = make_update(user_id=1)
     context = make_context()
@@ -240,7 +240,7 @@ def test_access_denied() -> None:
     assert update.message.replies == ["Access denied for this bot."]
 
 
-def test_access_allowed_with_allowlist() -> None:
+def test_access_allowed_with_allowlist():
     bridge = make_bridge(allowed_ids={1})
     update = make_update(user_id=1)
     context = make_context()
@@ -252,7 +252,7 @@ def test_access_allowed_with_allowlist() -> None:
     assert "Use /new" in update.message.replies[0]
 
 
-def test_denied_paths_for_other_handlers() -> None:
+def test_denied_paths_for_other_handlers():
     bridge = make_bridge(allowed_ids={42})
     update = make_update(user_id=7, text="hello")
     context = make_context()
@@ -277,7 +277,7 @@ def test_denied_paths_for_other_handlers() -> None:
     ]
 
 
-def test_new_session_and_session_command() -> None:
+def test_new_session_and_session_command():
     bridge = make_bridge()
     update = make_update()
 
@@ -291,7 +291,7 @@ def test_new_session_and_session_command() -> None:
     assert "Active session workspace:" in update.message.replies[2]
 
 
-def test_new_session_autocreates_relative_workspace_and_reports_it(tmp_path: Path) -> None:
+def test_new_session_autocreates_relative_workspace_and_reports_it(tmp_path: Path):
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path))
     bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
     update = make_update()
@@ -305,7 +305,7 @@ def test_new_session_autocreates_relative_workspace_and_reports_it(tmp_path: Pat
     assert f"Created workspace: `{created_path}`" in update.message.replies[0]
 
 
-def test_new_session_reports_invalid_workspace() -> None:
+def test_new_session_reports_invalid_workspace():
     class InvalidWorkspaceService:
         async def new_session(self, *, chat_id: int, workspace):
             del chat_id, workspace
@@ -327,7 +327,7 @@ def test_new_session_reports_invalid_workspace() -> None:
     assert update.message.replies == ["Invalid workspace: /missing"]
 
 
-def test_new_session_reports_process_stdio_error() -> None:
+def test_new_session_reports_process_stdio_error():
     class BrokenAgentService:
         async def new_session(self, *, chat_id: int, workspace):
             del chat_id, workspace
@@ -349,7 +349,7 @@ def test_new_session_reports_process_stdio_error() -> None:
     assert update.message.replies == ["Failed to start session: agent process did not expose stdio pipes."]
 
 
-def test_new_session_reports_generic_error() -> None:
+def test_new_session_reports_generic_error():
     class BoomError(Exception):
         pass
 
@@ -374,7 +374,7 @@ def test_new_session_reports_generic_error() -> None:
     assert update.message.replies == ["Failed to start session: boom"]
 
 
-def test_on_text_without_and_with_session() -> None:
+def test_on_text_without_and_with_session():
     bridge = make_bridge()
     update = make_update(text="hello")
     context = make_context()
@@ -390,7 +390,7 @@ def test_on_text_without_and_with_session() -> None:
     assert update.message.reply_kwargs[-1] == {"parse_mode": "Markdown"}
 
 
-def test_on_text_markdown_fallback_to_plain() -> None:
+def test_on_text_markdown_fallback_to_plain():
     bridge = make_bridge()
     update = make_update(text="hello")
     assert update.message is not None
@@ -405,7 +405,7 @@ def test_on_text_markdown_fallback_to_plain() -> None:
     assert update.message.reply_kwargs[-1] == {}
 
 
-def test_on_message_with_photo_attachment() -> None:
+def test_on_message_with_photo_attachment():
     bridge = make_bridge()
     photo = [SimpleNamespace(file_id="p1")]
     update = make_update(photo=photo)
@@ -419,7 +419,7 @@ def test_on_message_with_photo_attachment() -> None:
     assert "images=1" in update.message.replies[-1]
 
 
-def test_on_message_with_document_attachment() -> None:
+def test_on_message_with_document_attachment():
     bridge = make_bridge()
     document = SimpleNamespace(file_id="d1", mime_type="text/plain", file_name="note.txt")
     update = make_update(document=document)
@@ -433,7 +433,7 @@ def test_on_message_with_document_attachment() -> None:
     assert "files=1" in update.message.replies[-1]
 
 
-def test_on_message_with_binary_document_attachment() -> None:
+def test_on_message_with_binary_document_attachment():
     bridge = make_bridge()
     document = SimpleNamespace(file_id="bin-doc", mime_type="application/octet-stream", file_name="x.bin")
     update = make_update(document=document)
@@ -447,7 +447,7 @@ def test_on_message_with_binary_document_attachment() -> None:
     assert "files=1" in update.message.replies[-1]
 
 
-def test_on_message_with_image_document_attachment() -> None:
+def test_on_message_with_image_document_attachment():
     bridge = make_bridge()
     document = SimpleNamespace(file_id="img-doc", mime_type="image/png", file_name="x.png")
     update = make_update(document=document)
@@ -461,7 +461,7 @@ def test_on_message_with_image_document_attachment() -> None:
     assert "images=1" in update.message.replies[-1]
 
 
-def test_outbound_agent_attachments_are_sent() -> None:
+def test_outbound_agent_attachments_are_sent():
     class AttachmentService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace
@@ -516,7 +516,7 @@ def test_outbound_agent_attachments_are_sent() -> None:
     assert len(update.message.documents) == EXPECTED_OUTBOUND_DOCUMENTS
 
 
-def test_on_message_renders_activity_blocks_before_final_reply() -> None:
+def test_on_message_renders_activity_blocks_before_final_reply():
     class ActivityService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace
@@ -582,7 +582,7 @@ def test_on_message_renders_activity_blocks_before_final_reply() -> None:
     assert update.message.replies[2] == "Done."
 
 
-def test_on_message_sends_live_activity_events_via_app_bot() -> None:
+def test_on_message_sends_live_activity_events_via_app_bot():
     service = LiveActivityService()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
@@ -598,7 +598,7 @@ def test_on_message_sends_live_activity_events_via_app_bot() -> None:
     assert "*💡 Thinking*" in cast(str, context.bot.sent_messages[0]["text"])
 
 
-def test_on_message_skips_empty_final_text_reply() -> None:
+def test_on_message_skips_empty_final_text_reply():
     class EmptyTextService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace
@@ -645,7 +645,7 @@ def test_on_message_skips_empty_final_text_reply() -> None:
     assert update.message.replies == []
 
 
-def test_on_message_reports_acp_stdio_limit_error() -> None:
+def test_on_message_reports_acp_stdio_limit_error():
     class LimitErrorService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace
@@ -692,7 +692,7 @@ def test_on_message_reports_acp_stdio_limit_error() -> None:
     assert "Agent output exceeded ACP stdio limit." in update.message.replies[-1]
 
 
-def test_on_message_reraises_unrelated_value_error() -> None:
+def test_on_message_reraises_unrelated_value_error():
     class GenericValueErrorService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace
@@ -737,13 +737,13 @@ def test_on_message_reraises_unrelated_value_error() -> None:
         asyncio.run(bridge.on_message(update, context))
 
 
-def test_on_activity_event_without_app_is_noop() -> None:
+def test_on_activity_event_without_app_is_noop():
     bridge = make_bridge()
     block = AgentActivityBlock(kind="think", title="x", status="completed", text="y")
     asyncio.run(bridge.on_activity_event(TEST_CHAT_ID, block))
 
 
-def test_on_activity_event_markdown_fallback() -> None:
+def test_on_activity_event_markdown_fallback():
     bridge = make_bridge()
     failing_bot = FailingMarkdownBot()
     bridge._app = cast(Application, SimpleNamespace(bot=failing_bot))
@@ -755,7 +755,7 @@ def test_on_activity_event_markdown_fallback() -> None:
     assert "parse_mode" not in failing_bot.sent_messages[-1]
 
 
-def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix() -> None:
+def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix():
     block = AgentActivityBlock(
         kind="read", title="Read test_telegram_bot.py", status="completed", text="Read test_telegram_bot.py"
     )
@@ -765,7 +765,7 @@ def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix() -
     assert "\n\nRead test\\_telegram\\_bot.py" not in rendered
 
 
-def test_format_activity_block_preserves_thinking_inline_code() -> None:
+def test_format_activity_block_preserves_thinking_inline_code():
     block = AgentActivityBlock(
         kind="think",
         title="",
@@ -777,13 +777,13 @@ def test_format_activity_block_preserves_thinking_inline_code() -> None:
     assert "`docs/index.md`" in rendered
 
 
-def test_format_activity_block_execute_wraps_command_as_inline_code() -> None:
+def test_format_activity_block_execute_wraps_command_as_inline_code():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
     assert "Run `git diff -- README.md docs/index.md`" in rendered
 
 
-def test_send_helpers_with_no_message() -> None:
+def test_send_helpers_with_no_message():
     update = make_update(with_message=False)
     image = ImagePayload(data_base64=base64.b64encode(b"img").decode("ascii"), mime_type="image/jpeg")
     file_payload = FilePayload(name="out.txt", text_content="content")
@@ -792,13 +792,13 @@ def test_send_helpers_with_no_message() -> None:
     asyncio.run(TelegramBridge._send_file(update, file_payload))
 
 
-def test_reply_activity_block_with_no_message_is_noop() -> None:
+def test_reply_activity_block_with_no_message_is_noop():
     update = make_update(with_message=False)
     block = AgentActivityBlock(kind="think", title="t", status="completed", text="x")
     asyncio.run(TelegramBridge._reply_activity_block(update, block))
 
 
-def test_reply_activity_block_failed_status_with_markdown_fallback() -> None:
+def test_reply_activity_block_failed_status_with_markdown_fallback():
     update = make_update()
     assert update.message is not None
     update.message.fail_markdown = True
@@ -811,7 +811,7 @@ def test_reply_activity_block_failed_status_with_markdown_fallback() -> None:
     assert update.message.reply_kwargs[-1] == {}
 
 
-def test_send_file_with_empty_payload() -> None:
+def test_send_file_with_empty_payload():
     update = make_update()
     assert update.message is not None
     payload = FilePayload(name="empty.bin")
@@ -819,7 +819,7 @@ def test_send_file_with_empty_payload() -> None:
     assert len(update.message.documents) == 1
 
 
-def test_on_permission_request_sends_buttons() -> None:
+def test_on_permission_request_sends_buttons():
     bridge = make_bridge()
     dummy_bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=dummy_bot))
@@ -841,7 +841,7 @@ def test_on_permission_request_sends_buttons() -> None:
     assert markup is not None
 
 
-def test_on_permission_request_without_app_is_noop() -> None:
+def test_on_permission_request_without_app_is_noop():
     bridge = make_bridge()
     request = PermissionRequest(
         chat_id=TEST_CHAT_ID,
@@ -853,7 +853,7 @@ def test_on_permission_request_without_app_is_noop() -> None:
     asyncio.run(bridge.on_permission_request(request))
 
 
-def test_on_permission_callback_accepts_action() -> None:
+def test_on_permission_callback_accepts_action():
     class PermissionService:
         def set_permission_request_handler(self, handler):
             del handler
@@ -883,7 +883,7 @@ def test_on_permission_callback_accepts_action() -> None:
     assert "Decision: Approved this time." in callback.edited_text
 
 
-def test_on_permission_callback_invalid_cases() -> None:
+def test_on_permission_callback_invalid_cases():
     bridge = make_bridge()
     update_no_query = cast(
         Update,
@@ -937,7 +937,7 @@ def test_on_permission_callback_invalid_cases() -> None:
     assert callback_missing_chat.answers[-1] == "Missing chat."
 
 
-def test_on_permission_callback_access_denied() -> None:
+def test_on_permission_callback_access_denied():
     bridge = make_bridge(allowed_ids={9})
     callback = DummyCallbackQuery("perm|req1|deny")
     update = cast(
@@ -953,7 +953,7 @@ def test_on_permission_callback_access_denied() -> None:
     assert callback.answers[-1] == "Access denied."
 
 
-def test_on_permission_callback_expired_request() -> None:
+def test_on_permission_callback_expired_request():
     class ExpiredService:
         def set_permission_request_handler(self, handler):
             del handler
@@ -981,7 +981,7 @@ def test_on_permission_callback_expired_request() -> None:
     assert callback.answers[-1] == "Request expired."
 
 
-def test_on_permission_callback_fallback_to_clear_markup_on_edit_error() -> None:
+def test_on_permission_callback_fallback_to_clear_markup_on_edit_error():
     class PermissionService:
         def set_permission_request_handler(self, handler):
             del handler
@@ -1015,7 +1015,7 @@ def test_on_permission_callback_fallback_to_clear_markup_on_edit_error() -> None
     assert callback.reply_markup_cleared
 
 
-def test_on_permission_callback_uses_query_message_chat_when_effective_chat_missing() -> None:
+def test_on_permission_callback_uses_query_message_chat_when_effective_chat_missing():
     class PermissionService:
         def set_permission_request_handler(self, handler):
             del handler
@@ -1048,7 +1048,7 @@ def test_on_permission_callback_uses_query_message_chat_when_effective_chat_miss
     assert "Decision: Approved this time." in callback.edited_text
 
 
-def test_on_permission_callback_handles_unexpected_exception() -> None:
+def test_on_permission_callback_handles_unexpected_exception():
     class FailingService:
         def set_permission_request_handler(self, handler):
             del handler
@@ -1076,7 +1076,7 @@ def test_on_permission_callback_handles_unexpected_exception() -> None:
     assert callback.answers[-1] == "Permission action failed."
 
 
-def test_cancel_stop_clear_without_session() -> None:
+def test_cancel_stop_clear_without_session():
     bridge = make_bridge()
     update = make_update()
     context = make_context()
@@ -1093,7 +1093,7 @@ def test_cancel_stop_clear_without_session() -> None:
     ]
 
 
-def test_cancel_stop_clear_with_session() -> None:
+def test_cancel_stop_clear_with_session():
     bridge = make_bridge()
     update = make_update()
 
@@ -1111,7 +1111,7 @@ def test_cancel_stop_clear_with_session() -> None:
     ]
 
 
-def test_clear_with_session() -> None:
+def test_clear_with_session():
     bridge = make_bridge()
     update = make_update()
 
@@ -1123,7 +1123,7 @@ def test_clear_with_session() -> None:
     assert update.message.replies[1] == "Cleared current session."
 
 
-def test_on_text_ignores_empty_message() -> None:
+def test_on_text_ignores_empty_message():
     bridge = make_bridge()
     update = make_update(text=None)
     context = make_context()
@@ -1135,19 +1135,19 @@ def test_on_text_ignores_empty_message() -> None:
     assert context.bot.actions == []
 
 
-def test_reply_with_no_message_object() -> None:
+def test_reply_with_no_message_object():
     bridge = make_bridge()
     update = make_update(with_message=False)
 
     asyncio.run(bridge.help(update, make_context()))
 
 
-def test_reply_agent_with_no_message_object() -> None:
+def test_reply_agent_with_no_message_object():
     update = make_update(with_message=False)
     asyncio.run(TelegramBridge._reply_agent(update, "x"))
 
 
-def test_on_text_ignores_when_message_is_missing() -> None:
+def test_on_text_ignores_when_message_is_missing():
     bridge = make_bridge()
     update = make_update(with_message=False)
     context = make_context()
@@ -1156,13 +1156,13 @@ def test_on_text_ignores_when_message_is_missing() -> None:
     assert context.bot.actions == []
 
 
-def test_chat_id_without_chat_raises() -> None:
+def test_chat_id_without_chat_raises():
     update = cast(Update, SimpleNamespace(effective_chat=None))
     with pytest.raises(ChatRequiredError):
         TelegramBridge._chat_id(update)
 
 
-def test_build_application_installs_handlers() -> None:
+def test_build_application_installs_handlers():
     bridge = make_bridge()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
 
@@ -1171,7 +1171,7 @@ def test_build_application_installs_handlers() -> None:
     assert app.update_processor.max_concurrent_updates > 1
 
 
-def test_run_polling(monkeypatch) -> None:
+def test_run_polling(monkeypatch):
     calls: list[object] = []
 
     class DummyApp:
