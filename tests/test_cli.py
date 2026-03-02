@@ -12,6 +12,7 @@ from telegram_acp_bot import get_version, main
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE
 
 CUSTOM_STDIO_LIMIT = 12_345
+CUSTOM_CONNECT_TIMEOUT = 42.5
 
 
 @pytest.fixture(autouse=True)
@@ -112,6 +113,13 @@ def test_main_rejects_non_positive_stdio_limit(mocker):
         main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--acp-stdio-limit", "0"])
 
 
+def test_main_rejects_non_positive_connect_timeout(mocker):
+    """ACP connect timeout must be a positive number."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--acp-connect-timeout", "0"])
+
+
 def test_main_passes_stdio_limit_to_service(mocker):
     """CLI forwards acp stdio limit to service constructor."""
     mock_service = mocker.patch("telegram_acp_bot.AcpAgentService")
@@ -132,6 +140,28 @@ def test_main_passes_stdio_limit_to_service(mocker):
     )
     assert mock_service.call_args is not None
     assert mock_service.call_args.kwargs["stdio_limit"] == CUSTOM_STDIO_LIMIT
+
+
+def test_main_passes_connect_timeout_to_service(mocker):
+    """CLI forwards ACP connect timeout to service constructor."""
+    mock_service = mocker.patch("telegram_acp_bot.AcpAgentService")
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--acp-connect-timeout",
+                str(CUSTOM_CONNECT_TIMEOUT),
+            ]
+        )
+        == 0
+    )
+    assert mock_service.call_args is not None
+    assert mock_service.call_args.kwargs["connect_timeout"] == CUSTOM_CONNECT_TIMEOUT
 
 
 def test_show_help(capsys: pytest.CaptureFixture):

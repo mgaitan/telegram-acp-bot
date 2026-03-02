@@ -377,17 +377,21 @@ class AcpAgentService:
         default_permission_mode: PermissionMode = "ask",
         permission_event_output: PermissionEventOutput = "stdout",
         stdio_limit: int = 8_388_608,
+        connect_timeout: float = 30.0,
         connector: AcpConnectionFactory | None = None,
         spawner: AcpSpawnFn | None = None,
     ) -> None:
         if stdio_limit <= 0:
             raise ValueError(stdio_limit)
+        if connect_timeout <= 0:
+            raise ValueError(connect_timeout)
         self._registry = registry
         self._program = program
         self._args = args
         self._default_permission_mode = default_permission_mode
         self._permission_event_output = permission_event_output
         self._stdio_limit = stdio_limit
+        self._connect_timeout = connect_timeout
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
         self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
@@ -397,6 +401,7 @@ class AcpAgentService:
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
+        logger.info("Starting ACP session for chat_id=%s workspace=%s", chat_id, workspace)
         if workspace.exists() and not workspace.is_dir():
             raise ValueError(workspace)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -412,6 +417,7 @@ class AcpAgentService:
             stdout=aio_subprocess.PIPE,
             limit=self._stdio_limit,
         )
+        logger.debug("Spawned ACP process for chat_id=%s pid=%s", chat_id, getattr(process, "pid", "unknown"))
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
 
@@ -421,12 +427,26 @@ class AcpAgentService:
             activity_reporter=self._forward_activity_event,
         )
         connection = self._connector(client, process.stdin, process.stdout)
-        await connection.initialize(
-            protocol_version=PROTOCOL_VERSION,
-            client_capabilities=ClientCapabilities(),
-            client_info=Implementation(name="telegram-acp-bot", title="Telegram ACP Bot", version="0.1.0"),
-        )
-        session = await connection.new_session(cwd=str(workspace), mcp_servers=[])
+        try:
+            logger.debug("Initializing ACP connection for chat_id=%s", chat_id)
+            await asyncio.wait_for(
+                connection.initialize(
+                    protocol_version=PROTOCOL_VERSION,
+                    client_capabilities=ClientCapabilities(),
+                    client_info=Implementation(name="telegram-acp-bot", title="Telegram ACP Bot", version="0.1.0"),
+                ),
+                timeout=self._connect_timeout,
+            )
+            logger.debug("Requesting ACP new_session for chat_id=%s", chat_id)
+            session = await asyncio.wait_for(
+                connection.new_session(cwd=str(workspace), mcp_servers=[]),
+                timeout=self._connect_timeout,
+            )
+        except TimeoutError as exc:
+            await self._shutdown(process)
+            raise RuntimeError(
+                f"Timed out waiting for ACP agent handshake after {self._connect_timeout:.1f}s."
+            ) from exc
 
         self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session.session_id)
         self._live_by_chat[chat_id] = _LiveSession(
@@ -437,6 +457,7 @@ class AcpAgentService:
             client=client,
             permission_mode=self._default_permission_mode,
         )
+        logger.info("ACP session started for chat_id=%s session_id=%s", chat_id, session.session_id)
         return session.session_id
 
     async def prompt(

@@ -31,6 +31,11 @@ ACP_STDIO_LIMIT
   Increase this if the agent emits very large JSON lines.
   Maps to `--acp-stdio-limit`.
 
+ACP_CONNECT_TIMEOUT
+  Timeout in seconds for ACP initialize/new_session handshake.
+  Prevents `/new` from hanging forever if the agent does not speak ACP over stdio.
+  Maps to `--acp-connect-timeout`.
+
 ACP_LOG_LEVEL
   Application log level.
   Common values: `DEBUG`, `INFO`, `WARNING`, `ERROR`.
@@ -45,5 +50,6 @@ ACP_RESTART_COMMAND="uv run acp-bot --telegram-token 123456:abc --agent-command 
 ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608
+ACP_CONNECT_TIMEOUT=30
 ACP_LOG_LEVEL=INFO
 ```

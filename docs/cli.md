@@ -39,6 +39,10 @@ The bot entrypoint is `acp-bot`.
   Default: {term}`ACP_STDIO_LIMIT`.
   Asyncio stdio reader limit in bytes.
 
+- `--acp-connect-timeout`
+  Default: {term}`ACP_CONNECT_TIMEOUT`.
+  Timeout in seconds for ACP `initialize` + `new_session` handshake.
+
 - `-V`, `--version`
   Print CLI version and exit.
 

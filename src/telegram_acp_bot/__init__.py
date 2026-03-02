@@ -70,6 +70,12 @@ def get_parser() -> argparse.ArgumentParser:
         help="Asyncio StreamReader limit in bytes for ACP stdio transport.",
     )
     parser.add_argument(
+        "--acp-connect-timeout",
+        default=float(os.getenv("ACP_CONNECT_TIMEOUT", "30")),
+        type=float,
+        help="Timeout in seconds for ACP initialize/new_session handshake.",
+    )
+    parser.add_argument(
         "--restart-command",
         default=os.getenv("ACP_RESTART_COMMAND", ""),
         help="Optional command used by /restart to relaunch the bot (e.g. 'uv run acp-bot').",
@@ -91,6 +97,8 @@ def main(args: list[str] | None = None) -> int:
         parser.error("--agent-command (or ACP_AGENT_COMMAND) is required")
     if opts.acp_stdio_limit <= 0:
         parser.error("--acp-stdio-limit must be a positive integer")
+    if opts.acp_connect_timeout <= 0:
+        parser.error("--acp-connect-timeout must be a positive number")
 
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
@@ -109,6 +117,7 @@ def main(args: list[str] | None = None) -> int:
         default_permission_mode=cast(PermissionMode, opts.permission_mode),
         permission_event_output=cast(PermissionEventOutput, opts.permission_event_output),
         stdio_limit=opts.acp_stdio_limit,
+        connect_timeout=opts.acp_connect_timeout,
     )
     bridge = TelegramBridge(config=config, agent_service=service)
     while True:

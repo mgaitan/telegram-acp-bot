@@ -137,6 +137,12 @@ class GenericValueErrorConnection(FakeConnection):
         raise ValueError("unexpected")
 
 
+class HangingInitializeConnection(FakeConnection):
+    async def initialize(self, **kwargs):
+        del kwargs
+        await asyncio.sleep(10)
+
+
 async def test_acp_client_capture_text_and_media_markers():
     client = make_client()
     session_id = "s1"
@@ -515,6 +521,11 @@ async def test_acp_service_rejects_non_positive_stdio_limit():
         AcpAgentService(SessionRegistry(), program="agent", args=[], stdio_limit=0)
 
 
+async def test_acp_service_rejects_non_positive_connect_timeout():
+    with pytest.raises(ValueError):
+        AcpAgentService(SessionRegistry(), program="agent", args=[], connect_timeout=0)
+
+
 async def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
     process = FakeProcess()
     limits: list[int] = []
@@ -540,6 +551,32 @@ async def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
     )
     await service.new_session(chat_id=1, workspace=tmp_path)
     assert limits == [2_000_000]
+
+
+async def test_new_session_times_out_when_agent_does_not_handshake(tmp_path: Path):
+    process = FakeProcess()
+    connection = HangingInitializeConnection(session_id="never")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del client, input_stream, output_stream
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        connect_timeout=0.01,
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+
+    with pytest.raises(RuntimeError, match="Timed out waiting for ACP agent handshake"):
+        await service.new_session(chat_id=1, workspace=tmp_path)
+    assert process.terminated
 
 
 async def test_new_session_and_prompt(tmp_path: Path):
