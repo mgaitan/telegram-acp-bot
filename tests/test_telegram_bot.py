@@ -576,7 +576,7 @@ def test_on_message_renders_activity_blocks_before_final_reply() -> None:
 
     assert update.message is not None
     assert len(update.message.replies) == EXPECTED_ACTIVITY_MESSAGES
-    assert "*💡 Thinking...*" in update.message.replies[0]
+    assert "*💡 Thinking*" in update.message.replies[0]
     assert "Draft plan" not in update.message.replies[0]
     assert "*⚙️ Tool call*" in update.message.replies[1]
     assert update.message.replies[2] == "Done."
@@ -595,7 +595,7 @@ def test_on_message_sends_live_activity_events_via_app_bot() -> None:
     assert update.message is not None
     assert update.message.replies[-1] == "Final response."
     assert context.bot.sent_messages
-    assert "*💡 Thinking...*" in cast(str, context.bot.sent_messages[0]["text"])
+    assert "*💡 Thinking*" in cast(str, context.bot.sent_messages[0]["text"])
 
 
 def test_on_message_skips_empty_final_text_reply() -> None:

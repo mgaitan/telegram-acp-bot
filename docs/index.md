@@ -50,7 +50,10 @@ Attachment behavior:
 
 Tool activity behavior:
 - ACP tool updates are emitted as separate Telegram messages grouped by tool kind (`think`, `execute`, `read`, etc.).
+- Labels currently used in chat are: `💡 Thinking`, `⚙️ Tool call`, `📖 Reading`, `✏️ Editing`, and `🔎 Searching`.
+- Permission prompts for risky actions are sent as independent messages with inline buttons.
 - The final assistant answer is sent as a separate message after those activity blocks.
+- If the final text payload is empty, no dummy "(no text response)" message is emitted.
 
 Permission behavior:
 - By default (`ACP_PERMISSION_MODE=ask`), permission requests are shown in Telegram with inline buttons.

@@ -30,9 +30,11 @@ PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
-    "think": "💡 Thinking...",
+    "think": "💡 Thinking",
     "execute": "⚙️ Tool call",
     "read": "📖 Reading",
+    "search": "🔎 Searching",
+    "edit": "✏️ Editing",
     "write": "✍️ Writing",
 }
 
@@ -456,7 +458,7 @@ class TelegramBridge:
 
     @staticmethod
     def _format_activity_block(block: AgentActivityBlock) -> str:
-        label = KIND_LABELS.get(block.kind, "🧠 Working")
+        label = KIND_LABELS.get(block.kind, "⚙️ Tool call")
         text_parts = [f"*{label}*"]
         normalized_title = TelegramBridge._normalize_activity_title(block)
         normalized_text = TelegramBridge._normalize_activity_text(block)

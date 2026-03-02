@@ -29,10 +29,17 @@ Current interaction capabilities:
 - `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`
 - Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
 - Plain text prompts
-- Tool activity updates are sent as separate messages per ACP tool kind (for example `💡 Thinking`, `⚙️ Executing`)
+- Tool activity updates are sent as separate messages per ACP tool kind
 - Image and document attachments from Telegram messages
 - ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace
 - Agent markdown output (with fallback to plain text when Telegram rejects entities)
+
+Message flow:
+- The bot sends activity blocks while the prompt is running.
+- Common labels are `💡 Thinking`, `⚙️ Tool call`, `📖 Reading`, `✏️ Editing`, and `🔎 Searching`.
+- Permission prompts for risky actions are sent as independent messages with inline buttons.
+- The final answer is sent as a separate message after activity blocks.
+- If the final text is empty, no dummy "(no text response)" message is sent.
 
 You can also store variables in a local `.env` file (it is gitignored):
 
