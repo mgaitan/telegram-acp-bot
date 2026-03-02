@@ -87,6 +87,13 @@ class ProcessLike(Protocol):
     async def wait(self) -> int: ...
 
 
+class AcpHandshakeTimeoutError(RuntimeError):
+    """Raised when ACP initialize/new_session handshake does not finish in time."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        super().__init__(f"Timed out waiting for ACP agent handshake after {timeout_seconds:.1f}s.")
+
+
 @dataclass(slots=True)
 class _LiveSession:
     acp_session_id: str
@@ -444,9 +451,7 @@ class AcpAgentService:
             )
         except TimeoutError as exc:
             await self._shutdown(process)
-            raise RuntimeError(
-                f"Timed out waiting for ACP agent handshake after {self._connect_timeout:.1f}s."
-            ) from exc
+            raise AcpHandshakeTimeoutError(self._connect_timeout) from exc
 
         self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session.session_id)
         self._live_by_chat[chat_id] = _LiveSession(
