@@ -69,6 +69,11 @@ def get_parser() -> argparse.ArgumentParser:
         type=int,
         help="Asyncio StreamReader limit in bytes for ACP stdio transport.",
     )
+    parser.add_argument(
+        "--restart-command",
+        default=os.getenv("ACP_RESTART_COMMAND", ""),
+        help="Optional command used by /restart to relaunch the bot (e.g. 'uv run acp-bot').",
+    )
     return parser
 
 
@@ -90,6 +95,7 @@ def main(args: list[str] | None = None) -> int:
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
         parser.error("--agent-command is empty after parsing")
+    restart_command_parts = shlex.split(opts.restart_command) if opts.restart_command.strip() else None
 
     config = make_config(
         token=opts.telegram_token,
@@ -109,9 +115,17 @@ def main(args: list[str] | None = None) -> int:
         exit_code = run_polling(config, bridge)
         if exit_code != RESTART_EXIT_CODE:
             return exit_code
-        argv = [sys.executable, *sys.argv]
-        logging.info("Restart requested via Telegram command. Re-execing: %s", argv)
         try:
+            if restart_command_parts is not None:
+                logging.info(
+                    "Restart requested via Telegram command. Re-execing restart command: %s",
+                    restart_command_parts,
+                )
+                os.execvp(restart_command_parts[0], restart_command_parts)
+            # TODO: Drop manual re-exec when uv can natively watch local package code and
+            # restart commands for this workflow. Tracking: astral-sh/uv#9652.
+            argv = [sys.executable, *sys.argv]
+            logging.info("Restart requested via Telegram command. Re-execing: %s", argv)
             os.execv(sys.executable, argv)
         except OSError:
             logging.exception("Failed to re-exec process after /restart")

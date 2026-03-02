@@ -51,14 +51,42 @@ def test_main_runs_bot(mocker):
 def test_main_reexecs_process_on_restart_request(mocker):
     """When polling returns restart code, main re-execs current process."""
     mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)
+    mock_execvp = mocker.patch("telegram_acp_bot.os.execvp")
     mock_execv = mocker.patch("telegram_acp_bot.os.execv", side_effect=OSError("exec failed"))
     mocker.patch("telegram_acp_bot.sys.argv", ["acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"])
     mocker.patch("telegram_acp_bot.sys.executable", "/usr/bin/python3")
 
     assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 1
+    mock_execvp.assert_not_called()
     mock_execv.assert_called_once_with(
         "/usr/bin/python3", ["/usr/bin/python3", "acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"]
     )
+
+
+def test_main_reexecs_using_restart_command(mocker):
+    """When restart command is configured, main re-execs using that command."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)
+    mock_execvp = mocker.patch("telegram_acp_bot.os.execvp", side_effect=OSError("execvp failed"))
+    mock_execv = mocker.patch("telegram_acp_bot.os.execv")
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--restart-command",
+                "uv run acp-bot --telegram-token TOKEN --agent-command agent",
+            ]
+        )
+        == 1
+    )
+    mock_execvp.assert_called_once_with(
+        "uv",
+        ["uv", "run", "acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"],
+    )
+    mock_execv.assert_not_called()
 
 
 def test_main_uses_env_token(mocker, monkeypatch):
