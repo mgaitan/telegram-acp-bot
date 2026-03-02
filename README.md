@@ -33,7 +33,7 @@ uvx --from git+https://github.com/mgaitan/telegram-acp-bot acp-bot
 ```
 
 Current interaction capabilities:
-- `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`
+- `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`, `/restart`
 - Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
 - Plain text prompts
 - Tool activity updates are sent as separate messages per ACP tool kind
@@ -47,6 +47,8 @@ Message flow:
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
 - The final answer is sent as a separate message after activity blocks.
 - If the final text is empty, no dummy "(no text response)" message is sent.
+
+For development, `/restart` stops polling and re-execs the current process (`sys.executable + sys.argv`), so you can trigger a relaunch from Telegram after making local changes.
 
 ## Telegram Bot Token
 

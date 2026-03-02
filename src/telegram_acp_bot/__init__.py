@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import shlex
+import sys
 from importlib import metadata
 from typing import cast
 
@@ -18,7 +19,7 @@ from dotenv import load_dotenv
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService
 from telegram_acp_bot.acp_app.models import PermissionEventOutput, PermissionMode
 from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.telegram.bot import TelegramBridge, make_config, run_polling
+from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, TelegramBridge, make_config, run_polling
 
 
 def get_version() -> str:
@@ -104,7 +105,17 @@ def main(args: list[str] | None = None) -> int:
         stdio_limit=opts.acp_stdio_limit,
     )
     bridge = TelegramBridge(config=config, agent_service=service)
-    return run_polling(config, bridge)
+    while True:
+        exit_code = run_polling(config, bridge)
+        if exit_code != RESTART_EXIT_CODE:
+            return exit_code
+        argv = [sys.executable, *sys.argv]
+        logging.info("Restart requested via Telegram command. Re-execing: %s", argv)
+        try:
+            os.execv(sys.executable, argv)
+        except OSError:
+            logging.exception("Failed to re-exec process after /restart")
+            return 1
 
 
 __all__: list[str] = ["get_parser", "main"]

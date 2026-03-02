@@ -9,6 +9,7 @@ from importlib import metadata
 import pytest
 
 from telegram_acp_bot import get_version, main
+from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE
 
 CUSTOM_STDIO_LIMIT = 12_345
 
@@ -45,6 +46,19 @@ def test_main_runs_bot(mocker):
     mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
     assert main(["--telegram-token", "TOKEN", "--agent-command", "agent --flag"]) == 0
     mock_run_polling.assert_called_once()
+
+
+def test_main_reexecs_process_on_restart_request(mocker):
+    """When polling returns restart code, main re-execs current process."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)
+    mock_execv = mocker.patch("telegram_acp_bot.os.execv", side_effect=OSError("exec failed"))
+    mocker.patch("telegram_acp_bot.sys.argv", ["acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"])
+    mocker.patch("telegram_acp_bot.sys.executable", "/usr/bin/python3")
+
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 1
+    mock_execv.assert_called_once_with(
+        "/usr/bin/python3", ["/usr/bin/python3", "acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"]
+    )
 
 
 def test_main_uses_env_token(mocker, monkeypatch):

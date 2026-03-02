@@ -23,6 +23,7 @@ from telegram_acp_bot.acp_app.models import (
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
+    RESTART_EXIT_CODE,
     AgentService,
     ChatRequiredError,
     TelegramBridge,
@@ -198,8 +199,8 @@ def make_update(  # noqa: PLR0913
     )
 
 
-def make_context(*, args: list[str] | None = None):
-    return SimpleNamespace(args=args or [], bot=DummyBot())
+def make_context(*, args: list[str] | None = None, application: object | None = None):
+    return SimpleNamespace(args=args or [], bot=DummyBot(), application=application)
 
 
 def make_bridge(*, allowed_ids: set[int] | None = None) -> TelegramBridge:
@@ -234,7 +235,41 @@ async def test_start_and_help():
     assert "Use /new" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
+    assert "/restart" in update.message.replies[1]
     assert "/perm" not in update.message.replies[1]
+
+
+async def test_restart_requests_app_stop():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+    stop_calls: list[str] = []
+    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+
+    await bridge.restart(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["Restart requested. Re-launching process..."]
+    assert stop_calls == ["stop"]
+
+
+async def test_restart_requires_running_application():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+
+    await bridge.restart(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["Restart is unavailable: application is not running."]
+
+
+async def test_restart_access_denied():
+    bridge = make_bridge(allowed_ids={999})
+    update = make_update(user_id=1, with_message=True)
+
+    await bridge.restart(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["Access denied for this bot."]
 
 
 async def test_access_denied():
@@ -1196,3 +1231,20 @@ async def test_run_polling(monkeypatch):
     bridge = make_bridge()
     assert run_polling(config, bridge) == 0
     assert len(calls) == 1
+
+
+async def test_run_polling_returns_restart_exit_code(monkeypatch):
+    class DummyApp:
+        def run_polling(self, *, allowed_updates):
+            del allowed_updates
+
+    def fake_build_application(config, bridge):
+        del config
+        bridge._restart_requested = True
+        return DummyApp()
+
+    monkeypatch.setattr(bot_module, "build_application", fake_build_application)
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = make_bridge()
+    assert run_polling(config, bridge) == RESTART_EXIT_CODE
