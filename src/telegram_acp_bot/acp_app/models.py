@@ -82,3 +82,7 @@ class PermissionRequest:
     tool_title: str
     tool_call_id: str
     available_actions: tuple[PermissionDecisionAction, ...]
+
+
+class AgentOutputLimitExceededError(RuntimeError):
+    """Raised when the agent emits a stdio line larger than the configured reader limit."""

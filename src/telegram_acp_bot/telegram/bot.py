@@ -15,6 +15,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from telegram_acp_bot.acp_app.models import (
     AgentActivityBlock,
+    AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
     ImagePayload,
@@ -305,16 +306,13 @@ class TelegramBridge:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         try:
             reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
-        except ValueError as exc:
-            message = str(exc)
-            if "chunk is longer than limit" in message:
-                await self._reply(
-                    update,
-                    "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
-                    "(or `ACP_STDIO_LIMIT`).",
-                )
-                return
-            raise
+        except AgentOutputLimitExceededError:
+            await self._reply(
+                update,
+                "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
+                "(or `ACP_STDIO_LIMIT`).",
+            )
+            return
         if reply is None:
             await self._reply(update, "No active session. Use /new first.")
             return
