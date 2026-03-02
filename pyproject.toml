@@ -75,7 +75,7 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["ANN"]
+"tests/**/*.py" = ["ANN", "ASYNC240"]
 "docs/conf.py" = ["A"]
 
 [tool.pytest.ini_options]

@@ -31,6 +31,8 @@ from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _P
 from telegram_acp_bot.acp_app.models import AgentActivityBlock, AgentReply, FilePayload, PromptFile, PromptImage
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
+pytestmark = pytest.mark.asyncio
+
 EXPECTED_CAPTURED_FILES = 2
 
 
@@ -115,29 +117,29 @@ class FileResourceConnection(FakeConnection):
         return SimpleNamespace(stop_reason="end_turn")
 
 
-def test_acp_client_capture_text_and_media_markers():
+async def test_acp_client_capture_text_and_media_markers():
     client = make_client()
     session_id = "s1"
     client.start_capture(session_id)
 
     update = AgentMessageChunk(content=text_block("hello"), session_update="agent_message_chunk")
-    asyncio.run(client.session_update(session_id=session_id, update=update))
+    await client.session_update(session_id=session_id, update=update)
 
-    reply = asyncio.run(client.finish_capture(session_id))
+    reply = await client.finish_capture(session_id)
     assert reply.text == "hello"
     assert reply.images == ()
     assert reply.files == ()
 
 
-def test_acp_client_ignores_non_message_updates():
+async def test_acp_client_ignores_non_message_updates():
     client = make_client()
     session_id = "s-ignore"
     client.start_capture(session_id)
-    asyncio.run(client.session_update(session_id=session_id, update=SimpleNamespace()))
-    assert asyncio.run(client.finish_capture(session_id)).text == ""
+    await client.session_update(session_id=session_id, update=SimpleNamespace())
+    assert (await client.finish_capture(session_id)).text == ""
 
 
-def test_acp_client_capture_non_text_content_markers():
+async def test_acp_client_capture_non_text_content_markers():
     client = make_client()
     session_id = "s2"
     client.start_capture(session_id)
@@ -172,25 +174,25 @@ def test_acp_client_capture_non_text_content_markers():
     ]
 
     for update in updates:
-        asyncio.run(client.session_update(session_id=session_id, update=update))
+        await client.session_update(session_id=session_id, update=update)
 
-    reply = asyncio.run(client.finish_capture(session_id))
+    reply = await client.finish_capture(session_id)
     assert reply.text == "<image><audio>file:///tmp/r<resource><resource>"
     assert len(reply.images) == 1
     assert len(reply.files) == EXPECTED_CAPTURED_FILES + 1
 
 
-def test_acp_client_permission_decision_auto_approve():
+async def test_acp_client_permission_decision_auto_approve():
     client = make_client()
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt-1")
     tool_call = ToolCall(title="execute", tool_call_id="tc-1")
     client.start_capture("s")
-    response = asyncio.run(client.request_permission(options=[option], session_id="s", tool_call=tool_call))
+    response = await client.request_permission(options=[option], session_id="s", tool_call=tool_call)
     assert response.outcome.outcome == "selected"
-    assert asyncio.run(client.finish_capture("s")).text == ""
+    assert (await client.finish_capture("s")).text == ""
 
 
-def test_acp_client_permission_decision_cancelled():
+async def test_acp_client_permission_decision_cancelled():
     async def deny_all(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
         del tool_call
         del options
@@ -200,12 +202,12 @@ def test_acp_client_permission_decision_cancelled():
     client = _AcpClient(permission_decider=deny_all)
     tool_call = ToolCall(title="execute", tool_call_id="tc-2")
     client.start_capture("s")
-    response = asyncio.run(client.request_permission(options=[], session_id="s", tool_call=tool_call))
+    response = await client.request_permission(options=[], session_id="s", tool_call=tool_call)
     assert response.outcome.outcome == "cancelled"
-    assert asyncio.run(client.finish_capture("s")).text == ""
+    assert (await client.finish_capture("s")).text == ""
 
 
-def test_acp_client_capture_tool_events():
+async def test_acp_client_capture_tool_events():
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
         del options, tool_call
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
@@ -223,14 +225,14 @@ def test_acp_client_capture_tool_events():
         session_update="tool_call_update",
     )
 
-    asyncio.run(client.session_update(session_id=session_id, update=start))
-    asyncio.run(client.session_update(session_id=session_id, update=progress))
-    _ = asyncio.run(client.finish_capture(session_id))
+    await client.session_update(session_id=session_id, update=start)
+    await client.session_update(session_id=session_id, update=progress)
+    _ = await client.finish_capture(session_id)
     assert "tool start tool-1 read file (read)" in events[0]
     assert "tool completed tool-1 read file" in events[1]
 
 
-def test_acp_client_emits_live_activity_blocks():
+async def test_acp_client_emits_live_activity_blocks():
     events: list[AgentActivityBlock] = []
 
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
@@ -244,34 +246,24 @@ def test_acp_client_emits_live_activity_blocks():
     session_id = "s-live"
     client.start_capture(session_id)
 
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(
-                title="step think", tool_call_id="tool-think", kind="think", session_update="tool_call"
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="step think", tool_call_id="tool-think", kind="think", session_update="tool_call"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("plan first"), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("plan first"), session_update="agent_message_chunk"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(
-                title="Run command", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="Run command", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
     )
 
     assert events[0] == AgentActivityBlock(kind="think", title="step think", status="in_progress", text="plan first")
     assert events[1] == AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="")
 
 
-def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
+async def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
     events: list[AgentActivityBlock] = []
 
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
@@ -285,45 +277,35 @@ def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
     session_id = "s-pending-think"
     client.start_capture(session_id)
 
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("first thought"), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("first thought"), session_update="agent_message_chunk"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(
-                title="Run git log", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="Run git log", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallProgress(
-                tool_call_id="tool-exec",
-                title="Run git log",
-                status="completed",
-                session_update="tool_call_update",
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallProgress(
+            tool_call_id="tool-exec",
+            title="Run git log",
+            status="completed",
+            session_update="tool_call_update",
+        ),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("final output"), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("final output"), session_update="agent_message_chunk"),
     )
 
-    reply = asyncio.run(client.finish_capture(session_id))
+    reply = await client.finish_capture(session_id)
     assert events[0] == AgentActivityBlock(kind="think", title="", status="completed", text="first thought")
     assert events[1] == AgentActivityBlock(kind="execute", title="Run git log", status="in_progress", text="")
     assert reply.text == "final output"
 
 
-def test_acp_client_drops_empty_non_tool_text_when_flushing():
+async def test_acp_client_drops_empty_non_tool_text_when_flushing():
     events: list[AgentActivityBlock] = []
 
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
@@ -338,117 +320,97 @@ def test_acp_client_drops_empty_non_tool_text_when_flushing():
     client.start_capture(session_id)
     client._pending_non_tool_text[session_id] = ["   "]
 
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(title="Run cmd", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="Run cmd", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
     )
 
     assert events == [AgentActivityBlock(kind="execute", title="Run cmd", status="in_progress", text="")]
 
 
-def test_acp_client_groups_tool_output_into_activity_blocks():
+async def test_acp_client_groups_tool_output_into_activity_blocks():
     client = make_client()
     session_id = "s-blocks"
     client.start_capture(session_id)
 
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(
-                title="thinking step", tool_call_id="tool-think", kind="think", session_update="tool_call"
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="thinking step", tool_call_id="tool-think", kind="think", session_update="tool_call"
+        ),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("draft plan"), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("draft plan"), session_update="agent_message_chunk"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallProgress(
-                tool_call_id="tool-think",
-                title="thinking step",
-                status="completed",
-                session_update="tool_call_update",
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallProgress(
+            tool_call_id="tool-think",
+            title="thinking step",
+            status="completed",
+            session_update="tool_call_update",
+        ),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("final answer"), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("final answer"), session_update="agent_message_chunk"),
     )
 
-    reply = asyncio.run(client.finish_capture(session_id))
+    reply = await client.finish_capture(session_id)
     assert reply.text == "final answer"
     assert reply.activity_blocks == (
         AgentActivityBlock(kind="think", title="thinking step", status="completed", text="draft plan"),
     )
 
 
-def test_acp_client_moves_trailing_non_think_block_text_to_final_reply():
+async def test_acp_client_moves_trailing_non_think_block_text_to_final_reply():
     client = make_client()
     session_id = "s-trailing"
     client.start_capture(session_id)
 
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(
-                title="Run git show", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="Run git show", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
+        ),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("This should be final."), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("This should be final."), session_update="agent_message_chunk"),
     )
 
-    reply = asyncio.run(client.finish_capture(session_id))
+    reply = await client.finish_capture(session_id)
     assert reply.activity_blocks == (
         AgentActivityBlock(kind="execute", title="Run git show", status="in_progress", text=""),
     )
     assert reply.text == "This should be final."
 
 
-def test_acp_client_ignores_terminal_progress_for_different_tool():
+async def test_acp_client_ignores_terminal_progress_for_different_tool():
     client = make_client()
     session_id = "s-mismatch"
     client.start_capture(session_id)
 
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallStart(title="tool one", tool_call_id="tool-1", kind="read", session_update="tool_call"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="tool one", tool_call_id="tool-1", kind="read", session_update="tool_call"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=AgentMessageChunk(content=text_block("partial output"), session_update="agent_message_chunk"),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("partial output"), session_update="agent_message_chunk"),
     )
-    asyncio.run(
-        client.session_update(
-            session_id=session_id,
-            update=ToolCallProgress(
-                tool_call_id="tool-2",
-                title="tool two",
-                status="completed",
-                session_update="tool_call_update",
-            ),
-        )
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallProgress(
+            tool_call_id="tool-2",
+            title="tool two",
+            status="completed",
+            session_update="tool_call_update",
+        ),
     )
 
-    reply = asyncio.run(client.finish_capture(session_id))
+    reply = await client.finish_capture(session_id)
     assert reply.activity_blocks == (AgentActivityBlock(kind="read", title="tool one", status="in_progress", text=""),)
     assert reply.text == "partial output"
 
@@ -465,22 +427,22 @@ def test_acp_client_ignores_terminal_progress_for_different_tool():
         ("kill_terminal", {"session_id": "s", "terminal_id": "t"}),
     ],
 )
-def test_acp_client_unsupported_methods_raise(method_name: str, args: dict[str, str]):
+async def test_acp_client_unsupported_methods_raise(method_name: str, args: dict[str, str]):
     client = make_client()
     method = getattr(client, method_name)
     with pytest.raises(RequestError):
-        asyncio.run(method(**args))
+        await method(**args)
 
 
-def test_acp_client_unsupported_ext_methods_raise():
+async def test_acp_client_unsupported_ext_methods_raise():
     client = make_client()
     with pytest.raises(RequestError):
-        asyncio.run(client.ext_method("x", {}))
+        await client.ext_method("x", {})
     with pytest.raises(RequestError):
-        asyncio.run(client.ext_notification("x", {}))
+        await client.ext_notification("x", {})
 
 
-def test_new_session_creates_missing_workspace(tmp_path: Path):
+async def test_new_session_creates_missing_workspace(tmp_path: Path):
     missing = tmp_path / "missing"
     process = FakeProcess()
     connection = FakeConnection(session_id="created")
@@ -501,21 +463,21 @@ def test_new_session_creates_missing_workspace(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    session_id = asyncio.run(service.new_session(chat_id=1, workspace=missing))
+    session_id = await service.new_session(chat_id=1, workspace=missing)
     assert session_id == "created"
     assert missing.is_dir()
 
 
-def test_new_session_rejects_file_workspace(tmp_path: Path):
+async def test_new_session_rejects_file_workspace(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     invalid = tmp_path / "not-a-dir"
     invalid.write_text("x")
 
     with pytest.raises(ValueError):
-        asyncio.run(service.new_session(chat_id=1, workspace=invalid))
+        await service.new_session(chat_id=1, workspace=invalid)
 
 
-def test_new_session_rejects_process_without_stdio(tmp_path: Path):
+async def test_new_session_rejects_process_without_stdio(tmp_path: Path):
     workspace = tmp_path
 
     async def fake_spawn(program: str, *args: str, **kwargs):
@@ -525,15 +487,15 @@ def test_new_session_rejects_process_without_stdio(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn)
 
     with pytest.raises(RuntimeError):
-        asyncio.run(service.new_session(chat_id=1, workspace=workspace))
+        await service.new_session(chat_id=1, workspace=workspace)
 
 
-def test_acp_service_rejects_non_positive_stdio_limit():
+async def test_acp_service_rejects_non_positive_stdio_limit():
     with pytest.raises(ValueError):
         AcpAgentService(SessionRegistry(), program="agent", args=[], stdio_limit=0)
 
 
-def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
+async def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
     process = FakeProcess()
     limits: list[int] = []
 
@@ -556,11 +518,11 @@ def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    await service.new_session(chat_id=1, workspace=tmp_path)
     assert limits == [2_000_000]
 
 
-def test_new_session_and_prompt(tmp_path: Path):
+async def test_new_session_and_prompt(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="real-session")
 
@@ -582,25 +544,25 @@ def test_new_session_and_prompt(tmp_path: Path):
         connector=fake_connect,
     )
 
-    session_id = asyncio.run(service.new_session(chat_id=2, workspace=tmp_path))
+    session_id = await service.new_session(chat_id=2, workspace=tmp_path)
     assert session_id == "real-session"
     assert connection.initialized
     assert connection.cwd == str(tmp_path.resolve())
     assert service.get_workspace(chat_id=2) == tmp_path.resolve()
 
-    reply = asyncio.run(service.prompt(chat_id=2, text="hi"))
+    reply = await service.prompt(chat_id=2, text="hi")
     assert reply is not None
     assert reply.text == "hello from acp"
     assert connection.prompt_calls == ["real-session"]
 
 
-def test_prompt_without_active_session_returns_none():
+async def test_prompt_without_active_session_returns_none():
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
-    reply = asyncio.run(service.prompt(chat_id=99, text="hi"))
+    reply = await service.prompt(chat_id=99, text="hi")
     assert reply is None
 
 
-def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
+async def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
     workspace = tmp_path / "ws"
     image_path = workspace / "img sample.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -623,15 +585,15 @@ def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
         return connection
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
-    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
-    reply = asyncio.run(service.prompt(chat_id=1, text="send image"))
+    await service.new_session(chat_id=1, workspace=workspace)
+    reply = await service.prompt(chat_id=1, text="send image")
     assert reply is not None
     assert len(reply.images) == 1
     assert reply.images[0].mime_type == "image/png"
     assert reply.files == ()
 
 
-def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path):
+async def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path):
     workspace = tmp_path / "ws"
     text_file = workspace / "note.txt"
     text_file.parent.mkdir(parents=True, exist_ok=True)
@@ -655,8 +617,8 @@ def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path):
         return connection
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
-    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
-    reply = asyncio.run(service.prompt(chat_id=1, text="send doc"))
+    await service.new_session(chat_id=1, workspace=workspace)
+    reply = await service.prompt(chat_id=1, text="send doc")
     assert reply is not None
     assert reply.images == ()
     assert len(reply.files) == 1
@@ -664,7 +626,7 @@ def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path):
     assert reply.files[0].data_base64 == base64.b64encode(b"hello file").decode("ascii")
 
 
-def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path):
+async def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "outside.png"
@@ -688,15 +650,15 @@ def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path):
         return connection
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
-    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
-    reply = asyncio.run(service.prompt(chat_id=1, text="send outside"))
+    await service.new_session(chat_id=1, workspace=workspace)
+    reply = await service.prompt(chat_id=1, text="send outside")
     assert reply is not None
     assert reply.images == ()
     assert reply.files == ()
     assert "Attachment warning: outside.png: path is outside active workspace" in reply.text
 
 
-def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path):
+async def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     encoded_name = "encoded file.png"
@@ -720,14 +682,14 @@ def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path):
         return connection
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
-    asyncio.run(service.new_session(chat_id=1, workspace=workspace))
-    reply = asyncio.run(service.prompt(chat_id=1, text="send encoded"))
+    await service.new_session(chat_id=1, workspace=workspace)
+    reply = await service.prompt(chat_id=1, text="send encoded")
     assert reply is not None
     assert len(reply.images) == 1
     assert reply.images[0].mime_type == "image/png"
 
 
-def test_cancel_and_stop_lifecycle(tmp_path: Path):
+async def test_cancel_and_stop_lifecycle(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="s1")
 
@@ -747,16 +709,16 @@ def test_cancel_and_stop_lifecycle(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=7, workspace=tmp_path))
+    await service.new_session(chat_id=7, workspace=tmp_path)
 
-    assert asyncio.run(service.cancel(chat_id=7))
+    assert await service.cancel(chat_id=7)
     assert connection.prompt_calls[-1] == "cancel:s1"
-    assert asyncio.run(service.clear(chat_id=7))
-    assert not asyncio.run(service.stop(chat_id=7))
-    assert not asyncio.run(service.cancel(chat_id=7))
+    assert await service.clear(chat_id=7)
+    assert not await service.stop(chat_id=7)
+    assert not await service.cancel(chat_id=7)
 
 
-def test_permission_policy_session_and_next_prompt(tmp_path: Path):
+async def test_permission_policy_session_and_next_prompt(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="perm-session")
 
@@ -776,38 +738,35 @@ def test_permission_policy_session_and_next_prompt(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=9, workspace=tmp_path))
+    await service.new_session(chat_id=9, workspace=tmp_path)
 
     policy = service.get_permission_policy(chat_id=9)
     assert policy is not None
     assert policy.session_mode == "ask"
     assert not policy.next_prompt_auto_approve
 
-    assert asyncio.run(service.set_session_permission_mode(chat_id=9, mode="approve"))
-    assert asyncio.run(service.set_next_prompt_auto_approve(chat_id=9, enabled=True))
+    assert await service.set_session_permission_mode(chat_id=9, mode="approve")
+    assert await service.set_next_prompt_auto_approve(chat_id=9, enabled=True)
     policy = service.get_permission_policy(chat_id=9)
     assert policy is not None
     assert policy.session_mode == "approve"
     assert policy.next_prompt_auto_approve
 
-    assert asyncio.run(service.prompt(chat_id=9, text="hello")) is not None
+    assert await service.prompt(chat_id=9, text="hello") is not None
     image = PromptImage(data_base64=base64.b64encode(b"i").decode("ascii"), mime_type="image/png")
     file_text = PromptFile(name="t.txt", text_content="abc")
     file_bin = PromptFile(name="b.bin", data_base64=base64.b64encode(b"bin").decode("ascii"))
-    assert (
-        asyncio.run(service.prompt(chat_id=9, text="with files", images=(image,), files=(file_text, file_bin)))
-        is not None
-    )
+    assert await service.prompt(chat_id=9, text="with files", images=(image,), files=(file_text, file_bin)) is not None
     policy = service.get_permission_policy(chat_id=9)
     assert policy is not None
     assert not policy.next_prompt_auto_approve
 
-    assert not asyncio.run(service.set_session_permission_mode(chat_id=999, mode="deny"))
-    assert not asyncio.run(service.set_next_prompt_auto_approve(chat_id=999, enabled=True))
+    assert not await service.set_session_permission_mode(chat_id=999, mode="deny")
+    assert not await service.set_next_prompt_auto_approve(chat_id=999, enabled=True)
     assert service.get_permission_policy(chat_id=999) is None
 
 
-def test_decide_permission_states(tmp_path: Path):
+async def test_decide_permission_states(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="perm")
 
@@ -827,35 +786,35 @@ def test_decide_permission_states(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    await service.new_session(chat_id=1, workspace=tmp_path)
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
 
     tool_call = ToolCall(title="run", tool_call_id="tc")
 
-    denied_no_option = asyncio.run(service._decide_permission("perm", [], tool_call))
+    denied_no_option = await service._decide_permission("perm", [], tool_call)
     assert denied_no_option.outcome.outcome == "cancelled"
 
-    denied_unknown_session = asyncio.run(service._decide_permission("unknown", [option], tool_call))
+    denied_unknown_session = await service._decide_permission("unknown", [option], tool_call)
     assert denied_unknown_session.outcome.outcome == "cancelled"
 
-    asked_mode = asyncio.run(service._decide_permission("perm", [option], tool_call))
+    asked_mode = await service._decide_permission("perm", [option], tool_call)
     assert asked_mode.outcome.outcome == "cancelled"
 
     live = service._live_by_chat[1]
     live.permission_mode = "approve"
-    approved_session = asyncio.run(service._decide_permission("perm", [option], tool_call))
+    approved_session = await service._decide_permission("perm", [option], tool_call)
     assert approved_session.outcome.outcome == "selected"
 
     live.permission_mode = "deny"
-    denied_session = asyncio.run(service._decide_permission("perm", [option], tool_call))
+    denied_session = await service._decide_permission("perm", [option], tool_call)
     assert denied_session.outcome.outcome == "cancelled"
 
     live.active_prompt_auto_approve = True
-    approved_prompt = asyncio.run(service._decide_permission("perm", [option], tool_call))
+    approved_prompt = await service._decide_permission("perm", [option], tool_call)
     assert approved_prompt.outcome.outcome == "selected"
 
 
-def test_decide_permission_ask_mode_with_handler(tmp_path: Path):
+async def test_decide_permission_ask_mode_with_handler(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="ask")
     captured: list[tuple[str, tuple[str, ...]]] = []
@@ -876,7 +835,7 @@ def test_decide_permission_ask_mode_with_handler(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    await service.new_session(chat_id=1, workspace=tmp_path)
 
     async def handler(request):
         captured.append((request.request_id, request.available_actions))
@@ -885,14 +844,14 @@ def test_decide_permission_ask_mode_with_handler(tmp_path: Path):
     service.set_permission_request_handler(handler)
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
     tool_call = ToolCall(title="run", tool_call_id="tc-ask")
-    response = asyncio.run(service._decide_permission("ask", [option], tool_call))
+    response = await service._decide_permission("ask", [option], tool_call)
     assert response.outcome.outcome == "selected"
     assert captured
     assert "once" in captured[0][1]
     assert "deny" in captured[0][1]
 
 
-def test_respond_permission_request_always_enables_session_approve(tmp_path: Path):
+async def test_respond_permission_request_always_enables_session_approve(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="always")
 
@@ -912,7 +871,7 @@ def test_respond_permission_request_always_enables_session_approve(tmp_path: Pat
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    await service.new_session(chat_id=1, workspace=tmp_path)
 
     async def handler(request):
         await service.respond_permission_request(chat_id=1, request_id=request.request_id, action="always")
@@ -920,19 +879,19 @@ def test_respond_permission_request_always_enables_session_approve(tmp_path: Pat
     service.set_permission_request_handler(handler)
     option = PermissionOption(kind="allow_always", name="Always", option_id="opt-always")
     tool_call = ToolCall(title="run", tool_call_id="tc-always")
-    response = asyncio.run(service._decide_permission("always", [option], tool_call))
+    response = await service._decide_permission("always", [option], tool_call)
     assert response.outcome.outcome == "selected"
     policy = service.get_permission_policy(chat_id=1)
     assert policy is not None
     assert policy.session_mode == "approve"
 
 
-def test_respond_permission_request_rejects_unknown_request(tmp_path: Path):
+async def test_respond_permission_request_rejects_unknown_request(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], default_permission_mode="ask")
-    assert not asyncio.run(service.respond_permission_request(chat_id=1, request_id="missing", action="deny"))
+    assert not await service.respond_permission_request(chat_id=1, request_id="missing", action="deny")
 
 
-def test_stop_cancels_pending_permission_requests(tmp_path: Path):
+async def test_stop_cancels_pending_permission_requests(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="pending")
 
@@ -952,7 +911,7 @@ def test_stop_cancels_pending_permission_requests(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=7, workspace=tmp_path))
+    await service.new_session(chat_id=7, workspace=tmp_path)
 
     async def scenario() -> None:
         future: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
@@ -969,10 +928,10 @@ def test_stop_cancels_pending_permission_requests(tmp_path: Path):
         assert future.done()
         assert future.result().outcome.outcome == "cancelled"
 
-    asyncio.run(scenario())
+    await scenario()
 
 
-def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch):
+async def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch):
     process = FakeProcess()
     connection = FakeConnection(session_id="timeout")
 
@@ -992,7 +951,7 @@ def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch
         spawner=fake_spawn,
         connector=fake_connect,
     )
-    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    await service.new_session(chat_id=1, workspace=tmp_path)
 
     async def handler(request):
         del request
@@ -1007,11 +966,11 @@ def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch
     monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt")
     tool_call = ToolCall(title="run", tool_call_id="tc-timeout")
-    response = asyncio.run(service._decide_permission("timeout", [option], tool_call))
+    response = await service._decide_permission("timeout", [option], tool_call)
     assert response.outcome.outcome == "cancelled"
 
 
-def test_build_permission_response_fallbacks():
+async def test_build_permission_response_fallbacks():
     deny = AcpAgentService._build_permission_response(options=(), action="deny")
     assert deny.outcome.outcome == "cancelled"
 
@@ -1019,7 +978,7 @@ def test_build_permission_response_fallbacks():
     assert fallback.outcome.outcome == "cancelled"
 
 
-def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture):
+async def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], permission_event_output="off")
     with caplog.at_level(logging.INFO):
         service._report_permission_event("x")
@@ -1031,7 +990,7 @@ def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureF
     assert any("ACP permission event: y" in record.message for record in caplog.records)
 
 
-def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path):
+async def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="activity-session")
     received: list[tuple[int, AgentActivityBlock]] = []
@@ -1049,21 +1008,21 @@ def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path):
         received.append((chat_id, block))
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
-    asyncio.run(service.new_session(chat_id=7, workspace=tmp_path))
+    await service.new_session(chat_id=7, workspace=tmp_path)
 
     block = AgentActivityBlock(kind="think", title="t", status="completed", text="x")
-    asyncio.run(service._forward_activity_event("activity-session", block))
+    await service._forward_activity_event("activity-session", block)
     assert received == []
 
     service.set_activity_event_handler(capture)
-    asyncio.run(service._forward_activity_event("unknown-session", block))
+    await service._forward_activity_event("unknown-session", block)
     assert received == []
 
-    asyncio.run(service._forward_activity_event("activity-session", block))
+    await service._forward_activity_event("activity-session", block)
     assert received == [(7, block)]
 
 
-def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch):
+async def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch):
     first = FakeProcess()
     second = FakeProcess()
     calls: list[FakeProcess] = []
@@ -1081,8 +1040,8 @@ def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatc
         return conn
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
-    asyncio.run(service.new_session(chat_id=5, workspace=tmp_path))
-    asyncio.run(service.new_session(chat_id=5, workspace=tmp_path))
+    await service.new_session(chat_id=5, workspace=tmp_path)
+    await service.new_session(chat_id=5, workspace=tmp_path)
 
     assert first.terminated
     assert not second.terminated
@@ -1094,16 +1053,16 @@ def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
     hanging = FakeProcess()
-    asyncio.run(service._shutdown(hanging))
+    await service._shutdown(hanging)
     assert hanging.killed
 
     finished = FakeProcess()
     finished.returncode = 0
-    asyncio.run(service._shutdown(finished))
+    await service._shutdown(finished)
     assert not finished.terminated
 
 
-def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path):
+async def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     response = AgentReply(
         text="ok",
@@ -1117,7 +1076,7 @@ def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path):
     assert resolved.images == ()
 
 
-def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monkeypatch):
+async def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     file_path = workspace / "a.txt"
@@ -1138,7 +1097,7 @@ def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monk
     assert "Attachment warning: a.txt: unreadable file" in resolved.text
 
 
-def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch):
+async def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     file_path = workspace / "ok.txt"
