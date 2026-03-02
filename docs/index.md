@@ -67,6 +67,8 @@ Permission behavior:
 :maxdepth: 2
 :caption: Documentation
 
+configuration.md
+cli.md
 ../CONTRIBUTING.md
 ../CODE_OF_CONDUCT.md
 about_the_docs.md
