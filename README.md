@@ -33,7 +33,7 @@ uvx --from git+https://github.com/mgaitan/telegram-acp-bot acp-bot
 ```
 
 Current interaction capabilities:
-- `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`
+- `/new [workspace]`, `/session`, `/cancel`, `/stop`, `/clear`, `/restart`
 - Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
 - Plain text prompts
 - Tool activity updates are sent as separate messages per ACP tool kind
@@ -48,6 +48,10 @@ Message flow:
 - The final answer is sent as a separate message after activity blocks.
 - If the final text is empty, no dummy "(no text response)" message is sent.
 
+For development, `/restart` stops polling and relaunches the process.
+If `ACP_RESTART_COMMAND` (or `--restart-command`) is configured, that command is used (recommended when running with `uv run ...` and extra flags).
+Otherwise, it falls back to re-execing the current process (`sys.executable + sys.argv`).
+
 ## Telegram Bot Token
 
 Create your token with [@BotFather](https://t.me/BotFather):
@@ -61,6 +65,7 @@ Store the token in your local `.env` file (gitignored):
 ```env
 TELEGRAM_BOT_TOKEN=123456:abc
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
+ACP_RESTART_COMMAND="uv run acp-bot --telegram-token <TOKEN> --agent-command \"npx @zed-industries/codex-acp\""
 ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608

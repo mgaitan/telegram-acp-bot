@@ -29,6 +29,7 @@ from telegram_acp_bot.acp_app.models import (
 
 PERMISSION_CALLBACK_PREFIX = "perm"
 PERMISSION_CALLBACK_PARTS = 3
+RESTART_EXIT_CODE = 75
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
     "think": "💡 Thinking",
@@ -107,6 +108,7 @@ class TelegramBridge:
         self._config = config
         self._agent_service = agent_service
         self._app: Application | None = None
+        self._restart_requested = False
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -121,6 +123,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("cancel", self.cancel))
         app.add_handler(CommandHandler("stop", self.stop))
         app.add_handler(CommandHandler("clear", self.clear))
+        app.add_handler(CommandHandler("restart", self.restart))
         app.add_handler(CallbackQueryHandler(self.on_permission_callback, pattern=r"^perm\|"))
         app.add_handler(
             MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
@@ -138,7 +141,7 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /session, /cancel, /stop, /clear, /help",
+            "Commands: /new [workspace], /session, /cancel, /stop, /clear, /restart, /help",
         )
 
     async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -210,6 +213,18 @@ class TelegramBridge:
             await self._reply(update, "Cleared current session.")
             return
         await self._reply(update, "No active session. Use /new first.")
+
+    async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+
+        if self._app is None:
+            await self._reply(update, "Restart is unavailable: application is not running.")
+            return
+        await self._reply(update, "Restart requested. Re-launching process...")
+        self._restart_requested = True
+        self._app.stop_running()
 
     async def on_permission_request(self, request: PermissionRequest) -> None:
         if self._app is None:
@@ -546,6 +561,8 @@ def build_application(config: BotConfig, bridge: TelegramBridge) -> Application:
 def run_polling(config: BotConfig, bridge: TelegramBridge) -> int:
     app = build_application(config, bridge)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+    if bridge._restart_requested:
+        return RESTART_EXIT_CODE
     return 0
 
 
