@@ -28,6 +28,7 @@ from telegram_acp_bot.telegram.bot import (
 EXPECTED_OUTBOUND_DOCUMENTS = 2
 TEST_CHAT_ID = 100
 EXPECTED_ACTIVITY_MESSAGES = 3
+ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 
 
 class MarkdownFailureError(TelegramError):
@@ -576,7 +577,7 @@ def test_on_message_renders_activity_blocks_before_final_reply() -> None:
     assert update.message is not None
     assert len(update.message.replies) == EXPECTED_ACTIVITY_MESSAGES
     assert "*💡 Thinking...*" in update.message.replies[0]
-    assert "Draft plan" in update.message.replies[0]
+    assert "Draft plan" not in update.message.replies[0]
     assert "*⚙️ Tool call*" in update.message.replies[1]
     assert update.message.replies[2] == "Done."
 
@@ -597,6 +598,145 @@ def test_on_message_sends_live_activity_events_via_app_bot() -> None:
     assert "*💡 Thinking...*" in cast(str, context.bot.sent_messages[0]["text"])
 
 
+def test_on_message_skips_empty_final_text_reply() -> None:
+    class EmptyTextService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del workspace
+            return f"s-{chat_id}"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            return AgentReply(text="")
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, EmptyTextService()))
+    update = make_update(text="hello")
+    context = make_context()
+
+    asyncio.run(bridge.on_message(update, context))
+
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+def test_on_message_reports_acp_stdio_limit_error() -> None:
+    class LimitErrorService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del workspace
+            return f"s-{chat_id}"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            raise ValueError(ACP_STDIO_LIMIT_ERROR)
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, LimitErrorService()))
+    update = make_update(text="hello")
+    context = make_context()
+
+    asyncio.run(bridge.on_message(update, context))
+
+    assert update.message is not None
+    assert "Agent output exceeded ACP stdio limit." in update.message.replies[-1]
+
+
+def test_on_message_reraises_unrelated_value_error() -> None:
+    class GenericValueErrorService:
+        async def new_session(self, *, chat_id: int, workspace):
+            del workspace
+            return f"s-{chat_id}"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            raise ValueError("unexpected")
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, GenericValueErrorService()))
+    update = make_update(text="hello")
+    context = make_context()
+
+    with pytest.raises(ValueError, match="unexpected"):
+        asyncio.run(bridge.on_message(update, context))
+
+
 def test_on_activity_event_without_app_is_noop() -> None:
     bridge = make_bridge()
     block = AgentActivityBlock(kind="think", title="x", status="completed", text="y")
@@ -613,6 +753,16 @@ def test_on_activity_event_markdown_fallback() -> None:
 
     assert failing_bot.sent_messages
     assert "parse_mode" not in failing_bot.sent_messages[-1]
+
+
+def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix() -> None:
+    block = AgentActivityBlock(
+        kind="read", title="Read test_telegram_bot.py", status="completed", text="Read test_telegram_bot.py"
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*📖 Reading*" in rendered
+    assert "test\\_telegram\\_bot.py" in rendered
+    assert "\n\nRead test\\_telegram\\_bot.py" not in rendered
 
 
 def test_send_helpers_with_no_message() -> None:

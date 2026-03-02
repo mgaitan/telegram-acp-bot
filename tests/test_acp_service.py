@@ -5,6 +5,7 @@ import base64
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from urllib.parse import quote
 
 import pytest
@@ -317,7 +318,7 @@ def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool() -> None
     )
 
     reply = asyncio.run(client.finish_capture(session_id))
-    assert events[0] == AgentActivityBlock(kind="think", title="Reasoning", status="completed", text="first thought")
+    assert events[0] == AgentActivityBlock(kind="think", title="", status="completed", text="first thought")
     assert events[1] == AgentActivityBlock(kind="execute", title="Run git log", status="in_progress", text="")
     assert reply.text == "final output"
 
@@ -391,6 +392,33 @@ def test_acp_client_groups_tool_output_into_activity_blocks() -> None:
     )
 
 
+def test_acp_client_moves_trailing_non_think_block_text_to_final_reply() -> None:
+    client = make_client()
+    session_id = "s-trailing"
+    client.start_capture(session_id)
+
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=ToolCallStart(
+                title="Run git show", tool_call_id="tool-exec", kind="execute", session_update="tool_call"
+            ),
+        )
+    )
+    asyncio.run(
+        client.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(content=text_block("This should be final."), session_update="agent_message_chunk"),
+        )
+    )
+
+    reply = asyncio.run(client.finish_capture(session_id))
+    assert reply.activity_blocks == (
+        AgentActivityBlock(kind="execute", title="Run git show", status="in_progress", text=""),
+    )
+    assert reply.text == "This should be final."
+
+
 def test_acp_client_ignores_terminal_progress_for_different_tool() -> None:
     client = make_client()
     session_id = "s-mismatch"
@@ -421,9 +449,8 @@ def test_acp_client_ignores_terminal_progress_for_different_tool() -> None:
     )
 
     reply = asyncio.run(client.finish_capture(session_id))
-    assert reply.activity_blocks == (
-        AgentActivityBlock(kind="read", title="tool one", status="in_progress", text="partial output"),
-    )
+    assert reply.activity_blocks == (AgentActivityBlock(kind="read", title="tool one", status="in_progress", text=""),)
+    assert reply.text == "partial output"
 
 
 @pytest.mark.parametrize(
@@ -499,6 +526,38 @@ def test_new_session_rejects_process_without_stdio(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError):
         asyncio.run(service.new_session(chat_id=1, workspace=workspace))
+
+
+def test_acp_service_rejects_non_positive_stdio_limit() -> None:
+    with pytest.raises(ValueError):
+        AcpAgentService(SessionRegistry(), program="agent", args=[], stdio_limit=0)
+
+
+def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path) -> None:
+    process = FakeProcess()
+    limits: list[int] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args
+        limits.append(cast(int, kwargs["limit"]))
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        conn = FakeConnection(session_id="s-limit")
+        conn.client = client
+        return conn
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        stdio_limit=2_000_000,
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    asyncio.run(service.new_session(chat_id=1, workspace=tmp_path))
+    assert limits == [2_000_000]
 
 
 def test_new_session_and_prompt(tmp_path: Path) -> None:

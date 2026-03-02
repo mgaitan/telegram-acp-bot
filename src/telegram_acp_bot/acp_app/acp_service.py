@@ -147,7 +147,7 @@ class _AcpClient:
         self._completed_tool_blocks[session_id] = []
 
     async def finish_capture(self, session_id: str) -> AgentReply:
-        await self._close_active_tool_block(session_id=session_id, status="in_progress")
+        await self._close_active_tool_block(session_id=session_id, status="in_progress", is_prompt_end=True)
         chunks = self._buffers.pop(session_id, [])
         pending_text = self._pending_non_tool_text.pop(session_id, [])
         images = tuple(self._images.pop(session_id, []))
@@ -261,17 +261,21 @@ class _AcpClient:
             title=title,
         )
 
-    async def _close_active_tool_block(self, *, session_id: str, status: str) -> None:
+    async def _close_active_tool_block(self, *, session_id: str, status: str, is_prompt_end: bool = False) -> None:
         active_block = self._active_tool_blocks.get(session_id)
         if active_block is None:
             return
 
         normalized_status = status if status in TERMINAL_TOOL_STATUSES else "in_progress"
+        block_text = "".join(active_block.chunks).strip()
+        if is_prompt_end and active_block.kind != "think" and block_text:
+            self._buffers.setdefault(session_id, []).append(block_text)
+            block_text = ""
         block = AgentActivityBlock(
             kind=active_block.kind,
             title=active_block.title,
             status=cast(ToolCallStatus, normalized_status),
-            text="".join(active_block.chunks).strip(),
+            text=block_text,
         )
         self._completed_tool_blocks.setdefault(session_id, []).append(block)
         self._active_tool_blocks[session_id] = None
@@ -295,7 +299,7 @@ class _AcpClient:
         pending.clear()
         if not text:
             return
-        block = AgentActivityBlock(kind="think", title="Reasoning", status="completed", text=text)
+        block = AgentActivityBlock(kind="think", title="", status="completed", text=text)
         self._completed_tool_blocks.setdefault(session_id, []).append(block)
         await self._emit_activity_block(session_id=session_id, block=block)
 
@@ -371,14 +375,18 @@ class AcpAgentService:
         args: list[str],
         default_permission_mode: PermissionMode = "ask",
         permission_event_output: PermissionEventOutput = "stdout",
+        stdio_limit: int = 8_388_608,
         connector: AcpConnectionFactory | None = None,
         spawner: AcpSpawnFn | None = None,
     ) -> None:
+        if stdio_limit <= 0:
+            raise ValueError(stdio_limit)
         self._registry = registry
         self._program = program
         self._args = args
         self._default_permission_mode = default_permission_mode
         self._permission_event_output = permission_event_output
+        self._stdio_limit = stdio_limit
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
         self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
@@ -401,6 +409,7 @@ class AcpAgentService:
             *self._args,
             stdin=aio_subprocess.PIPE,
             stdout=aio_subprocess.PIPE,
+            limit=self._stdio_limit,
         )
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
@@ -464,9 +473,8 @@ class AcpAgentService:
             response = await live.client.finish_capture(live.acp_session_id)
             live.active_prompt_auto_approve = False
             response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
-            text = response.text or "(no text response)"
             return AgentReply(
-                text=text,
+                text=response.text,
                 images=response.images,
                 files=response.files,
             )

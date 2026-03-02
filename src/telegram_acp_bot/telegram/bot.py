@@ -301,7 +301,18 @@ class TelegramBridge:
 
         chat_id = self._chat_id(update)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
+        try:
+            reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
+        except ValueError as exc:
+            message = str(exc)
+            if "chunk is longer than limit" in message:
+                await self._reply(
+                    update,
+                    "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
+                    "(or `ACP_STDIO_LIMIT`).",
+                )
+                return
+            raise
         if reply is None:
             await self._reply(update, "No active session. Use /new first.")
             return
@@ -309,7 +320,8 @@ class TelegramBridge:
         if self._app is None:
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block)
-        await self._reply_agent(update, reply.text)
+        if reply.text.strip():
+            await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
 
     async def _extract_prompt_images(
@@ -446,13 +458,40 @@ class TelegramBridge:
     def _format_activity_block(block: AgentActivityBlock) -> str:
         label = KIND_LABELS.get(block.kind, "🧠 Working")
         text_parts = [f"*{label}*"]
-        if block.title:
-            text_parts.append(block.title)
-        if block.text:
-            text_parts.append(block.text)
+        normalized_title = TelegramBridge._normalize_activity_title(block)
+        normalized_text = TelegramBridge._normalize_activity_text(block)
+        if normalized_title and normalized_text and normalized_title == normalized_text:
+            normalized_title = ""
+        if normalized_title:
+            text_parts.append(TelegramBridge._escape_markdown(normalized_title))
+        if normalized_text:
+            text_parts.append(TelegramBridge._escape_markdown(normalized_text))
         if block.status == "failed":
             text_parts.append("_Failed_")
         return "\n\n".join(text_parts)
+
+    @staticmethod
+    def _normalize_activity_title(block: AgentActivityBlock) -> str:
+        title = block.title.strip()
+        if block.kind == "think":
+            return ""
+        if block.kind == "read" and title.startswith("Read "):
+            return title[5:]
+        return title
+
+    @staticmethod
+    def _normalize_activity_text(block: AgentActivityBlock) -> str:
+        text = block.text.strip()
+        if block.kind == "read" and text.startswith("Read ") and "\n" not in text:
+            return text[5:]
+        return text
+
+    @staticmethod
+    def _escape_markdown(text: str) -> str:
+        escaped = text.replace("\\", "\\\\")
+        for token in ("_", "*", "`", "["):
+            escaped = escaped.replace(token, f"\\{token}")
+        return escaped
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:

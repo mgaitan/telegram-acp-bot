@@ -40,6 +40,7 @@ You can also store variables in a local `.env` file (it is gitignored):
 TELEGRAM_BOT_TOKEN=123456:abc
 ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
+ACP_STDIO_LIMIT=8388608
 ```
 
 To install the tool permanently:
