@@ -463,9 +463,9 @@ class TelegramBridge:
         if normalized_title and normalized_text and normalized_title == normalized_text:
             normalized_title = ""
         if normalized_title:
-            text_parts.append(TelegramBridge._escape_markdown(normalized_title))
+            text_parts.append(TelegramBridge._escape_markdown_preserving_code(normalized_title))
         if normalized_text:
-            text_parts.append(TelegramBridge._escape_markdown(normalized_text))
+            text_parts.append(TelegramBridge._escape_markdown_preserving_code(normalized_text))
         if block.status == "failed":
             text_parts.append("_Failed_")
         return "\n\n".join(text_parts)
@@ -475,6 +475,11 @@ class TelegramBridge:
         title = block.title.strip()
         if block.kind == "think":
             return ""
+        if block.kind == "execute" and title.startswith("Run "):
+            command = title[4:].strip()
+            if command:
+                safe_command = command.replace("`", "\\`")
+                return f"Run `{safe_command}`"
         if block.kind == "read" and title.startswith("Read "):
             return title[5:]
         return title
@@ -487,11 +492,22 @@ class TelegramBridge:
         return text
 
     @staticmethod
-    def _escape_markdown(text: str) -> str:
-        escaped = text.replace("\\", "\\\\")
-        for token in ("_", "*", "`", "["):
-            escaped = escaped.replace(token, f"\\{token}")
-        return escaped
+    def _escape_markdown_preserving_code(text: str) -> str:
+        escaped: list[str] = []
+        in_code = False
+        for char in text:
+            if char == "`":
+                in_code = not in_code
+                escaped.append(char)
+                continue
+            if in_code:
+                escaped.append(char)
+                continue
+            if char in {"\\", "_", "*", "["}:
+                escaped.append(f"\\{char}")
+                continue
+            escaped.append(char)
+        return "".join(escaped)
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:

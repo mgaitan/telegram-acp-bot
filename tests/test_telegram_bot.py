@@ -765,6 +765,24 @@ def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix() -
     assert "\n\nRead test\\_telegram\\_bot.py" not in rendered
 
 
+def test_format_activity_block_preserves_thinking_inline_code() -> None:
+    block = AgentActivityBlock(
+        kind="think",
+        title="",
+        status="completed",
+        text="Checking `README.md` and `docs/index.md`.",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "`README.md`" in rendered
+    assert "`docs/index.md`" in rendered
+
+
+def test_format_activity_block_execute_wraps_command_as_inline_code() -> None:
+    block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "Run `git diff -- README.md docs/index.md`" in rendered
+
+
 def test_send_helpers_with_no_message() -> None:
     update = make_update(with_message=False)
     image = ImagePayload(data_base64=base64.b64encode(b"img").decode("ascii"), mime_type="image/jpeg")
