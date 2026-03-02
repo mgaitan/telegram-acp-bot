@@ -28,12 +28,20 @@ from acp.schema import (
 )
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _PendingPermission
-from telegram_acp_bot.acp_app.models import AgentActivityBlock, AgentReply, FilePayload, PromptFile, PromptImage
+from telegram_acp_bot.acp_app.models import (
+    AgentActivityBlock,
+    AgentOutputLimitExceededError,
+    AgentReply,
+    FilePayload,
+    PromptFile,
+    PromptImage,
+)
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 pytestmark = pytest.mark.asyncio
 
 EXPECTED_CAPTURED_FILES = 2
+ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 
 
 def make_client() -> _AcpClient:
@@ -115,6 +123,18 @@ class FileResourceConnection(FakeConnection):
             update=AgentMessageChunk(content=self._resource, session_update="agent_message_chunk"),
         )
         return SimpleNamespace(stop_reason="end_turn")
+
+
+class OversizeLineConnection(FakeConnection):
+    async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
+        del session_id, prompt
+        raise ValueError(ACP_STDIO_LIMIT_ERROR)
+
+
+class GenericValueErrorConnection(FakeConnection):
+    async def prompt(self, *, session_id: str, prompt: list) -> SimpleNamespace:
+        del session_id, prompt
+        raise ValueError("unexpected")
 
 
 async def test_acp_client_capture_text_and_media_markers():
@@ -560,6 +580,44 @@ async def test_prompt_without_active_session_returns_none():
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     reply = await service.prompt(chat_id=99, text="hi")
     assert reply is None
+
+
+async def test_prompt_wraps_stdio_limit_error(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = OversizeLineConnection(session_id="limit-session")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    with pytest.raises(AgentOutputLimitExceededError):
+        await service.prompt(chat_id=1, text="oversize")
+
+
+async def test_prompt_reraises_unrelated_value_error(tmp_path: Path) -> None:
+    process = FakeProcess()
+    connection = GenericValueErrorConnection(session_id="value-error-session")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    with pytest.raises(ValueError, match="unexpected"):
+        await service.prompt(chat_id=1, text="boom")
 
 
 async def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):

@@ -44,6 +44,7 @@ from acp.schema import (
 
 from telegram_acp_bot.acp_app.models import (
     AgentActivityBlock,
+    AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
     ImagePayload,
@@ -469,7 +470,12 @@ class AcpAgentService:
                         text_block(f"Binary file attached: {file.name} ({file.mime_type or 'unknown'})")
                     )
 
-            await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
+            try:
+                await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
+            except ValueError as exc:
+                if "chunk is longer than limit" in str(exc):
+                    raise AgentOutputLimitExceededError from exc
+                raise
             response = await live.client.finish_capture(live.acp_session_id)
             live.active_prompt_auto_approve = False
             response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)

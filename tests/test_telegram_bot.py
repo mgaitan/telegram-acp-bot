@@ -12,7 +12,14 @@ from telegram.error import TelegramError
 from telegram.ext import Application
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
-from telegram_acp_bot.acp_app.models import AgentActivityBlock, AgentReply, FilePayload, ImagePayload, PermissionRequest
+from telegram_acp_bot.acp_app.models import (
+    AgentActivityBlock,
+    AgentOutputLimitExceededError,
+    AgentReply,
+    FilePayload,
+    ImagePayload,
+    PermissionRequest,
+)
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
@@ -654,7 +661,7 @@ async def test_on_message_reports_acp_stdio_limit_error():
 
         async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
             del chat_id, text, images, files
-            raise ValueError(ACP_STDIO_LIMIT_ERROR)
+            raise AgentOutputLimitExceededError(ACP_STDIO_LIMIT_ERROR)
 
         def get_workspace(self, *, chat_id: int):
             del chat_id
