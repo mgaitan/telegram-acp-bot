@@ -2,6 +2,8 @@
 
 This page documents runtime configuration via environment variables.
 
+For ready-to-use command examples per backend, see {doc}`agents`.
+
 ```{glossary}
 TELEGRAM_BOT_TOKEN
   Telegram bot token (from BotFather). Required unless passed as `--telegram-token`.

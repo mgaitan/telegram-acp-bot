@@ -68,6 +68,7 @@ Permission behavior:
 :caption: Documentation
 
 configuration.md
+agents.md
 cli.md
 ../CONTRIBUTING.md
 ../CODE_OF_CONDUCT.md
