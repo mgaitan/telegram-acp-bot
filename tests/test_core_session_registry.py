@@ -3,7 +3,7 @@ from pathlib import Path
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 
-def test_registry_create_get_clear() -> None:
+def test_registry_create_get_clear():
     registry = SessionRegistry()
 
     session = registry.create_or_replace(chat_id=10, workspace=Path("/tmp"))
@@ -13,7 +13,7 @@ def test_registry_create_get_clear() -> None:
     assert registry.get(10) is None
 
 
-def test_registry_replace_existing_session() -> None:
+def test_registry_replace_existing_session():
     registry = SessionRegistry()
 
     first = registry.create_or_replace(chat_id=20, workspace=Path("/a"))

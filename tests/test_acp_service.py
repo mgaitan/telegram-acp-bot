@@ -115,7 +115,7 @@ class FileResourceConnection(FakeConnection):
         return SimpleNamespace(stop_reason="end_turn")
 
 
-def test_acp_client_capture_text_and_media_markers() -> None:
+def test_acp_client_capture_text_and_media_markers():
     client = make_client()
     session_id = "s1"
     client.start_capture(session_id)
@@ -129,7 +129,7 @@ def test_acp_client_capture_text_and_media_markers() -> None:
     assert reply.files == ()
 
 
-def test_acp_client_ignores_non_message_updates() -> None:
+def test_acp_client_ignores_non_message_updates():
     client = make_client()
     session_id = "s-ignore"
     client.start_capture(session_id)
@@ -137,7 +137,7 @@ def test_acp_client_ignores_non_message_updates() -> None:
     assert asyncio.run(client.finish_capture(session_id)).text == ""
 
 
-def test_acp_client_capture_non_text_content_markers() -> None:
+def test_acp_client_capture_non_text_content_markers():
     client = make_client()
     session_id = "s2"
     client.start_capture(session_id)
@@ -180,7 +180,7 @@ def test_acp_client_capture_non_text_content_markers() -> None:
     assert len(reply.files) == EXPECTED_CAPTURED_FILES + 1
 
 
-def test_acp_client_permission_decision_auto_approve() -> None:
+def test_acp_client_permission_decision_auto_approve():
     client = make_client()
     option = PermissionOption(kind="allow_once", name="Allow once", option_id="opt-1")
     tool_call = ToolCall(title="execute", tool_call_id="tc-1")
@@ -190,7 +190,7 @@ def test_acp_client_permission_decision_auto_approve() -> None:
     assert asyncio.run(client.finish_capture("s")).text == ""
 
 
-def test_acp_client_permission_decision_cancelled() -> None:
+def test_acp_client_permission_decision_cancelled():
     async def deny_all(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
         del tool_call
         del options
@@ -205,7 +205,7 @@ def test_acp_client_permission_decision_cancelled() -> None:
     assert asyncio.run(client.finish_capture("s")).text == ""
 
 
-def test_acp_client_capture_tool_events() -> None:
+def test_acp_client_capture_tool_events():
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
         del options, tool_call
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
@@ -230,7 +230,7 @@ def test_acp_client_capture_tool_events() -> None:
     assert "tool completed tool-1 read file" in events[1]
 
 
-def test_acp_client_emits_live_activity_blocks() -> None:
+def test_acp_client_emits_live_activity_blocks():
     events: list[AgentActivityBlock] = []
 
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
@@ -271,7 +271,7 @@ def test_acp_client_emits_live_activity_blocks() -> None:
     assert events[1] == AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="")
 
 
-def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool() -> None:
+def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
     events: list[AgentActivityBlock] = []
 
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
@@ -323,7 +323,7 @@ def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool() -> None
     assert reply.text == "final output"
 
 
-def test_acp_client_drops_empty_non_tool_text_when_flushing() -> None:
+def test_acp_client_drops_empty_non_tool_text_when_flushing():
     events: list[AgentActivityBlock] = []
 
     async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
@@ -348,7 +348,7 @@ def test_acp_client_drops_empty_non_tool_text_when_flushing() -> None:
     assert events == [AgentActivityBlock(kind="execute", title="Run cmd", status="in_progress", text="")]
 
 
-def test_acp_client_groups_tool_output_into_activity_blocks() -> None:
+def test_acp_client_groups_tool_output_into_activity_blocks():
     client = make_client()
     session_id = "s-blocks"
     client.start_capture(session_id)
@@ -392,7 +392,7 @@ def test_acp_client_groups_tool_output_into_activity_blocks() -> None:
     )
 
 
-def test_acp_client_moves_trailing_non_think_block_text_to_final_reply() -> None:
+def test_acp_client_moves_trailing_non_think_block_text_to_final_reply():
     client = make_client()
     session_id = "s-trailing"
     client.start_capture(session_id)
@@ -419,7 +419,7 @@ def test_acp_client_moves_trailing_non_think_block_text_to_final_reply() -> None
     assert reply.text == "This should be final."
 
 
-def test_acp_client_ignores_terminal_progress_for_different_tool() -> None:
+def test_acp_client_ignores_terminal_progress_for_different_tool():
     client = make_client()
     session_id = "s-mismatch"
     client.start_capture(session_id)
@@ -465,14 +465,14 @@ def test_acp_client_ignores_terminal_progress_for_different_tool() -> None:
         ("kill_terminal", {"session_id": "s", "terminal_id": "t"}),
     ],
 )
-def test_acp_client_unsupported_methods_raise(method_name: str, args: dict[str, str]) -> None:
+def test_acp_client_unsupported_methods_raise(method_name: str, args: dict[str, str]):
     client = make_client()
     method = getattr(client, method_name)
     with pytest.raises(RequestError):
         asyncio.run(method(**args))
 
 
-def test_acp_client_unsupported_ext_methods_raise() -> None:
+def test_acp_client_unsupported_ext_methods_raise():
     client = make_client()
     with pytest.raises(RequestError):
         asyncio.run(client.ext_method("x", {}))
@@ -480,7 +480,7 @@ def test_acp_client_unsupported_ext_methods_raise() -> None:
         asyncio.run(client.ext_notification("x", {}))
 
 
-def test_new_session_creates_missing_workspace(tmp_path: Path) -> None:
+def test_new_session_creates_missing_workspace(tmp_path: Path):
     missing = tmp_path / "missing"
     process = FakeProcess()
     connection = FakeConnection(session_id="created")
@@ -506,7 +506,7 @@ def test_new_session_creates_missing_workspace(tmp_path: Path) -> None:
     assert missing.is_dir()
 
 
-def test_new_session_rejects_file_workspace(tmp_path: Path) -> None:
+def test_new_session_rejects_file_workspace(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     invalid = tmp_path / "not-a-dir"
     invalid.write_text("x")
@@ -515,7 +515,7 @@ def test_new_session_rejects_file_workspace(tmp_path: Path) -> None:
         asyncio.run(service.new_session(chat_id=1, workspace=invalid))
 
 
-def test_new_session_rejects_process_without_stdio(tmp_path: Path) -> None:
+def test_new_session_rejects_process_without_stdio(tmp_path: Path):
     workspace = tmp_path
 
     async def fake_spawn(program: str, *args: str, **kwargs):
@@ -528,12 +528,12 @@ def test_new_session_rejects_process_without_stdio(tmp_path: Path) -> None:
         asyncio.run(service.new_session(chat_id=1, workspace=workspace))
 
 
-def test_acp_service_rejects_non_positive_stdio_limit() -> None:
+def test_acp_service_rejects_non_positive_stdio_limit():
     with pytest.raises(ValueError):
         AcpAgentService(SessionRegistry(), program="agent", args=[], stdio_limit=0)
 
 
-def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path) -> None:
+def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path):
     process = FakeProcess()
     limits: list[int] = []
 
@@ -560,7 +560,7 @@ def test_new_session_passes_stdio_limit_to_spawner(tmp_path: Path) -> None:
     assert limits == [2_000_000]
 
 
-def test_new_session_and_prompt(tmp_path: Path) -> None:
+def test_new_session_and_prompt(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="real-session")
 
@@ -594,13 +594,13 @@ def test_new_session_and_prompt(tmp_path: Path) -> None:
     assert connection.prompt_calls == ["real-session"]
 
 
-def test_prompt_without_active_session_returns_none() -> None:
+def test_prompt_without_active_session_returns_none():
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     reply = asyncio.run(service.prompt(chat_id=99, text="hi"))
     assert reply is None
 
 
-def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path) -> None:
+def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
     workspace = tmp_path / "ws"
     image_path = workspace / "img sample.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -631,7 +631,7 @@ def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path) -> None:
     assert reply.files == ()
 
 
-def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path) -> None:
+def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path):
     workspace = tmp_path / "ws"
     text_file = workspace / "note.txt"
     text_file.parent.mkdir(parents=True, exist_ok=True)
@@ -664,7 +664,7 @@ def test_prompt_resolves_file_uri_resource_as_document(tmp_path: Path) -> None:
     assert reply.files[0].data_base64 == base64.b64encode(b"hello file").decode("ascii")
 
 
-def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path) -> None:
+def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "outside.png"
@@ -696,7 +696,7 @@ def test_prompt_reports_warning_for_outside_workspace_file_uri(tmp_path: Path) -
     assert "Attachment warning: outside.png: path is outside active workspace" in reply.text
 
 
-def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path) -> None:
+def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     encoded_name = "encoded file.png"
@@ -727,7 +727,7 @@ def test_prompt_resolves_percent_encoded_file_uri(tmp_path: Path) -> None:
     assert reply.images[0].mime_type == "image/png"
 
 
-def test_cancel_and_stop_lifecycle(tmp_path: Path) -> None:
+def test_cancel_and_stop_lifecycle(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="s1")
 
@@ -756,7 +756,7 @@ def test_cancel_and_stop_lifecycle(tmp_path: Path) -> None:
     assert not asyncio.run(service.cancel(chat_id=7))
 
 
-def test_permission_policy_session_and_next_prompt(tmp_path: Path) -> None:
+def test_permission_policy_session_and_next_prompt(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="perm-session")
 
@@ -807,7 +807,7 @@ def test_permission_policy_session_and_next_prompt(tmp_path: Path) -> None:
     assert service.get_permission_policy(chat_id=999) is None
 
 
-def test_decide_permission_states(tmp_path: Path) -> None:
+def test_decide_permission_states(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="perm")
 
@@ -855,7 +855,7 @@ def test_decide_permission_states(tmp_path: Path) -> None:
     assert approved_prompt.outcome.outcome == "selected"
 
 
-def test_decide_permission_ask_mode_with_handler(tmp_path: Path) -> None:
+def test_decide_permission_ask_mode_with_handler(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="ask")
     captured: list[tuple[str, tuple[str, ...]]] = []
@@ -892,7 +892,7 @@ def test_decide_permission_ask_mode_with_handler(tmp_path: Path) -> None:
     assert "deny" in captured[0][1]
 
 
-def test_respond_permission_request_always_enables_session_approve(tmp_path: Path) -> None:
+def test_respond_permission_request_always_enables_session_approve(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="always")
 
@@ -927,12 +927,12 @@ def test_respond_permission_request_always_enables_session_approve(tmp_path: Pat
     assert policy.session_mode == "approve"
 
 
-def test_respond_permission_request_rejects_unknown_request(tmp_path: Path) -> None:
+def test_respond_permission_request_rejects_unknown_request(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], default_permission_mode="ask")
     assert not asyncio.run(service.respond_permission_request(chat_id=1, request_id="missing", action="deny"))
 
 
-def test_stop_cancels_pending_permission_requests(tmp_path: Path) -> None:
+def test_stop_cancels_pending_permission_requests(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="pending")
 
@@ -972,7 +972,7 @@ def test_stop_cancels_pending_permission_requests(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch) -> None:
+def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch):
     process = FakeProcess()
     connection = FakeConnection(session_id="timeout")
 
@@ -1011,7 +1011,7 @@ def test_decide_permission_timeout_returns_cancelled(tmp_path: Path, monkeypatch
     assert response.outcome.outcome == "cancelled"
 
 
-def test_build_permission_response_fallbacks() -> None:
+def test_build_permission_response_fallbacks():
     deny = AcpAgentService._build_permission_response(options=(), action="deny")
     assert deny.outcome.outcome == "cancelled"
 
@@ -1019,7 +1019,7 @@ def test_build_permission_response_fallbacks() -> None:
     assert fallback.outcome.outcome == "cancelled"
 
 
-def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture) -> None:
+def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], permission_event_output="off")
     with caplog.at_level(logging.INFO):
         service._report_permission_event("x")
@@ -1031,7 +1031,7 @@ def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureF
     assert any("ACP permission event: y" in record.message for record in caplog.records)
 
 
-def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path) -> None:
+def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="activity-session")
     received: list[tuple[int, AgentActivityBlock]] = []
@@ -1063,7 +1063,7 @@ def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path) -> None:
     assert received == [(7, block)]
 
 
-def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch) -> None:
+def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch):
     first = FakeProcess()
     second = FakeProcess()
     calls: list[FakeProcess] = []
@@ -1103,7 +1103,7 @@ def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatc
     assert not finished.terminated
 
 
-def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path) -> None:
+def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     response = AgentReply(
         text="ok",
@@ -1117,7 +1117,7 @@ def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path) -> N
     assert resolved.images == ()
 
 
-def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monkeypatch) -> None:
+def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     file_path = workspace / "a.txt"
@@ -1138,7 +1138,7 @@ def test_resolve_file_uri_resources_reports_unreadable_file(tmp_path: Path, monk
     assert "Attachment warning: a.txt: unreadable file" in resolved.text
 
 
-def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch) -> None:
+def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir(parents=True, exist_ok=True)
     file_path = workspace / "ok.txt"
