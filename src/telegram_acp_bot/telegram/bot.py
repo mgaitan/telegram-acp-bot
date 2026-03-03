@@ -8,7 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Protocol, cast
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, Update
+from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
@@ -32,6 +32,7 @@ PERMISSION_CALLBACK_PREFIX = "perm"
 RESUME_CALLBACK_PREFIX = "resume"
 PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
+RESUME_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
@@ -369,33 +370,11 @@ class TelegramBridge:
         if not await self._require_access(update):
             await query.answer("Access denied.")
             return
-        data = query.data or ""
-        parts = data.split("|", maxsplit=1)
-        if len(parts) != RESUME_CALLBACK_PARTS:
-            await query.answer("Invalid selection.")
+        selection = await self._resolve_resume_selection(update=update, query=query)
+        if selection is None:
             return
-        _, raw_index = parts
-        if not raw_index.isdigit():
-            await query.answer("Invalid selection.")
-            return
-        chat = update.effective_chat
-        chat_id = chat.id if chat is not None else None
-        if chat_id is None:
-            query_message = getattr(query, "message", None)
-            if query_message is not None:
-                chat_id = query_message.chat.id
-        if chat_id is None:
-            await query.answer("Missing chat.")
-            return
-        candidates = self._pending_resume_choices_by_chat.get(chat_id)
-        if candidates is None:
-            await query.answer("Selection expired.")
-            return
-        index = int(raw_index)
-        if index < 0 or index >= len(candidates):
-            await query.answer("Invalid selection.")
-            return
-        candidate = candidates[index]
+        chat_id, candidate = selection
+
         try:
             session_id = await self._agent_service.load_session(
                 chat_id=chat_id,
@@ -421,6 +400,32 @@ class TelegramBridge:
             await query.edit_message_reply_markup(reply_markup=None)
         self._pending_resume_choices_by_chat.pop(chat_id, None)
         await self._reply(update, f"Session resumed: `{session_id}` in `{candidate.workspace}`")
+
+    async def _resolve_resume_selection(
+        self,
+        *,
+        update: Update,
+        query: CallbackQuery,
+    ) -> tuple[int, ResumableSession] | None:
+        index = self._resume_index(query.data or "")
+        if index is None:
+            await query.answer("Invalid selection.")
+            return None
+
+        chat_id = self._chat_id_from_update_or_query(update=update, query=query)
+        if chat_id is None:
+            await query.answer("Missing chat.")
+            return None
+
+        candidates = self._pending_resume_choices_by_chat.get(chat_id)
+        if candidates is None:
+            await query.answer("Selection expired.")
+            return None
+        if index < 0 or index >= len(candidates):
+            await query.answer("Invalid selection.")
+            return None
+
+        return chat_id, candidates[index]
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -526,7 +531,7 @@ class TelegramBridge:
     @staticmethod
     def _resume_keyboard(*, candidates: tuple[ResumableSession, ...]) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
-        for index, candidate in enumerate(candidates[:10]):
+        for index, candidate in enumerate(candidates[:RESUME_KEYBOARD_MAX_ROWS]):
             title = candidate.title.strip() or candidate.session_id
             label = title[:48]
             callback_data = f"{RESUME_CALLBACK_PREFIX}|{index}"
@@ -551,6 +556,27 @@ class TelegramBridge:
         if chat is None:
             raise ChatRequiredError
         return chat.id
+
+    @staticmethod
+    def _chat_id_from_update_or_query(*, update: Update, query: object) -> int | None:
+        chat = update.effective_chat
+        chat_id = chat.id if chat is not None else None
+        if chat_id is not None:
+            return chat_id
+        query_message = getattr(query, "message", None)
+        if query_message is None:
+            return None
+        return query_message.chat.id
+
+    @staticmethod
+    def _resume_index(data: str) -> int | None:
+        parts = data.split("|", maxsplit=1)
+        if len(parts) != RESUME_CALLBACK_PARTS:
+            return None
+        _, raw_index = parts
+        if not raw_index.isdigit():
+            return None
+        return int(raw_index)
 
     def _workspace_from_args(self, args: list[str]) -> Path:
         if not args:

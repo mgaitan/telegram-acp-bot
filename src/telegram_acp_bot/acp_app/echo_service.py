@@ -47,7 +47,8 @@ class EchoAgentService:
         session = self._registry.get(chat_id)
         if session is None:
             return ()
-        if workspace is not None and session.workspace != workspace.expanduser().resolve():
+        normalized_workspace = self._normalize_workspace(workspace)
+        if normalized_workspace is not None and session.workspace != normalized_workspace:
             return ()
         return (
             ResumableSession(
@@ -145,3 +146,9 @@ class EchoAgentService:
             raise ValueError(resolved)
         resolved.mkdir(parents=True, exist_ok=True)
         return resolved
+
+    @staticmethod
+    def _normalize_workspace(workspace: Path | None) -> Path | None:
+        if workspace is None:
+            return None
+        return workspace.expanduser().resolve()

@@ -97,6 +97,13 @@ class AcpHandshakeTimeoutError(RuntimeError):
         super().__init__(f"Timed out waiting for ACP agent handshake after {timeout_seconds:.1f}s.")
 
 
+class SessionLoadNotSupportedError(RuntimeError):
+    """Raised when the ACP agent does not implement `session/load`."""
+
+    def __init__(self) -> None:
+        super().__init__("ACP agent does not support `session/load`.")
+
+
 @dataclass(slots=True)
 class _LiveSession:
     acp_session_id: str
@@ -460,7 +467,7 @@ class AcpAgentService:
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         if not self._supports_load_session(capabilities):
             await self._shutdown(process)
-            raise RuntimeError("ACP agent does not support `session/load`.")
+            raise SessionLoadNotSupportedError()
         try:
             await asyncio.wait_for(
                 connection.load_session(cwd=str(workspace), session_id=session_id, mcp_servers=[]),
@@ -724,10 +731,10 @@ class AcpAgentService:
             cursor = result.next_cursor
             if cursor is None:
                 break
-        normalized_target = None if workspace is None else workspace.resolve()
+        normalized_target = self._resolved_workspace_or_none(workspace)
         mapped: list[ResumableSession] = []
         for info in sessions:
-            item_workspace = Path(info.cwd).expanduser().resolve()
+            item_workspace = self._workspace_from_session_cwd(info.cwd)
             if normalized_target is not None and item_workspace != normalized_target:
                 continue
             mapped.append(
@@ -759,6 +766,14 @@ class AcpAgentService:
     @staticmethod
     def _normalize_workspace(workspace: Path) -> Path:
         return workspace.expanduser().resolve()
+
+    @staticmethod
+    def _resolved_workspace_or_none(workspace: Path | None) -> Path | None:
+        return None if workspace is None else workspace.resolve()
+
+    @staticmethod
+    def _workspace_from_session_cwd(cwd: str) -> Path:
+        return Path(cwd).expanduser().resolve()
 
     async def _decide_permission(
         self,

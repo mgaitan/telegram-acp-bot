@@ -25,6 +25,7 @@ from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
     RESTART_EXIT_CODE,
+    RESUME_KEYBOARD_MAX_ROWS,
     AgentService,
     ChatRequiredError,
     TelegramBridge,
@@ -46,6 +47,16 @@ class MarkdownFailureError(TelegramError):
 
     def __init__(self) -> None:
         super().__init__("bad markdown")
+
+
+class DummyLoadFailedError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("load failed")
+
+
+class DummyListBoomError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("list boom")
 
 
 class DummyMessage:
@@ -208,7 +219,7 @@ class ResumeService:
 
     async def load_session(self, *, chat_id: int, session_id: str, workspace: Path) -> str:
         if self.fail_load:
-            raise RuntimeError("load failed")
+            raise DummyLoadFailedError()
         self.loaded = (chat_id, session_id, workspace)
         return session_id
 
@@ -496,7 +507,7 @@ async def test_resume_session_reports_list_error():
     class FailingListResumeService(ResumeService):
         async def list_resumable_sessions(self, *, chat_id: int, workspace: Path | None = None):
             del chat_id, workspace
-            raise RuntimeError("list boom")
+            raise DummyListBoomError()
 
     service = FailingListResumeService()
     bridge = TelegramBridge(
@@ -984,7 +995,7 @@ async def test_resume_keyboard_limits_to_ten_entries():
         for index in range(12)
     )
     keyboard = TelegramBridge._resume_keyboard(candidates=candidates)
-    assert len(keyboard.inline_keyboard) == 10
+    assert len(keyboard.inline_keyboard) == RESUME_KEYBOARD_MAX_ROWS
 
 
 async def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix():
