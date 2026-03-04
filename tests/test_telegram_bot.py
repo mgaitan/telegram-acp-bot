@@ -1002,10 +1002,36 @@ async def test_format_activity_block_read_escapes_markdown_and_removes_read_pref
     block = AgentActivityBlock(
         kind="read", title="Read test_telegram_bot.py", status="completed", text="Read test_telegram_bot.py"
     )
-    rendered = TelegramBridge._format_activity_block(block)
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
     assert "*📖 Reading*" in rendered
-    assert "test\\_telegram\\_bot.py" in rendered
-    assert "\n\nRead test\\_telegram\\_bot.py" not in rendered
+    assert "`/tmp/ws/test_telegram_bot.py`" in rendered
+    assert "\n\nRead /tmp/ws/test_telegram_bot.py" not in rendered
+
+
+async def test_format_activity_block_edit_uses_absolute_path_and_removes_edit_prefix():
+    block = AgentActivityBlock(kind="edit", title="Edit src/telegram_acp_bot/telegram/bot.py", status="completed")
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "*✏️ Editing*" in rendered
+    assert "`/tmp/ws/src/telegram_acp_bot/telegram/bot.py`" in rendered
+    assert "\n\nEdit /tmp/ws/src/telegram_acp_bot/telegram/bot.py" not in rendered
+
+
+async def test_format_activity_block_read_without_workspace_keeps_relative_path():
+    block = AgentActivityBlock(kind="read", title="Read README.md", status="completed", text="Read README.md")
+    rendered = TelegramBridge._format_activity_block(block, workspace=None)
+    assert "*📖 Reading*" in rendered
+    assert f"`{Path.cwd().resolve() / 'README.md'}`" in rendered
+    assert "`README.md`" not in rendered
+
+
+async def test_format_activity_block_read_prefers_file_uri_path():
+    block = AgentActivityBlock(
+        kind="read",
+        title="Read [@README.md](file:///home/tin/lab/telegram-acp/README.md)",
+        status="completed",
+    )
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "`/home/tin/lab/telegram-acp/README.md`" in rendered
 
 
 async def test_format_activity_block_preserves_thinking_inline_code():
@@ -1024,6 +1050,16 @@ async def test_format_activity_block_execute_wraps_command_as_inline_code():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
     assert "Run `git diff -- README.md docs/index.md`" in rendered
+
+
+async def test_format_activity_block_execute_multiline_command_uses_fenced_code_block():
+    block = AgentActivityBlock(
+        kind="execute",
+        title="Run git diff -- README.md \\\n  docs/index.md",
+        status="in_progress",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
 async def test_send_helpers_with_no_message():
@@ -1471,6 +1507,34 @@ async def test_on_resume_callback_success_and_failure_paths():
     assert TEST_CHAT_ID in bridge._pending_resume_choices_by_chat
 
 
+async def test_on_resume_callback_fallback_to_clear_markup_on_edit_error():
+    class FailingEditCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str) -> None:
+            del text
+            raise MarkdownFailureError
+
+    service = ResumeService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    bridge._pending_resume_choices_by_chat[TEST_CHAT_ID] = service.items
+    callback = FailingEditCallbackQuery("resume|0")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_resume_callback(update, make_context())
+    assert callback.answers[-1] == "Session resumed."
+    assert callback.reply_markup_cleared
+
+
 async def test_on_resume_callback_uses_query_message_chat_when_effective_chat_missing():
     service = ResumeService()
     bridge = TelegramBridge(
@@ -1507,6 +1571,22 @@ async def test_cancel_stop_clear_without_session():
         "No active session. Use /new first.",
         "No active session. Use /new first.",
     ]
+
+
+async def test_format_activity_block_read_with_absolute_path_keeps_absolute():
+    block = AgentActivityBlock(kind="read", title="Read /tmp/absolute.txt", status="completed")
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "`/tmp/absolute.txt`" in rendered
+
+
+async def test_format_read_path_empty_value_returns_empty_text():
+    rendered = TelegramBridge._format_read_path("   ", workspace=Path("/tmp/ws"))
+    assert rendered == ""
+
+
+async def test_escape_markdown_preserving_code_escapes_special_chars_outside_code():
+    rendered = TelegramBridge._escape_markdown_preserving_code("\\ _ * [ `code_[x]`")
+    assert rendered == "\\\\ \\_ \\* \\[ `code_[x]`"
 
 
 async def test_cancel_stop_clear_with_session():
