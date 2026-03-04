@@ -39,6 +39,31 @@ uv run acp-bot
 
 You can also install the adapter binary from [adapter releases](https://github.com/zed-industries/codex-acp/releases) and use `codex-acp` directly.
 
+### Codex profiles, sandbox, and behavior differences
+
+When using Codex through Zed, behavior can differ from running `npx @zed-industries/codex-acp` directly in this bot.
+Zed may apply profile/session settings (for example, default profile and tool permissions) that result in a different
+effective sandbox/approval mode than a plain adapter command.
+
+If you need deterministic behavior in Telegram, pass explicit Codex config overrides in `ACP_AGENT_COMMAND`:
+
+```bash
+OPENAI_API_KEY=... \
+ACP_AGENT_COMMAND='npx @zed-industries/codex-acp -c sandbox_mode="danger-full-access" -c approval_policy="never"' \
+uv run acp-bot
+```
+
+Safer alternative:
+
+```bash
+OPENAI_API_KEY=... \
+ACP_AGENT_COMMAND='npx @zed-industries/codex-acp -c sandbox_mode="workspace-write" -c approval_policy="on-request"' \
+uv run acp-bot
+```
+
+If a tool works in Zed but fails in Telegram with permission-like runtime errors, check the active runtime policy inside
+the agent session (for example `NoNewPrivs`/`Seccomp`) and compare against your Zed session.
+
 ## Claude Agent / Claude Code (via adapter)
 
 Claude integration for ACP clients is provided by [`@zed-industries/claude-agent-acp`](https://github.com/zed-industries/claude-agent-acp).
