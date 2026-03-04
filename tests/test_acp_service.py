@@ -16,6 +16,7 @@ from acp.schema import (
     AllowedOutcome,
     AudioContentBlock,
     BlobResourceContents,
+    ClientCapabilities,
     DeniedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
@@ -586,14 +587,13 @@ async def test_acp_client_send_attachment_ext_method_rejects_invalid_params():
     assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
 
     with pytest.raises(RequestError) as exc_info:
-        await client.ext_method("_telegram/send_attachment", {"sessionId": 1, "uri": "file:///tmp/x"})  # type: ignore[arg-type]
+        invalid_session_id_params: dict[str, object] = {"sessionId": 1, "uri": "file:///tmp/x"}
+        await client.ext_method("_telegram/send_attachment", invalid_session_id_params)
     assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
 
     with pytest.raises(RequestError) as exc_info:
-        await client.ext_method(
-            "_telegram/send_attachment",
-            {"sessionId": "s-ext-invalid", "dataBase64": "AA==", "mimeType": 1},  # type: ignore[arg-type]
-        )
+        invalid_mime_params: dict[str, object] = {"sessionId": "s-ext-invalid", "dataBase64": "AA==", "mimeType": 1}
+        await client.ext_method("_telegram/send_attachment", invalid_mime_params)
     assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
 
 
@@ -627,7 +627,7 @@ async def test_new_session_advertises_telegram_ext_capability(tmp_path: Path):
     )
     await service.new_session(chat_id=1, workspace=tmp_path)
     assert connection.initialize_kwargs is not None
-    capabilities = connection.initialize_kwargs["client_capabilities"]
+    capabilities = cast(ClientCapabilities, connection.initialize_kwargs["client_capabilities"])
     assert capabilities.field_meta is not None
     telegram_meta = capabilities.field_meta["telegram"]
     ext_methods = telegram_meta["extMethods"]
