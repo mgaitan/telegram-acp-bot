@@ -225,7 +225,7 @@ class _AcpClient:
 
         self._capture_agent_message(session_id=session_id, update=update)
 
-    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:
+    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:  # noqa: C901
         content = update.content
         text = "<content>"
         is_text_chunk = isinstance(content, TextContentBlock)
@@ -264,14 +264,40 @@ class _AcpClient:
                 )
 
         active_block = self._active_tool_blocks.get(session_id)
+        target: list[str] | None = None
         if active_block is not None:
-            active_block.chunks.append(text)
+            target = active_block.chunks
+        elif is_text_chunk:
+            target = self._pending_non_tool_text.setdefault(session_id, [])
+
+        if target is not None:
+            if is_text_chunk:
+                self._append_text_chunk(target, text)
+            else:
+                target.append(text)
             return
 
-        if is_text_chunk:
-            self._pending_non_tool_text.setdefault(session_id, []).append(text)
-            return
+        assert not is_text_chunk
         self._buffers.setdefault(session_id, []).append(text)
+
+    @staticmethod
+    def _append_text_chunk(target: list[str], chunk: str) -> None:
+        if not target:
+            target.append(chunk)
+            return
+        if not chunk:
+            return
+
+        previous = target[-1]
+        if not previous:
+            target.append(chunk)
+            return
+        if previous[-1].isspace() or chunk[0].isspace():
+            target.append(chunk)
+            return
+        if previous[-1] in {".", "!", "?", ";", ":", ")", "]", "}"} and chunk[0].isalnum():
+            target.append(" ")
+        target.append(chunk)
 
     async def _open_tool_block(self, *, session_id: str, tool_call_id: str, kind: str, title: str) -> None:
         await self._close_active_tool_block(session_id=session_id, status="in_progress")

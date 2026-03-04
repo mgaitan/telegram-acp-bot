@@ -37,6 +37,7 @@ from telegram_acp_bot.acp_app.models import (
     AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
+    ImagePayload,
     PromptFile,
     PromptImage,
 )
@@ -209,6 +210,128 @@ async def test_acp_client_capture_text_and_media_markers():
     assert reply.text == "hello"
     assert reply.images == ()
     assert reply.files == ()
+
+
+async def test_acp_client_joins_adjacent_text_chunks_with_spacing():
+    client = make_client()
+    session_id = "s-text-join"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("Created (deleted)."), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("Done."), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+    assert reply.text == "Created (deleted). Done."
+
+
+async def test_acp_client_does_not_insert_space_inside_split_word():
+    client = make_client()
+    session_id = "s-text-word-split"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("Sil"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("ence"), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+    assert reply.text == "Silence"
+
+
+async def test_acp_client_preserves_blank_lines_between_text_chunks():
+    client = make_client()
+    session_id = "s-text-blank-lines"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("First line\n\n"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("Second line"), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+    assert reply.text == "First line\n\nSecond line"
+
+
+async def test_acp_client_joins_adjacent_text_chunks_without_extra_spacing():
+    client = make_client()
+    session_id = "s-text-join-preserve"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("hello "), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("world"), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+    assert reply.text == "hello world"
+
+
+async def test_acp_client_append_text_chunk_branch_coverage():
+    target: list[str] = []
+    _AcpClient._append_text_chunk(target, "a")
+    assert target == ["a"]
+
+    _AcpClient._append_text_chunk(target, "")
+    assert target == ["a"]
+
+    target = [""]
+    _AcpClient._append_text_chunk(target, "b")
+    assert target == ["", "b"]
+
+    target = ["a "]
+    _AcpClient._append_text_chunk(target, "b")
+    assert target == ["a ", "b"]
+
+    target = ["a"]
+    _AcpClient._append_text_chunk(target, " b")
+    assert target == ["a", " b"]
+
+    target = ["a"]
+    _AcpClient._append_text_chunk(target, ".")
+    assert target == ["a", "."]
+
+    target = ["Sil"]
+    _AcpClient._append_text_chunk(target, "ence")
+    assert target == ["Sil", "ence"]
+
+
+async def test_acp_client_non_text_chunk_in_active_tool_block_is_captured():
+    client = make_client()
+    session_id = "s-non-text-active"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="tool", tool_call_id="tool-1", kind="execute", session_update="tool_call"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(
+            content=ImageContentBlock(data="AA==", mime_type="image/png", type="image"),
+            session_update="agent_message_chunk",
+        ),
+    )
+
+    reply = await client.finish_capture(session_id)
+    assert reply.images == (ImagePayload(data_base64="AA==", mime_type="image/png"),)
 
 
 async def test_acp_client_ignores_non_message_updates():
