@@ -1020,8 +1020,8 @@ async def test_format_activity_block_read_without_workspace_keeps_relative_path(
     block = AgentActivityBlock(kind="read", title="Read README.md", status="completed", text="Read README.md")
     rendered = TelegramBridge._format_activity_block(block, workspace=None)
     assert "*📖 Reading*" in rendered
-    assert "`README.md`" in rendered
-    assert "/home/tin/lab/README.md" not in rendered
+    assert f"`{Path.cwd().resolve() / 'README.md'}`" in rendered
+    assert "`README.md`" not in rendered
 
 
 async def test_format_activity_block_read_prefers_file_uri_path():

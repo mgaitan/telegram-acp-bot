@@ -303,7 +303,7 @@ class TelegramBridge:
         if app is None:
             return
 
-        workspace = self._agent_service.get_workspace(chat_id=chat_id)
+        workspace = self._activity_workspace(chat_id=chat_id)
         text = self._format_activity_block(block, workspace=workspace)
         try:
             await app.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
@@ -459,7 +459,7 @@ class TelegramBridge:
             return
 
         if self._app is None:
-            workspace = self._agent_service.get_workspace(chat_id=chat_id)
+            workspace = self._activity_workspace(chat_id=chat_id)
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
         if reply.text.strip():
@@ -711,14 +711,10 @@ class TelegramBridge:
         if path.is_absolute():
             safe_abs_path = str(path.resolve(strict=False)).replace("`", "\\`")
             return f"`{safe_abs_path}`"
-        if workspace is not None:
-            workspace_path = (workspace / path).resolve(strict=False)
-            safe_workspace_path = str(workspace_path).replace("`", "\\`")
-            return f"`{safe_workspace_path}`"
-
-        # No session workspace available: avoid resolving against bot process cwd.
-        safe_path = raw.replace("`", "\\`")
-        return f"`{safe_path}`"
+        base_workspace = workspace or Path.cwd()
+        workspace_path = (base_workspace / path).resolve(strict=False)
+        safe_workspace_path = str(workspace_path).replace("`", "\\`")
+        return f"`{safe_workspace_path}`"
 
     @staticmethod
     def _path_prefix_for_kind(kind: str) -> str | None:
@@ -727,6 +723,9 @@ class TelegramBridge:
         if kind == "edit":
             return "Edit "
         return None
+
+    def _activity_workspace(self, *, chat_id: int) -> Path:
+        return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:
