@@ -1315,6 +1315,55 @@ async def test_respond_permission_request_rejects_unknown_request(tmp_path: Path
     assert not await service.respond_permission_request(chat_id=1, request_id="missing", action="deny")
 
 
+async def test_respond_permission_request_rejects_unavailable_action(tmp_path: Path):
+    del tmp_path
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    future: asyncio.Future[RequestPermissionResponse] = asyncio.get_running_loop().create_future()
+    service._pending_permissions["req-1"] = _PendingPermission(
+        request_id="req-1",
+        chat_id=1,
+        acp_session_id="s-1",
+        tool_title="Run",
+        tool_call_id="tc-1",
+        options=(PermissionOption(kind="allow_once", name="Allow once", option_id="opt-once"),),
+        future=future,
+    )
+
+    accepted = await service.respond_permission_request(chat_id=1, request_id="req-1", action="always")
+    assert accepted is False
+    assert not future.done()
+
+
+async def test_decide_permission_auto_approve_supports_allow_always_only(tmp_path: Path):
+    process = FakeProcess()
+    connection = FakeConnection(session_id="approve-always-only")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    live = service._live_by_chat[1]
+    live.permission_mode = "approve"
+
+    option = PermissionOption(kind="allow_always", name="Always", option_id="opt-always")
+    tool_call = ToolCall(title="run", tool_call_id="tc-auto-always")
+    response = await service._decide_permission("approve-always-only", [option], tool_call)
+    assert response.outcome.outcome == "selected"
+
+
 async def test_stop_cancels_pending_permission_requests(tmp_path: Path):
     process = FakeProcess()
     connection = FakeConnection(session_id="pending")
@@ -1400,6 +1449,34 @@ async def test_build_permission_response_fallbacks():
 
     fallback = AcpAgentService._build_permission_response(options=(), action="once")
     assert fallback.outcome.outcome == "cancelled"
+
+    no_once = AcpAgentService._build_permission_response(
+        options=(PermissionOption(kind="allow_always", name="Always", option_id="opt-always"),),
+        action="once",
+    )
+    assert no_once.outcome.outcome == "cancelled"
+
+    no_always = AcpAgentService._build_permission_response(
+        options=(PermissionOption(kind="allow_once", name="Allow once", option_id="opt-once"),),
+        action="always",
+    )
+    assert no_always.outcome.outcome == "cancelled"
+
+
+async def test_available_actions_reflect_agent_options():
+    both = (
+        PermissionOption(kind="allow_once", name="Allow once", option_id="opt-once"),
+        PermissionOption(kind="allow_always", name="Always", option_id="opt-always"),
+    )
+    assert AcpAgentService._available_actions(both) == ("always", "once", "deny")
+
+    always_only = (PermissionOption(kind="allow_always", name="Always", option_id="opt-always"),)
+    assert AcpAgentService._available_actions(always_only) == ("always", "deny")
+
+    once_only = (PermissionOption(kind="allow_once", name="Allow once", option_id="opt-once"),)
+    assert AcpAgentService._available_actions(once_only) == ("once", "deny")
+
+    assert AcpAgentService._auto_approve_action(()) == "deny"
 
 
 async def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture):
