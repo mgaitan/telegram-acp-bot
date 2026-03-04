@@ -64,6 +64,23 @@ from telegram_acp_bot.core.session_registry import SessionRegistry
 
 logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
+TELEGRAM_SEND_ATTACHMENT_METHOD = "_telegram/send_attachment"
+TELEGRAM_EXTENSIONS_META: dict[str, object] = {
+    "telegram": {
+        "extMethods": {
+            TELEGRAM_SEND_ATTACHMENT_METHOD: {
+                "description": "Send an attachment to the Telegram user.",
+                "params": {
+                    "sessionId": "string",
+                    "uri": "string (optional, mutually exclusive with dataBase64)",
+                    "dataBase64": "string (optional, mutually exclusive with uri)",
+                    "mimeType": "string (optional)",
+                    "name": "string (optional, default: attachment.bin)",
+                },
+            }
+        }
+    }
+}
 
 
 class AcpConnectionFactory(Protocol):
@@ -376,12 +393,84 @@ class _AcpClient:
         raise RequestError.method_not_found("terminal/kill")
 
     async def ext_method(self, method: str, params: dict[str, object]) -> dict[str, object]:
-        del method, params
-        raise RequestError.method_not_found("ext/method")
+        if method != TELEGRAM_SEND_ATTACHMENT_METHOD:
+            raise RequestError.method_not_found(method)
+
+        allowed_keys = {"sessionId", "uri", "dataBase64", "mimeType", "name"}
+        unknown_keys = sorted(set(params).difference(allowed_keys))
+        if unknown_keys:
+            raise RequestError.invalid_params(
+                {
+                    "method": method,
+                    "message": "Unknown parameter(s).",
+                    "unknown": unknown_keys,
+                }
+            )
+
+        session_id = self._required_param_str(params=params, key="sessionId", method=method)
+        uri = self._optional_param_str(params=params, key="uri", method=method)
+        data_base64 = self._optional_param_str(params=params, key="dataBase64", method=method)
+        mime_type = self._optional_param_str(params=params, key="mimeType", method=method)
+        name = self._optional_param_str(params=params, key="name", method=method) or "attachment.bin"
+
+        if session_id not in self._buffers:
+            raise RequestError.invalid_params(
+                {
+                    "method": method,
+                    "message": "Unknown sessionId. Call this method while a prompt is active.",
+                    "sessionId": session_id,
+                }
+            )
+        if (uri is None) == (data_base64 is None):
+            raise RequestError.invalid_params(
+                {
+                    "method": method,
+                    "message": "Provide exactly one of uri or dataBase64.",
+                }
+            )
+        if data_base64 is not None and mime_type and mime_type.startswith("image/"):
+            self._images.setdefault(session_id, []).append(ImagePayload(data_base64=data_base64, mime_type=mime_type))
+            return {}
+
+        self._files.setdefault(session_id, []).append(
+            FilePayload(
+                name=name,
+                mime_type=mime_type,
+                text_content=uri,
+                data_base64=data_base64,
+            )
+        )
+        return {}
 
     async def ext_notification(self, method: str, params: dict[str, object]) -> None:
         del method, params
         raise RequestError.method_not_found("ext/notification")
+
+    @staticmethod
+    def _required_param_str(*, params: dict[str, object], key: str, method: str) -> str:
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        raise RequestError.invalid_params(
+            {
+                "method": method,
+                "message": f"Parameter `{key}` must be a non-empty string.",
+            }
+        )
+
+    @staticmethod
+    def _optional_param_str(*, params: dict[str, object], key: str, method: str) -> str | None:
+        value = params.get(key)
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        raise RequestError.invalid_params(
+            {
+                "method": method,
+                "message": f"Parameter `{key}` must be a string.",
+            }
+        )
 
 
 class AcpAgentService:
@@ -699,7 +788,7 @@ class AcpAgentService:
             initialized = await asyncio.wait_for(
                 connection.initialize(
                     protocol_version=PROTOCOL_VERSION,
-                    client_capabilities=ClientCapabilities(),
+                    client_capabilities=ClientCapabilities(field_meta=TELEGRAM_EXTENSIONS_META),
                     client_info=Implementation(name="telegram-acp-bot", title="Telegram ACP Bot", version="0.1.0"),
                 ),
                 timeout=self._connect_timeout,

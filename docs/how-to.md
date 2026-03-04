@@ -89,3 +89,18 @@ The bot exits polling and re-execs the process (or uses `ACP_RESTART_COMMAND` if
 - Session scope is per Telegram chat.
 - `/new` replaces the active session for that chat.
 - `/resume` is ACP-native (`session/list` + `session/load`) and depends on agent capabilities.
+
+## Agent-to-Telegram attachments (explicit ACP extension)
+
+This bot advertises a client extension method named `_telegram/send_attachment` via ACP `initialize` `_meta`.
+
+Supported params:
+
+- `sessionId` (required, string)
+- exactly one of:
+  - `uri` (string)
+  - `dataBase64` (string)
+- `mimeType` (optional, string)
+- `name` (optional, string, defaults to `attachment.bin`)
+
+Behavior is explicit: if the agent does not call `_telegram/send_attachment`, no extension-based attachment is sent.

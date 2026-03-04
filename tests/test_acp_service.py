@@ -37,6 +37,7 @@ from telegram_acp_bot.acp_app.models import (
     AgentOutputLimitExceededError,
     AgentReply,
     FilePayload,
+    ImagePayload,
     PromptFile,
     PromptImage,
 )
@@ -46,6 +47,7 @@ pytestmark = pytest.mark.asyncio
 
 EXPECTED_CAPTURED_FILES = 2
 ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
+INVALID_PARAMS_ERROR_CODE = -32602
 
 
 def make_client() -> _AcpClient:
@@ -98,9 +100,11 @@ class FakeConnection:
         self._supports_session_list = supports_session_list
         self._listed_sessions = listed_sessions or []
         self._session_id = session_id
+        self.initialize_kwargs: dict[str, object] | None = None
 
     async def initialize(self, **kwargs):
         self.initialized = True
+        self.initialize_kwargs = kwargs
         assert kwargs["protocol_version"] == 1
         session_capabilities = (
             SessionCapabilities(list=SessionListCapabilities()) if self._supports_session_list else None
@@ -514,12 +518,120 @@ async def test_acp_client_unsupported_methods_raise(method_name: str, args: dict
         await method(**args)
 
 
+async def test_acp_client_send_attachment_ext_method_appends_image_payload():
+    client = make_client()
+    session_id = "s-ext-image"
+    client.start_capture(session_id)
+
+    result = await client.ext_method(
+        "_telegram/send_attachment",
+        {
+            "sessionId": session_id,
+            "dataBase64": "AA==",
+            "mimeType": "image/png",
+            "name": "chart.png",
+        },
+    )
+    reply = await client.finish_capture(session_id)
+
+    assert result == {}
+    assert reply.images == (ImagePayload(data_base64="AA==", mime_type="image/png"),)
+    assert reply.files == ()
+
+
+async def test_acp_client_send_attachment_ext_method_appends_file_payload():
+    client = make_client()
+    session_id = "s-ext-file"
+    client.start_capture(session_id)
+
+    result = await client.ext_method(
+        "_telegram/send_attachment",
+        {
+            "sessionId": session_id,
+            "uri": "file:///tmp/report.txt",
+            "mimeType": "text/plain",
+            "name": "report.txt",
+        },
+    )
+    reply = await client.finish_capture(session_id)
+
+    assert result == {}
+    assert reply.images == ()
+    assert reply.files == (
+        FilePayload(name="report.txt", mime_type="text/plain", text_content="file:///tmp/report.txt"),
+    )
+
+
+async def test_acp_client_send_attachment_ext_method_rejects_invalid_params():
+    client = make_client()
+    client.start_capture("s-ext-invalid")
+
+    with pytest.raises(RequestError) as exc_info:
+        await client.ext_method("_telegram/send_attachment", {"sessionId": "s-ext-invalid"})
+    assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
+
+    with pytest.raises(RequestError) as exc_info:
+        await client.ext_method("_telegram/send_attachment", {"sessionId": "missing", "uri": "file:///tmp/x"})
+    assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
+
+    with pytest.raises(RequestError) as exc_info:
+        await client.ext_method(
+            "_telegram/send_attachment",
+            {
+                "sessionId": "s-ext-invalid",
+                "uri": "file:///tmp/x",
+                "extra": "nope",
+            },
+        )
+    assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
+
+    with pytest.raises(RequestError) as exc_info:
+        await client.ext_method("_telegram/send_attachment", {"sessionId": 1, "uri": "file:///tmp/x"})  # type: ignore[arg-type]
+    assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
+
+    with pytest.raises(RequestError) as exc_info:
+        await client.ext_method(
+            "_telegram/send_attachment",
+            {"sessionId": "s-ext-invalid", "dataBase64": "AA==", "mimeType": 1},  # type: ignore[arg-type]
+        )
+    assert exc_info.value.code == INVALID_PARAMS_ERROR_CODE
+
+
 async def test_acp_client_unsupported_ext_methods_raise():
     client = make_client()
     with pytest.raises(RequestError):
         await client.ext_method("x", {})
     with pytest.raises(RequestError):
         await client.ext_notification("x", {})
+
+
+async def test_new_session_advertises_telegram_ext_capability(tmp_path: Path):
+    process = FakeProcess()
+    connection = FakeConnection(session_id="s-meta")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    assert connection.initialize_kwargs is not None
+    capabilities = connection.initialize_kwargs["client_capabilities"]
+    assert capabilities.field_meta is not None
+    telegram_meta = capabilities.field_meta["telegram"]
+    ext_methods = telegram_meta["extMethods"]
+    assert "_telegram/send_attachment" in ext_methods
 
 
 async def test_new_session_creates_missing_workspace(tmp_path: Path):
