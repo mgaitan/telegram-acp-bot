@@ -291,12 +291,24 @@ class TelegramBridge:
             return
 
         keyboard = self._permission_keyboard(request)
-        message = f"Permission required for:\n{request.tool_title}"
-        await self._app.bot.send_message(
-            chat_id=request.chat_id,
-            text=message,
-            reply_markup=keyboard,
-        )
+        title = TelegramBridge._format_permission_tool_title(request.tool_title)
+        message_parts = ["*⚠️ Permission required for:*"]
+        if title:
+            message_parts.append(TelegramBridge._render_activity_part(title))
+        message = "\n\n".join(message_parts)
+        try:
+            await self._app.bot.send_message(
+                chat_id=request.chat_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+        except TelegramError:
+            await self._app.bot.send_message(
+                chat_id=request.chat_id,
+                text=f"⚠️ Permission required for:\n{request.tool_title}",
+                reply_markup=keyboard,
+            )
 
     async def on_activity_event(self, chat_id: int, block: AgentActivityBlock) -> None:
         app = self._app
@@ -727,6 +739,17 @@ class TelegramBridge:
         if kind == "edit":
             return "Edit "
         return None
+
+    @staticmethod
+    def _format_permission_tool_title(tool_title: str) -> str:
+        title = tool_title.strip()
+        if not title:
+            return ""
+        if title.startswith("Run "):
+            return TelegramBridge._normalize_activity_title(
+                AgentActivityBlock(kind="execute", title=title, status="in_progress")
+            )
+        return title
 
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace

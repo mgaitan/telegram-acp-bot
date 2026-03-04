@@ -1062,6 +1062,14 @@ async def test_format_activity_block_execute_multiline_command_uses_fenced_code_
     assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
+async def test_format_permission_tool_title_empty_returns_empty():
+    assert TelegramBridge._format_permission_tool_title("   ") == ""
+
+
+async def test_format_permission_tool_title_non_run_keeps_title():
+    assert TelegramBridge._format_permission_tool_title("Read README.md") == "Read README.md"
+
+
 async def test_format_activity_block_execute_multiple_run_segments_are_wrapped_individually():
     block = AgentActivityBlock(
         kind="execute",
@@ -1126,9 +1134,51 @@ async def test_on_permission_request_sends_buttons():
     assert len(dummy_bot.sent_messages) == 1
     payload = dummy_bot.sent_messages[0]
     assert payload["chat_id"] == TEST_CHAT_ID
-    assert "Permission required for:" in cast(str, payload["text"])
+    assert "*⚠️ Permission required for:*" in cast(str, payload["text"])
+    assert "Run `ls`" in cast(str, payload["text"])
+    assert payload["parse_mode"] == "Markdown"
     markup = payload["reply_markup"]
     assert markup is not None
+
+
+async def test_on_permission_request_formats_multiline_run_as_code_block():
+    bridge = make_bridge()
+    dummy_bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=dummy_bot))
+
+    request = PermissionRequest(
+        chat_id=TEST_CHAT_ID,
+        request_id="abc-multi",
+        tool_title="Run git diff -- README.md \\\n  docs/index.md",
+        tool_call_id="call-multi",
+        available_actions=("always", "once", "deny"),
+    )
+    await bridge.on_permission_request(request)
+
+    assert len(dummy_bot.sent_messages) == 1
+    payload = dummy_bot.sent_messages[0]
+    assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in cast(str, payload["text"])
+    assert payload["parse_mode"] == "Markdown"
+
+
+async def test_on_permission_request_markdown_fallback_uses_plain_text():
+    bridge = make_bridge()
+    failing_bot = FailingMarkdownBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=failing_bot))
+
+    request = PermissionRequest(
+        chat_id=TEST_CHAT_ID,
+        request_id="abc-fallback",
+        tool_title="Run ls",
+        tool_call_id="call-fallback",
+        available_actions=("always", "once", "deny"),
+    )
+    await bridge.on_permission_request(request)
+
+    assert len(failing_bot.sent_messages) == 1
+    payload = failing_bot.sent_messages[0]
+    assert payload["text"] == "⚠️ Permission required for:\nRun ls"
+    assert "parse_mode" not in payload
 
 
 async def test_on_permission_request_without_app_is_noop():
