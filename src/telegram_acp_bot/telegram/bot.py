@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol, cast
+from urllib.parse import urlparse
 
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, Update
 from telegram.constants import ChatAction, ParseMode
@@ -698,11 +699,25 @@ class TelegramBridge:
         raw = raw_path.strip()
         if not raw:
             return ""
+
+        # Prefer explicit file URIs when present in tool titles/text.
+        if "file://" in raw:
+            parsed = urlparse(raw[raw.index("file://") :])
+            if parsed.scheme == "file" and parsed.path:
+                safe_uri_path = parsed.path.rstrip(")").replace("`", "\\`")
+                return f"`{safe_uri_path}`"
+
         path = Path(raw).expanduser()
-        if not path.is_absolute() and workspace is not None:
-            path = workspace / path
-        absolute_path = path.resolve(strict=False)
-        safe_path = str(absolute_path).replace("`", "\\`")
+        if path.is_absolute():
+            safe_abs_path = str(path.resolve(strict=False)).replace("`", "\\`")
+            return f"`{safe_abs_path}`"
+        if workspace is not None:
+            workspace_path = (workspace / path).resolve(strict=False)
+            safe_workspace_path = str(workspace_path).replace("`", "\\`")
+            return f"`{safe_workspace_path}`"
+
+        # No session workspace available: avoid resolving against bot process cwd.
+        safe_path = raw.replace("`", "\\`")
         return f"`{safe_path}`"
 
     @staticmethod

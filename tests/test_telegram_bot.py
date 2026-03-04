@@ -1016,6 +1016,24 @@ async def test_format_activity_block_edit_uses_absolute_path_and_removes_edit_pr
     assert "\n\nEdit /tmp/ws/src/telegram_acp_bot/telegram/bot.py" not in rendered
 
 
+async def test_format_activity_block_read_without_workspace_keeps_relative_path():
+    block = AgentActivityBlock(kind="read", title="Read README.md", status="completed", text="Read README.md")
+    rendered = TelegramBridge._format_activity_block(block, workspace=None)
+    assert "*📖 Reading*" in rendered
+    assert "`README.md`" in rendered
+    assert "/home/tin/lab/README.md" not in rendered
+
+
+async def test_format_activity_block_read_prefers_file_uri_path():
+    block = AgentActivityBlock(
+        kind="read",
+        title="Read [@README.md](file:///home/tin/lab/telegram-acp/README.md)",
+        status="completed",
+    )
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "`/home/tin/lab/telegram-acp/README.md`" in rendered
+
+
 async def test_format_activity_block_preserves_thinking_inline_code():
     block = AgentActivityBlock(
         kind="think",
