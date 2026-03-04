@@ -1507,6 +1507,34 @@ async def test_on_resume_callback_success_and_failure_paths():
     assert TEST_CHAT_ID in bridge._pending_resume_choices_by_chat
 
 
+async def test_on_resume_callback_fallback_to_clear_markup_on_edit_error():
+    class FailingEditCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str) -> None:
+            del text
+            raise MarkdownFailureError
+
+    service = ResumeService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    bridge._pending_resume_choices_by_chat[TEST_CHAT_ID] = service.items
+    callback = FailingEditCallbackQuery("resume|0")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_resume_callback(update, make_context())
+    assert callback.answers[-1] == "Session resumed."
+    assert callback.reply_markup_cleared
+
+
 async def test_on_resume_callback_uses_query_message_chat_when_effective_chat_missing():
     service = ResumeService()
     bridge = TelegramBridge(
@@ -1543,6 +1571,22 @@ async def test_cancel_stop_clear_without_session():
         "No active session. Use /new first.",
         "No active session. Use /new first.",
     ]
+
+
+async def test_format_activity_block_read_with_absolute_path_keeps_absolute():
+    block = AgentActivityBlock(kind="read", title="Read /tmp/absolute.txt", status="completed")
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "`/tmp/absolute.txt`" in rendered
+
+
+async def test_format_read_path_empty_value_returns_empty_text():
+    rendered = TelegramBridge._format_read_path("   ", workspace=Path("/tmp/ws"))
+    assert rendered == ""
+
+
+async def test_escape_markdown_preserving_code_escapes_special_chars_outside_code():
+    rendered = TelegramBridge._escape_markdown_preserving_code("\\ _ * [ `code_[x]`")
+    assert rendered == "\\\\ \\_ \\* \\[ `code_[x]`"
 
 
 async def test_cancel_stop_clear_with_session():

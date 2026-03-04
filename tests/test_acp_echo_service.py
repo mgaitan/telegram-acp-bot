@@ -109,3 +109,7 @@ async def test_new_session_rejects_file_workspace(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         await service.new_session(chat_id=1, workspace=invalid)
+
+
+async def test_normalize_workspace_allows_none() -> None:
+    assert EchoAgentService._normalize_workspace(None) is None
