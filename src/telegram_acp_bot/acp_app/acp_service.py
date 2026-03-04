@@ -649,6 +649,17 @@ class AcpAgentService:
             )
             return False
 
+        available_actions = self._available_actions(pending.options)
+        if action not in available_actions:
+            logger.warning(
+                "Permission response rejected: unavailable action request_id=%s chat_id=%s action=%s available=%s",
+                request_id,
+                chat_id,
+                action,
+                ",".join(available_actions),
+            )
+            return False
+
         response = self._build_permission_response(
             options=pending.options,
             action=action,
@@ -789,7 +800,8 @@ class AcpAgentService:
             if live.acp_session_id != session_id:
                 continue
             if live.permission_mode == "approve" or live.active_prompt_auto_approve:
-                return self._build_permission_response(options=tuple(options), action="once")
+                auto_action = self._auto_approve_action(tuple(options))
+                return self._build_permission_response(options=tuple(options), action=auto_action)
             if live.permission_mode == "deny":
                 return self._build_permission_response(options=tuple(options), action="deny")
 
@@ -831,10 +843,10 @@ class AcpAgentService:
     def _available_actions(options: tuple[PermissionOption, ...]) -> tuple[PermissionDecisionAction, ...]:
         kinds = {option.kind for option in options}
         actions: list[PermissionDecisionAction] = []
-        if "allow_once" in kinds or "allow_always" in kinds:
-            actions.append("once")
         if "allow_always" in kinds:
             actions.append("always")
+        if "allow_once" in kinds:
+            actions.append("once")
         actions.append("deny")
         return tuple(actions)
 
@@ -847,14 +859,20 @@ class AcpAgentService:
         if action == "deny":
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
-        preferred_kinds = ("allow_always", "allow_once") if action == "always" else ("allow_once", "allow_always")
-        for kind in preferred_kinds:
-            for option in options:
-                if option.kind == kind:
-                    return RequestPermissionResponse(
-                        outcome=AllowedOutcome(option_id=option.option_id, outcome="selected")
-                    )
+        target_kind = "allow_always" if action == "always" else "allow_once"
+        for option in options:
+            if option.kind == target_kind:
+                return RequestPermissionResponse(outcome=AllowedOutcome(option_id=option.option_id, outcome="selected"))
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    @staticmethod
+    def _auto_approve_action(options: tuple[PermissionOption, ...]) -> PermissionDecisionAction:
+        kinds = {option.kind for option in options}
+        if "allow_once" in kinds:
+            return "once"
+        if "allow_always" in kinds:
+            return "always"
+        return "deny"
 
     def _report_permission_event(self, event: str) -> None:
         if self._permission_event_output == "stdout":
