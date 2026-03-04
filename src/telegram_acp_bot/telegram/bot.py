@@ -656,15 +656,17 @@ class TelegramBridge:
                     return f"Run\n```sh\n{command}\n```"
                 safe_command = command.replace("`", "\\`")
                 return f"Run `{safe_command}`"
-        if block.kind == "read" and title.startswith("Read "):
-            return TelegramBridge._format_read_path(title[5:], workspace=workspace)
+        path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
+        if path_prefix and title.startswith(path_prefix):
+            return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
         return title
 
     @staticmethod
     def _normalize_activity_text(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
         text = block.text.strip()
-        if block.kind == "read" and text.startswith("Read ") and "\n" not in text:
-            return TelegramBridge._format_read_path(text[5:], workspace=workspace)
+        path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
+        if path_prefix and text.startswith(path_prefix) and "\n" not in text:
+            return TelegramBridge._format_read_path(text[len(path_prefix) :], workspace=workspace)
         return text
 
     @staticmethod
@@ -702,6 +704,14 @@ class TelegramBridge:
         absolute_path = path.resolve(strict=False)
         safe_path = str(absolute_path).replace("`", "\\`")
         return f"`{safe_path}`"
+
+    @staticmethod
+    def _path_prefix_for_kind(kind: str) -> str | None:
+        if kind == "read":
+            return "Read "
+        if kind == "edit":
+            return "Edit "
+        return None
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:

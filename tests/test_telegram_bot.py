@@ -1008,6 +1008,14 @@ async def test_format_activity_block_read_escapes_markdown_and_removes_read_pref
     assert "\n\nRead /tmp/ws/test_telegram_bot.py" not in rendered
 
 
+async def test_format_activity_block_edit_uses_absolute_path_and_removes_edit_prefix():
+    block = AgentActivityBlock(kind="edit", title="Edit src/telegram_acp_bot/telegram/bot.py", status="completed")
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "*✏️ Editing*" in rendered
+    assert "`/tmp/ws/src/telegram_acp_bot/telegram/bot.py`" in rendered
+    assert "\n\nEdit /tmp/ws/src/telegram_acp_bot/telegram/bot.py" not in rendered
+
+
 async def test_format_activity_block_preserves_thinking_inline_code():
     block = AgentActivityBlock(
         kind="think",
