@@ -1002,10 +1002,10 @@ async def test_format_activity_block_read_escapes_markdown_and_removes_read_pref
     block = AgentActivityBlock(
         kind="read", title="Read test_telegram_bot.py", status="completed", text="Read test_telegram_bot.py"
     )
-    rendered = TelegramBridge._format_activity_block(block)
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
     assert "*📖 Reading*" in rendered
-    assert "test\\_telegram\\_bot.py" in rendered
-    assert "\n\nRead test\\_telegram\\_bot.py" not in rendered
+    assert "`/tmp/ws/test_telegram_bot.py`" in rendered
+    assert "\n\nRead /tmp/ws/test_telegram_bot.py" not in rendered
 
 
 async def test_format_activity_block_preserves_thinking_inline_code():
@@ -1024,6 +1024,16 @@ async def test_format_activity_block_execute_wraps_command_as_inline_code():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
     assert "Run `git diff -- README.md docs/index.md`" in rendered
+
+
+async def test_format_activity_block_execute_multiline_command_uses_fenced_code_block():
+    block = AgentActivityBlock(
+        kind="execute",
+        title="Run git diff -- README.md \\\n  docs/index.md",
+        status="in_progress",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
 async def test_send_helpers_with_no_message():

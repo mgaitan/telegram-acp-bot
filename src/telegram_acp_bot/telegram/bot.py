@@ -302,7 +302,8 @@ class TelegramBridge:
         if app is None:
             return
 
-        text = self._format_activity_block(block)
+        workspace = self._agent_service.get_workspace(chat_id=chat_id)
+        text = self._format_activity_block(block, workspace=workspace)
         try:
             await app.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
         except TelegramError:
@@ -457,8 +458,9 @@ class TelegramBridge:
             return
 
         if self._app is None:
+            workspace = self._agent_service.get_workspace(chat_id=chat_id)
             for block in reply.activity_blocks:
-                await self._reply_activity_block(update, block)
+                await self._reply_activity_block(update, block, workspace=workspace)
         if reply.text.strip():
             await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
@@ -614,51 +616,55 @@ class TelegramBridge:
             await update.message.reply_text(text)
 
     @staticmethod
-    async def _reply_activity_block(update: Update, block: AgentActivityBlock) -> None:
+    async def _reply_activity_block(
+        update: Update, block: AgentActivityBlock, *, workspace: Path | None = None
+    ) -> None:
         if update.message is None:
             return
 
-        text = TelegramBridge._format_activity_block(block)
+        text = TelegramBridge._format_activity_block(block, workspace=workspace)
         try:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         except TelegramError:
             await update.message.reply_text(text)
 
     @staticmethod
-    def _format_activity_block(block: AgentActivityBlock) -> str:
+    def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
         label = KIND_LABELS.get(block.kind, "⚙️ Tool call")
         text_parts = [f"*{label}*"]
-        normalized_title = TelegramBridge._normalize_activity_title(block)
-        normalized_text = TelegramBridge._normalize_activity_text(block)
+        normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
+        normalized_text = TelegramBridge._normalize_activity_text(block, workspace=workspace)
         if normalized_title and normalized_text and normalized_title == normalized_text:
             normalized_title = ""
         if normalized_title:
-            text_parts.append(TelegramBridge._escape_markdown_preserving_code(normalized_title))
+            text_parts.append(TelegramBridge._render_activity_part(normalized_title))
         if normalized_text:
-            text_parts.append(TelegramBridge._escape_markdown_preserving_code(normalized_text))
+            text_parts.append(TelegramBridge._render_activity_part(normalized_text))
         if block.status == "failed":
             text_parts.append("_Failed_")
         return "\n\n".join(text_parts)
 
     @staticmethod
-    def _normalize_activity_title(block: AgentActivityBlock) -> str:
+    def _normalize_activity_title(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
         title = block.title.strip()
         if block.kind == "think":
             return ""
         if block.kind == "execute" and title.startswith("Run "):
             command = title[4:].strip()
             if command:
+                if "\n" in command:
+                    return f"Run\n```sh\n{command}\n```"
                 safe_command = command.replace("`", "\\`")
                 return f"Run `{safe_command}`"
         if block.kind == "read" and title.startswith("Read "):
-            return title[5:]
+            return TelegramBridge._format_read_path(title[5:], workspace=workspace)
         return title
 
     @staticmethod
-    def _normalize_activity_text(block: AgentActivityBlock) -> str:
+    def _normalize_activity_text(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
         text = block.text.strip()
         if block.kind == "read" and text.startswith("Read ") and "\n" not in text:
-            return text[5:]
+            return TelegramBridge._format_read_path(text[5:], workspace=workspace)
         return text
 
     @staticmethod
@@ -678,6 +684,24 @@ class TelegramBridge:
                 continue
             escaped.append(char)
         return "".join(escaped)
+
+    @staticmethod
+    def _render_activity_part(text: str) -> str:
+        if "```" in text:
+            return text
+        return TelegramBridge._escape_markdown_preserving_code(text)
+
+    @staticmethod
+    def _format_read_path(raw_path: str, *, workspace: Path | None) -> str:
+        raw = raw_path.strip()
+        if not raw:
+            return ""
+        path = Path(raw).expanduser()
+        if not path.is_absolute() and workspace is not None:
+            path = workspace / path
+        absolute_path = path.resolve(strict=False)
+        safe_path = str(absolute_path).replace("`", "\\`")
+        return f"`{safe_path}`"
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:
