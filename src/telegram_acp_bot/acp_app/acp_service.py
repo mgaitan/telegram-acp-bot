@@ -295,10 +295,8 @@ class _AcpClient:
         if previous[-1].isspace() or chunk[0].isspace():
             target.append(chunk)
             return
-        if chunk[0] in {".", ",", ";", ":", "!", "?", ")", "]", "}"}:
-            target.append(chunk)
-            return
-        target.append(" ")
+        if previous[-1] in {".", "!", "?", ";", ":", ")", "]", "}"} and chunk[0].isalnum():
+            target.append(" ")
         target.append(chunk)
 
     async def _open_tool_block(self, *, session_id: str, tool_call_id: str, kind: str, title: str) -> None:
