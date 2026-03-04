@@ -1062,6 +1062,17 @@ async def test_format_activity_block_execute_multiline_command_uses_fenced_code_
     assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
+async def test_format_activity_block_execute_multiple_run_segments_are_wrapped_individually():
+    block = AgentActivityBlock(
+        kind="execute",
+        title="Run which ffmpeg, Run ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png",
+        status="in_progress",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "Run `which ffmpeg`, Run `ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png`" in rendered
+    assert "Run `which ffmpeg, Run ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png`" not in rendered
+
+
 async def test_send_helpers_with_no_message():
     update = make_update(with_message=False)
     image = ImagePayload(data_base64=base64.b64encode(b"img").decode("ascii"), mime_type="image/jpeg")

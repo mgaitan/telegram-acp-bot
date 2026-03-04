@@ -655,6 +655,10 @@ class TelegramBridge:
             if command:
                 if "\n" in command:
                     return f"Run\n```sh\n{command}\n```"
+                if ", Run " in command:
+                    commands = [part.strip() for part in command.split(", Run ")]
+                    if commands and all(commands):
+                        return ", ".join(f"Run `{cmd.replace('`', '\\`')}`" for cmd in commands)
                 safe_command = command.replace("`", "\\`")
                 return f"Run `{safe_command}`"
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
