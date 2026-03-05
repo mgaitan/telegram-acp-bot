@@ -14,7 +14,7 @@ Please review the latest commit and suggest a fix.
 
 You can also attach images/documents; the bot forwards them to ACP prompt input.
 
-## 2. Start a new session in another workspace
+## 2. Start or switch sessions with `/new`
 
 Create a session in the default workspace:
 
