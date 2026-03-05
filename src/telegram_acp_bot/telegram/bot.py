@@ -511,11 +511,17 @@ class TelegramBridge:
 
     async def _ensure_session_for_chat(self, *, update: Update, chat_id: int) -> bool:
         if self._agent_service.get_workspace(chat_id=chat_id) is not None:
+            self._drop_implicit_start_lock(chat_id=chat_id)
             return True
-        async with self._implicit_start_lock(chat_id):
+        lock = self._implicit_start_lock(chat_id)
+        async with lock:
             if self._agent_service.get_workspace(chat_id=chat_id) is not None:
+                self._drop_implicit_start_lock(chat_id=chat_id, expected_lock=lock)
                 return True
-            return await self._start_implicit_session(update=update, chat_id=chat_id)
+            started = await self._start_implicit_session(update=update, chat_id=chat_id)
+            if self._agent_service.get_workspace(chat_id=chat_id) is not None:
+                self._drop_implicit_start_lock(chat_id=chat_id, expected_lock=lock)
+            return started
 
     async def _start_session(
         self,
@@ -546,6 +552,14 @@ class TelegramBridge:
             lock = asyncio.Lock()
             self._implicit_start_locks_by_chat[chat_id] = lock
         return lock
+
+    def _drop_implicit_start_lock(self, *, chat_id: int, expected_lock: asyncio.Lock | None = None) -> None:
+        current_lock = self._implicit_start_locks_by_chat.get(chat_id)
+        if current_lock is None:
+            return
+        if expected_lock is not None and current_lock is not expected_lock:
+            return
+        self._implicit_start_locks_by_chat.pop(chat_id, None)
 
     async def _request_reply(
         self,

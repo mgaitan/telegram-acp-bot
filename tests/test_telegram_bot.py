@@ -725,6 +725,27 @@ async def test_first_prompt_starts_implicit_session_in_default_workspace(tmp_pat
     assert update.message.replies == ["ok"]
 
 
+async def test_implicit_start_lock_is_dropped_once_session_exists(tmp_path: Path):
+    service = RecordingImplicitService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path))
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+
+    await bridge.on_message(make_update(chat_id=TEST_CHAT_ID, text="hello"), make_context())
+
+    assert TEST_CHAT_ID not in bridge._implicit_start_locks_by_chat
+
+
+async def test_drop_implicit_start_lock_keeps_lock_when_expected_lock_differs():
+    bridge = make_bridge()
+    stored_lock = asyncio.Lock()
+    different_lock = asyncio.Lock()
+    bridge._implicit_start_locks_by_chat[TEST_CHAT_ID] = stored_lock
+
+    bridge._drop_implicit_start_lock(chat_id=TEST_CHAT_ID, expected_lock=different_lock)
+
+    assert bridge._implicit_start_locks_by_chat[TEST_CHAT_ID] is stored_lock
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -780,6 +801,7 @@ async def test_concurrent_first_prompts_start_only_one_implicit_session(tmp_path
     assert update_two.message is not None
     assert update_one.message.replies == ["ok"]
     assert update_two.message.replies == ["ok"]
+    assert TEST_CHAT_ID not in bridge._implicit_start_locks_by_chat
 
 
 async def test_on_text_entities_fallback_to_plain():
