@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from tempfile import gettempdir, mkstemp
+from tempfile import mkstemp
 
 STATE_FILE_ENV = "ACP_TELEGRAM_CHANNEL_STATE_FILE"
 TOKEN_ENV = "ACP_TELEGRAM_BOT_TOKEN"
@@ -15,7 +15,17 @@ STATE_FILE_MODE = 0o600
 def default_state_file(*, pid: int) -> Path:
     """Return the default state file for a bot process."""
 
-    return Path(gettempdir()) / f"telegram-acp-bot-mcp-state-{pid}.json"
+    return _default_state_dir() / f"telegram-acp-bot-mcp-state-{pid}.json"
+
+
+def _default_state_dir() -> Path:
+    runtime_dir = os.getenv("XDG_RUNTIME_DIR", "").strip()
+    if runtime_dir:
+        return Path(runtime_dir).expanduser() / "telegram-acp-bot"
+    state_home = os.getenv("XDG_STATE_HOME", "").strip()
+    if state_home:
+        return Path(state_home).expanduser() / "telegram-acp-bot"
+    return Path.home() / ".local" / "state" / "telegram-acp-bot"
 
 
 def load_session_chat_map(path: Path) -> dict[str, int]:

@@ -60,3 +60,9 @@ ACP_LOG_LEVEL=INFO
 
 The bot always advertises an internal MCP stdio server named `telegram-channel`
 to the ACP agent. No extra configuration is required.
+
+Security and trust boundary notes:
+
+- The MCP server gets `ACP_TELEGRAM_BOT_TOKEN` from bot-managed env vars.
+- The ACP agent process that launches MCP is therefore trusted with this token.
+- Avoid exposing process/env logs from untrusted environments.

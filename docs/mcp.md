@@ -56,6 +56,13 @@ To map MCP calls to the right Telegram chat:
 - If `session_id` is omitted, MCP infers it only when there is exactly one active mapped session.
 - When multiple mapped sessions exist, provide `session_id` explicitly.
 
+## Security notes
+
+- The internal MCP server receives `ACP_TELEGRAM_BOT_TOKEN` via its process environment.
+- This means the ACP agent process that launches MCP is in the trust boundary for that credential.
+- Run only trusted ACP agents, and avoid sharing process/environment logs that may include MCP server config.
+- By default, channel state is stored under a user-scoped runtime/state directory (not shared `/tmp`).
+
 ## Sequence
 
 ```{mermaid}
