@@ -6,6 +6,7 @@ import base64
 from pathlib import Path
 
 import pytest
+from telegram.error import TelegramError
 
 from telegram_acp_bot import mcp_channel
 from telegram_acp_bot.mcp_channel_state import (
@@ -81,3 +82,23 @@ async def test_send_attachment_rejects_missing_session_mapping(tmp_path: Path, m
     result = await mcp_channel.telegram_send_attachment(session_id="unknown", path=str(tmp_path / "x.jpg"))
     assert result["ok"] is False
     assert "unknown session_id" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_send_attachment_returns_error_on_telegram_api_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+):
+    state_file = tmp_path / "state.json"
+    image_file = tmp_path / "photo.jpg"
+    image_file.write_bytes(b"jpeg")
+    save_session_chat_map(state_file, {"s1": 123})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    bot = mocker.AsyncMock()
+    bot.send_photo.side_effect = TelegramError("network error")
+    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+
+    result = await mcp_channel.telegram_send_attachment(path=str(image_file))
+
+    assert result["ok"] is False
+    assert "Telegram API error" in result["error"]

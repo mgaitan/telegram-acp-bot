@@ -15,6 +15,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from telegram import Bot, InputFile
+from telegram.error import TelegramError
 
 from telegram_acp_bot.mcp_channel_state import (
     STATE_FILE_ENV,
@@ -79,12 +80,15 @@ async def telegram_send_attachment(
     resolved_mime = mime_type or guessed_mime or "application/octet-stream"
     bot = Bot(token=token)
     input_file = InputFile(BytesIO(raw), filename=filename)
-    if resolved_mime.startswith("image/"):
-        await bot.send_photo(chat_id=chat_id, photo=input_file)
-        delivered_as = "photo"
-    else:
-        await bot.send_document(chat_id=chat_id, document=input_file)
-        delivered_as = "document"
+    try:
+        if resolved_mime.startswith("image/"):
+            await bot.send_photo(chat_id=chat_id, photo=input_file)
+            delivered_as = "photo"
+        else:
+            await bot.send_document(chat_id=chat_id, document=input_file)
+            delivered_as = "document"
+    except TelegramError as exc:
+        return fail(f"Telegram API error: {exc}")
 
     return {
         "ok": True,

@@ -1013,7 +1013,7 @@ class AcpAgentService:
         mapping = load_session_chat_map(self._channel_state_file)
         if session_id not in mapping:
             return
-        mapping.pop(session_id, None)
+        del mapping[session_id]
         save_session_chat_map(self._channel_state_file, mapping)
         if load_last_session_id(self._channel_state_file) == session_id:
             save_last_session_id(self._channel_state_file, None)
