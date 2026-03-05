@@ -62,6 +62,7 @@ from telegram_acp_bot.acp_app.models import (
     ToolCallStatus,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.mcp_channel_state import load_session_chat_map, save_session_chat_map
 
 logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
@@ -438,6 +439,7 @@ class AcpAgentService:
         default_permission_mode: PermissionMode = "ask",
         permission_event_output: PermissionEventOutput = "stdout",
         mcp_servers: tuple[McpServerStdio, ...] = (),
+        channel_state_file: Path | None = None,
         stdio_limit: int = 8_388_608,
         connect_timeout: float = 30.0,
         connector: AcpConnectionFactory | None = None,
@@ -453,6 +455,7 @@ class AcpAgentService:
         self._default_permission_mode = default_permission_mode
         self._permission_event_output = permission_event_output
         self._mcp_servers = mcp_servers
+        self._channel_state_file = channel_state_file
         self._stdio_limit = stdio_limit
         self._connect_timeout = connect_timeout
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
@@ -485,6 +488,7 @@ class AcpAgentService:
             raise AcpHandshakeTimeoutError(self._connect_timeout) from exc
 
         self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session.session_id)
+        self._save_channel_session_mapping(chat_id=chat_id, session_id=session.session_id)
         self._live_by_chat[chat_id] = _LiveSession(
             acp_session_id=session.session_id,
             workspace=workspace,
@@ -526,6 +530,7 @@ class AcpAgentService:
             raise AcpHandshakeTimeoutError(self._connect_timeout) from exc
 
         self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session_id)
+        self._save_channel_session_mapping(chat_id=chat_id, session_id=session_id)
         self._live_by_chat[chat_id] = _LiveSession(
             acp_session_id=session_id,
             workspace=workspace,
@@ -640,6 +645,7 @@ class AcpAgentService:
 
         await self._shutdown(live.process)
         self._registry.clear(chat_id)
+        self._drop_channel_session_mapping(session_id=live.acp_session_id)
         return True
 
     async def clear(self, *, chat_id: int) -> bool:
@@ -986,6 +992,22 @@ class AcpAgentService:
             images=tuple(images),
             files=tuple(files),
         )
+
+    def _save_channel_session_mapping(self, *, chat_id: int, session_id: str) -> None:
+        if self._channel_state_file is None:
+            return
+        mapping = load_session_chat_map(self._channel_state_file)
+        mapping[session_id] = chat_id
+        save_session_chat_map(self._channel_state_file, mapping)
+
+    def _drop_channel_session_mapping(self, *, session_id: str) -> None:
+        if self._channel_state_file is None:
+            return
+        mapping = load_session_chat_map(self._channel_state_file)
+        if session_id not in mapping:
+            return
+        mapping.pop(session_id, None)
+        save_session_chat_map(self._channel_state_file, mapping)
 
     @staticmethod
     def _resolve_local_file_uri(uri: str, workspace_root: Path) -> tuple[Path | None, str | None]:

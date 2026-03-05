@@ -46,6 +46,10 @@ Implementation note:
 - Keep an in-memory map from ACP session id to Telegram chat id.
 - MCP tools resolve the target chat from this map.
 
+Current implementation:
+- The bot persists `session_id -> chat_id` to a local state file.
+- The internal MCP server reads that mapping and delivers attachments through Telegram Bot API.
+
 ## Safety Rules
 
 - Validate payload size and MIME type before sending files.
@@ -55,10 +59,10 @@ Implementation note:
 
 ## Rollout Plan
 
-1. Implement only `telegram_send_attachment`.
-2. Add tests for session routing and payload validation.
-3. Add `telegram_suggest_followups`.
-4. Add user setting to disable suggestions.
+1. [x] Implement `telegram_send_attachment`.
+2. [x] Add tests for session routing and payload validation.
+3. [ ] Add `telegram_suggest_followups`.
+4. [ ] Add user setting to disable suggestions.
 
 ## Open Questions
 
