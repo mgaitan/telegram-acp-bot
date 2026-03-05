@@ -153,10 +153,12 @@ def _resolve_request_context(
     selected_session_id = (session_id or "").strip() or None
     if selected_session_id is None and len(mapping) == 1:
         selected_session_id = next(iter(mapping))
-    if selected_session_id is None and len(mapping) > 1:
-        return "missing session_id when multiple active sessions exist"
     if selected_session_id is None:
-        return "missing session_id and no active session could be inferred"
+        return (
+            "missing session_id when multiple active sessions exist"
+            if len(mapping) > 1
+            else "missing session_id and no active session could be inferred"
+        )
 
     chat_id = mapping.get(selected_session_id)
     if chat_id is None:

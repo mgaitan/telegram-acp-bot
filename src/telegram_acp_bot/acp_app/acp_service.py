@@ -73,6 +73,7 @@ from telegram_acp_bot.mcp_channel_state import (
 logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
+MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
 
 
 class AcpConnectionFactory(Protocol):
@@ -320,7 +321,7 @@ class _AcpClient:
             return False
         if len(previous) < MIN_NUMERIC_DOT_PREFIX_LENGTH:
             return False
-        if not previous[-2].isdigit() or len(chunk) < 2:
+        if not previous[-2].isdigit() or len(chunk) < MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH:
             return False
         return chunk[1].isdigit() or chunk[1] == "."
 
