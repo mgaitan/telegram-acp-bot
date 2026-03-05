@@ -9,10 +9,20 @@ from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import urlparse
 
-from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, Update
+from telegram import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    Message,
+    MessageEntity,
+    Update,
+)
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegramify_markdown import MessageEntity as MarkdownMessageEntity
+from telegramify_markdown import convert, split_entities
 
 from telegram_acp_bot.acp_app.models import (
     AgentActivityBlock,
@@ -35,6 +45,7 @@ PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
+TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
     "think": "💡 Thinking",
@@ -624,9 +635,30 @@ class TelegramBridge:
             return
 
         try:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        except TelegramError:
-            await update.message.reply_text(text)
+            rendered_text, rendered_entities = convert(text)
+            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+            for chunk_text, chunk_entities in chunks:
+                entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                try:
+                    await update.message.reply_text(chunk_text, entities=entities)
+                except TelegramError:
+                    await update.message.reply_text(chunk_text)
+        except (RuntimeError, ValueError, TypeError):
+            try:
+                await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            except TelegramError:
+                await update.message.reply_text(text)
+
+    @staticmethod
+    def _to_telegram_entity(entity: MarkdownMessageEntity) -> MessageEntity:
+        return MessageEntity(
+            type=entity.type,
+            offset=entity.offset,
+            length=entity.length,
+            url=entity.url,
+            language=entity.language,
+            custom_emoji_id=entity.custom_emoji_id,
+        )
 
     @staticmethod
     async def _reply_activity_block(

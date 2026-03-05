@@ -19,6 +19,7 @@ CUSTOM_CONNECT_TIMEOUT = 42.5
 def isolate_token_sources(monkeypatch: pytest.MonkeyPatch, mocker):
     """Prevent tests from loading real token values from environment or .env files."""
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
     return mocker.patch("telegram_acp_bot.load_dotenv")
 
 

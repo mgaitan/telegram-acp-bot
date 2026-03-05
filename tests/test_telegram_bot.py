@@ -75,11 +75,15 @@ class DummyMessage:
         self.replies: list[str] = []
         self.reply_kwargs: list[dict[str, object]] = []
         self.fail_markdown = False
+        self.fail_entities = False
         self.photos: list[object] = []
         self.documents: list[object] = []
 
     async def reply_text(self, text: str, **kwargs: object) -> None:
         if self.fail_markdown and kwargs.get("parse_mode") is not None:
+            self.reply_kwargs.append(kwargs)
+            raise MarkdownFailureError
+        if self.fail_entities and "entities" in kwargs:
             self.reply_kwargs.append(kwargs)
             raise MarkdownFailureError
         self.reply_kwargs.append(kwargs)
@@ -616,21 +620,22 @@ async def test_on_text_without_and_with_session():
     assert update.message.replies[0] == "No active session. Use /new first."
     assert update.message.replies[-1].endswith("hello")
     assert context.bot.actions == [(100, "typing"), (100, "typing")]
-    assert update.message.reply_kwargs[-1] == {"parse_mode": "Markdown"}
+    assert "entities" in update.message.reply_kwargs[-1]
+    assert "parse_mode" not in update.message.reply_kwargs[-1]
 
 
-async def test_on_text_markdown_fallback_to_plain():
+async def test_on_text_entities_fallback_to_plain():
     bridge = make_bridge()
     update = make_update(text="hello")
     assert update.message is not None
-    update.message.fail_markdown = True
+    update.message.fail_entities = True
     context = make_context()
 
     await bridge.new_session(update, make_context())
     await bridge.on_message(update, context)
 
     assert update.message.replies[-1].endswith("hello")
-    assert update.message.reply_kwargs[-2] == {"parse_mode": "Markdown"}
+    assert "entities" in update.message.reply_kwargs[-2]
     assert update.message.reply_kwargs[-1] == {}
 
 
@@ -1702,6 +1707,43 @@ async def test_reply_with_no_message_object():
 async def test_reply_agent_with_no_message_object():
     update = make_update(with_message=False)
     await TelegramBridge._reply_agent(update, "x")
+
+
+async def test_reply_agent_uses_entities_split_flow(monkeypatch: pytest.MonkeyPatch):
+    update = make_update()
+    assert update.message is not None
+
+    entity = bot_module.MarkdownMessageEntity(type="bold", offset=0, length=5)
+    monkeypatch.setattr(bot_module, "convert", lambda text: (text, [entity]))
+    monkeypatch.setattr(
+        bot_module,
+        "split_entities",
+        lambda text, entities, max_utf16_len: [("hello ", entities), ("world", [])],
+    )
+
+    await TelegramBridge._reply_agent(update, "hello world")
+
+    assert update.message.replies == ["hello ", "world"]
+    assert "entities" in update.message.reply_kwargs[0]
+    assert "parse_mode" not in update.message.reply_kwargs[0]
+    assert "entities" in update.message.reply_kwargs[1]
+
+
+async def test_reply_agent_falls_back_to_markdown_parse_mode_on_convert_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    update = make_update()
+    assert update.message is not None
+
+    def boom(_: str):
+        raise RuntimeError
+
+    monkeypatch.setattr(bot_module, "convert", boom)
+
+    await TelegramBridge._reply_agent(update, "*x*")
+
+    assert update.message.reply_kwargs[-1] == {"parse_mode": "Markdown"}
+    assert update.message.replies[-1] == "*x*"
 
 
 async def test_on_text_ignores_when_message_is_missing():

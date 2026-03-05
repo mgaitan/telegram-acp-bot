@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.6",
     "rich",
+    "telegramify-markdown>=1.0.0rc4",
 ]
 
 [build-system]
