@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from tempfile import gettempdir
+from tempfile import gettempdir, mkstemp
 
 STATE_FILE_ENV = "ACP_TELEGRAM_CHANNEL_STATE_FILE"
 TOKEN_ENV = "ACP_TELEGRAM_BOT_TOKEN"
@@ -65,11 +65,19 @@ def save_last_session_id(path: Path, session_id: str | None) -> None:
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    os.chmod(tmp, STATE_FILE_MODE)
-    tmp.replace(path)
-    os.chmod(path, STATE_FILE_MODE)
+    fd, tmp_raw = mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_raw)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, STATE_FILE_MODE)
+        os.replace(tmp, path)
+        os.chmod(path, STATE_FILE_MODE)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _load_raw_state(path: Path) -> dict[str, object]:

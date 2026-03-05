@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from telegram_acp_bot import mcp_channel
+from telegram_acp_bot import mcp_channel_state as channel_state_module
 from telegram_acp_bot.mcp_channel_state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
@@ -226,3 +227,18 @@ def test_state_file_permissions_are_restricted(tmp_path: Path):
 
     mode = stat.S_IMODE(state_file.stat().st_mode)
     assert mode == STATE_FILE_PRIVATE_MODE
+
+
+def test_state_file_atomic_write_removes_temp_file_on_replace_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+
+    def boom(src: Path | str, dst: Path | str) -> None:
+        del src, dst
+        raise OSError
+
+    monkeypatch.setattr(channel_state_module.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        save_session_chat_map(state_file, {"s1": 123})
+
+    assert list(tmp_path.glob(f".{state_file.name}*.tmp")) == []

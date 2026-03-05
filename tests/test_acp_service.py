@@ -954,7 +954,7 @@ async def test_drop_channel_session_mapping_ignores_unknown_session(tmp_path: Pa
     save_last_session_id(state_file, "known")
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
 
-    service._drop_channel_session_mapping(session_id="unknown")
+    await service._drop_channel_session_mapping(session_id="unknown")
 
     assert load_session_chat_map(state_file) == {"known": 11}
     assert load_last_session_id(state_file) == "known"
@@ -964,9 +964,14 @@ async def test_set_last_channel_session_updates_state_file(tmp_path: Path):
     state_file = tmp_path / "channel-state.json"
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
 
-    service._set_last_channel_session(session_id="latest")
+    await service._set_last_channel_session(session_id="latest")
 
     assert load_last_session_id(state_file) == "latest"
+
+
+async def test_set_last_channel_session_without_state_file_is_noop():
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    await service._set_last_channel_session(session_id="ignored")
 
 
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):
@@ -1017,10 +1022,19 @@ async def test_load_session_replaces_existing_and_shuts_down(tmp_path: Path):
         connection.client = client
         return connection
 
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+        channel_state_file=state_file,
+    )
     await service.new_session(chat_id=3, workspace=tmp_path)
     await service.load_session(chat_id=3, session_id="reloaded", workspace=tmp_path)
     assert first.terminated
+    assert load_session_chat_map(state_file) == {"reloaded": 3}
 
 
 async def test_load_session_times_out(tmp_path: Path):
@@ -1790,12 +1804,21 @@ async def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monk
         conn.client = client
         return conn
 
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+        channel_state_file=state_file,
+    )
     await service.new_session(chat_id=5, workspace=tmp_path)
     await service.new_session(chat_id=5, workspace=tmp_path)
 
     assert first.terminated
     assert not second.terminated
+    assert load_session_chat_map(state_file) == {"s-2": 5}
 
     async def fake_wait_for(fut, **kwargs):
         del kwargs
