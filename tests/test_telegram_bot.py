@@ -1231,10 +1231,10 @@ async def test_format_activity_block_preserves_thinking_inline_code():
     assert "`docs/index.md`" in rendered
 
 
-async def test_format_activity_block_execute_wraps_command_as_inline_code():
+async def test_format_activity_block_execute_wraps_command_as_fenced_code_block():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
-    assert "Run `git diff -- README.md docs/index.md`" in rendered
+    assert "Run\n```sh\ngit diff -- README.md docs/index.md\n```" in rendered
 
 
 async def test_format_activity_block_execute_multiline_command_uses_fenced_code_block():
@@ -1277,15 +1277,17 @@ async def test_format_permission_tool_title_non_run_keeps_title():
     assert TelegramBridge._format_permission_tool_title("Read README.md") == "Read README.md"
 
 
-async def test_format_activity_block_execute_multiple_run_segments_are_wrapped_individually():
+async def test_format_activity_block_execute_multiple_run_segments_use_single_fenced_block():
     block = AgentActivityBlock(
         kind="execute",
         title="Run which ffmpeg, Run ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png",
         status="in_progress",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    assert "Run `which ffmpeg`, Run `ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png`" in rendered
-    assert "Run `which ffmpeg, Run ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png`" not in rendered
+    assert (
+        "Run\n```sh\nwhich ffmpeg, Run ffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png\n```"
+        in rendered
+    )
 
 
 async def test_send_helpers_with_no_message():
@@ -1342,7 +1344,7 @@ async def test_on_permission_request_sends_buttons():
     payload = dummy_bot.sent_messages[0]
     assert payload["chat_id"] == TEST_CHAT_ID
     assert "*⚠️ Permission required for:*" in cast(str, payload["text"])
-    assert "Run `ls`" in cast(str, payload["text"])
+    assert "Run\n```sh\nls\n```" in cast(str, payload["text"])
     assert payload["parse_mode"] == "Markdown"
     markup = payload["reply_markup"]
     assert markup is not None
