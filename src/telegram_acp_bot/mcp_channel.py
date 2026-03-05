@@ -26,8 +26,7 @@ from telegram_acp_bot.mcp_channel_state import (
 mcp = FastMCP(
     name="telegram-channel",
     instructions=(
-        "Channel helper tools for Telegram clients. "
-        "Use these tools when you need channel-specific behavior."
+        "Channel helper tools for Telegram clients. Use these tools when you need channel-specific behavior."
     ),
 )
 
