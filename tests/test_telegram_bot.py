@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -338,6 +339,22 @@ class PromptWithoutSessionImplicitService(ImplicitSessionServiceBase):
 
     async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
         del chat_id, text, images, files
+
+
+class ConcurrentImplicitSessionService(ImplicitSessionServiceBase):
+    def __init__(self) -> None:
+        super().__init__()
+        self.new_session_calls = 0
+
+    async def new_session(self, *, chat_id: int, workspace: Path):
+        self.new_session_calls += 1
+        await asyncio.sleep(0.01)
+        self._workspace_by_chat[chat_id] = workspace
+        return "s-1"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del chat_id, text, images, files
+        return AgentReply(text="ok")
 
 
 def make_update(  # noqa: PLR0913
@@ -742,6 +759,27 @@ async def test_on_message_without_session_after_implicit_start_reports_missing_s
 
     assert update.message is not None
     assert update.message.replies == ["No active session. Send a message again or use /new [workspace]."]
+
+
+async def test_concurrent_first_prompts_start_only_one_implicit_session(tmp_path: Path):
+    service = ConcurrentImplicitSessionService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path))
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="hello one")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="hello two")
+    context_one = make_context()
+    context_two = make_context()
+
+    await asyncio.gather(
+        bridge.on_message(update_one, context_one),
+        bridge.on_message(update_two, context_two),
+    )
+
+    assert service.new_session_calls == 1
+    assert update_one.message is not None
+    assert update_two.message is not None
+    assert update_one.message.replies == ["ok"]
+    assert update_two.message.replies == ["ok"]
 
 
 async def test_on_text_entities_fallback_to_plain():

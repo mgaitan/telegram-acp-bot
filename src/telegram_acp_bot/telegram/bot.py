@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable
@@ -144,6 +145,7 @@ class TelegramBridge:
         self._agent_service = agent_service
         self._app: Application | None = None
         self._restart_requested = False
+        self._implicit_start_locks_by_chat: dict[int, asyncio.Lock] = {}
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
@@ -192,19 +194,15 @@ class TelegramBridge:
         chat_id = self._chat_id(update)
         workspace = self._workspace_from_args(self._context_args(context))
         workspace_was_missing = not workspace.exists()
-        try:
-            session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
-        except ValueError as exc:
-            message = str(exc) or str(workspace)
-            await self._reply(update, f"Invalid workspace: {message}")
+        started = await self._start_session(
+            update=update,
+            chat_id=chat_id,
+            workspace=workspace,
+            invalid_workspace_label="Invalid workspace",
+        )
+        if started is None:
             return
-        except RuntimeError:
-            await self._reply(update, "Failed to start session: agent process did not expose stdio pipes.")
-            return
-        except Exception as exc:  # noqa: BLE001
-            await self._reply(update, f"Failed to start session: {exc}")
-            return
-        active_workspace = self._agent_service.get_workspace(chat_id=chat_id) or workspace
+        session_id, active_workspace = started
         response = f"Session started: `{session_id}` in `{active_workspace}`"
         if workspace_was_missing:
             response = f"{response}\nCreated workspace: `{active_workspace}`"
@@ -492,19 +490,13 @@ class TelegramBridge:
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
-        try:
-            await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
-        except ValueError as exc:
-            message = str(exc) or str(workspace)
-            await self._reply(update, f"Invalid default workspace: {message}")
-            return False
-        except RuntimeError:
-            await self._reply(update, "Failed to start session: agent process did not expose stdio pipes.")
-            return False
-        except Exception as exc:  # noqa: BLE001
-            await self._reply(update, f"Failed to start session: {exc}")
-            return False
-        return True
+        started = await self._start_session(
+            update=update,
+            chat_id=chat_id,
+            workspace=workspace,
+            invalid_workspace_label="Invalid default workspace",
+        )
+        return started is not None
 
     async def _prompt_input(
         self, *, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -522,7 +514,40 @@ class TelegramBridge:
     async def _ensure_session_for_chat(self, *, update: Update, chat_id: int) -> bool:
         if self._agent_service.get_workspace(chat_id=chat_id) is not None:
             return True
-        return await self._start_implicit_session(update=update, chat_id=chat_id)
+        async with self._implicit_start_lock(chat_id):
+            if self._agent_service.get_workspace(chat_id=chat_id) is not None:
+                return True
+            return await self._start_implicit_session(update=update, chat_id=chat_id)
+
+    async def _start_session(
+        self,
+        *,
+        update: Update,
+        chat_id: int,
+        workspace: Path,
+        invalid_workspace_label: str,
+    ) -> tuple[str, Path] | None:
+        try:
+            session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
+        except ValueError as exc:
+            message = str(exc) or str(workspace)
+            await self._reply(update, f"{invalid_workspace_label}: {message}")
+            return None
+        except RuntimeError:
+            await self._reply(update, "Failed to start session: agent process did not expose stdio pipes.")
+            return None
+        except Exception as exc:  # noqa: BLE001
+            await self._reply(update, f"Failed to start session: {exc}")
+            return None
+        active_workspace = self._agent_service.get_workspace(chat_id=chat_id) or workspace
+        return session_id, active_workspace
+
+    def _implicit_start_lock(self, chat_id: int) -> asyncio.Lock:
+        lock = self._implicit_start_locks_by_chat.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._implicit_start_locks_by_chat[chat_id] = lock
+        return lock
 
     async def _request_reply(
         self,
