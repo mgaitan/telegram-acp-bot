@@ -498,9 +498,7 @@ class TelegramBridge:
         )
         return started is not None
 
-    async def _prompt_input(
-        self, *, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> _PromptInput | None:
+    async def _prompt_input(self, *, update: Update, context: ContextTypes.DEFAULT_TYPE) -> _PromptInput | None:
         message = update.message
         if message is None:
             return None
