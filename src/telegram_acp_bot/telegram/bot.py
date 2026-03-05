@@ -51,7 +51,7 @@ TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
     "think": "💡 Thinking",
-    "execute": "⚙️ Tool call",
+    "execute": "⚙️ Running",
     "read": "📖 Reading",
     "search": "🔎 Searching",
     "edit": "✏️ Editing",
@@ -312,11 +312,7 @@ class TelegramBridge:
             return
 
         keyboard = self._permission_keyboard(request)
-        title = TelegramBridge._format_permission_tool_title(request.tool_title)
-        message_parts = ["Permission required"]
-        if title:
-            message_parts.append(TelegramBridge._render_activity_part(title))
-        message = "\n\n".join(message_parts)
+        message = TelegramBridge._format_permission_request_text(request.tool_title)
         await TelegramBridge._send_markdown_to_chat(
             bot=self._app.bot,
             chat_id=request.chat_id,
@@ -767,8 +763,8 @@ class TelegramBridge:
         if block.kind == "execute" and title.startswith("Run "):
             command = title[4:].strip()
             if command:
-                normalized_command = TelegramBridge._normalize_execute_commands(command)
-                return f"Run\n{TelegramBridge._format_fenced_code(normalized_command)}"
+                commands = TelegramBridge._split_execute_commands(command)
+                return "\n".join(TelegramBridge._format_fenced_code(item) for item in commands)
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and title.startswith(path_prefix):
             return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
@@ -848,13 +844,21 @@ class TelegramBridge:
         return title
 
     @staticmethod
-    def _normalize_execute_commands(command: str) -> str:
+    def _format_permission_request_text(tool_title: str) -> str:
+        title = TelegramBridge._format_permission_tool_title(tool_title)
+        message_parts = ["*⚠️ Permission required*"]
+        if title:
+            message_parts.append(TelegramBridge._render_activity_part(title))
+        return "\n\n".join(message_parts)
+
+    @staticmethod
+    def _split_execute_commands(command: str) -> list[str]:
         if ", Run " not in command:
-            return command
+            return [command]
         commands = [part.strip() for part in command.split(", Run ")]
         if commands and all(commands):
-            return "\n".join(commands)
-        return command
+            return commands
+        return [command]
 
     @staticmethod
     def _format_fenced_code(text: str) -> str:
