@@ -11,6 +11,7 @@ from typing import Protocol, cast
 from urllib.parse import urlparse
 
 from telegram import (
+    Bot,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -312,23 +313,16 @@ class TelegramBridge:
 
         keyboard = self._permission_keyboard(request)
         title = TelegramBridge._format_permission_tool_title(request.tool_title)
-        message_parts = ["*⚠️ Permission required for:*"]
+        message_parts = ["Permission required"]
         if title:
             message_parts.append(TelegramBridge._render_activity_part(title))
         message = "\n\n".join(message_parts)
-        try:
-            await self._app.bot.send_message(
-                chat_id=request.chat_id,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-            )
-        except TelegramError:
-            await self._app.bot.send_message(
-                chat_id=request.chat_id,
-                text=f"⚠️ Permission required for:\n{request.tool_title}",
-                reply_markup=keyboard,
-            )
+        await TelegramBridge._send_markdown_to_chat(
+            bot=self._app.bot,
+            chat_id=request.chat_id,
+            text=message,
+            reply_markup=keyboard,
+        )
 
     async def on_activity_event(self, chat_id: int, block: AgentActivityBlock) -> None:
         app = self._app
@@ -337,10 +331,7 @@ class TelegramBridge:
 
         workspace = self._activity_workspace(chat_id=chat_id)
         text = self._format_activity_block(block, workspace=workspace)
-        try:
-            await app.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
-        except TelegramError:
-            await app.bot.send_message(chat_id=chat_id, text=text)
+        await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
 
     async def on_permission_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -723,30 +714,13 @@ class TelegramBridge:
     async def _reply(update: Update, text: str) -> None:
         if update.message is None:
             return
-        try:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        except TelegramError:
-            await update.message.reply_text(text)
+        await TelegramBridge._reply_markdown_message(update.message, text=text)
 
     @staticmethod
     async def _reply_agent(update: Update, text: str) -> None:
         if update.message is None:
             return
-
-        try:
-            rendered_text, rendered_entities = convert(text)
-            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
-            for chunk_text, chunk_entities in chunks:
-                entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
-                try:
-                    await update.message.reply_text(chunk_text, entities=entities)
-                except TelegramError:
-                    await update.message.reply_text(chunk_text)
-        except (RuntimeError, ValueError, TypeError):
-            try:
-                await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-            except TelegramError:
-                await update.message.reply_text(text)
+        await TelegramBridge._reply_markdown_message(update.message, text=text)
 
     @staticmethod
     def _to_telegram_entity(entity: MarkdownMessageEntity) -> MessageEntity:
@@ -767,10 +741,7 @@ class TelegramBridge:
             return
 
         text = TelegramBridge._format_activity_block(block, workspace=workspace)
-        try:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-        except TelegramError:
-            await update.message.reply_text(text)
+        await TelegramBridge._reply_markdown_message(update.message, text=text)
 
     @staticmethod
     def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
@@ -796,14 +767,8 @@ class TelegramBridge:
         if block.kind == "execute" and title.startswith("Run "):
             command = title[4:].strip()
             if command:
-                if "\n" in command:
-                    return f"Run\n```sh\n{command}\n```"
-                if ", Run " in command:
-                    commands = [part.strip() for part in command.split(", Run ")]
-                    if commands and all(commands):
-                        return ", ".join(f"Run `{cmd.replace('`', '\\`')}`" for cmd in commands)
-                safe_command = command.replace("`", "\\`")
-                return f"Run `{safe_command}`"
+                normalized_command = TelegramBridge._normalize_execute_commands(command)
+                return f"Run\n{TelegramBridge._format_fenced_code(normalized_command)}"
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and title.startswith(path_prefix):
             return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
@@ -881,6 +846,83 @@ class TelegramBridge:
                 AgentActivityBlock(kind="execute", title=title, status="in_progress")
             )
         return title
+
+    @staticmethod
+    def _normalize_execute_commands(command: str) -> str:
+        if ", Run " not in command:
+            return command
+        commands = [part.strip() for part in command.split(", Run ")]
+        if commands and all(commands):
+            return "\n".join(commands)
+        return command
+
+    @staticmethod
+    def _format_fenced_code(text: str) -> str:
+        max_backtick_run = 0
+        current_run = 0
+        for char in text:
+            if char == "`":
+                current_run += 1
+                max_backtick_run = max(max_backtick_run, current_run)
+                continue
+            current_run = 0
+
+        fence = "`" * max(3, max_backtick_run + 1)
+        return f"{fence}\n{text}\n{fence}"
+
+    @staticmethod
+    async def _reply_markdown_message(message: Message, *, text: str) -> None:
+        try:
+            rendered_text, rendered_entities = convert(text)
+            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+            for chunk_text, chunk_entities in chunks:
+                if chunk_entities:
+                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                    try:
+                        await message.reply_text(chunk_text, entities=entities)
+                    except TelegramError:
+                        await message.reply_text(chunk_text)
+                else:
+                    await message.reply_text(chunk_text)
+        except (RuntimeError, ValueError, TypeError):
+            await message.reply_text(text)
+
+    @staticmethod
+    async def _send_markdown_to_chat(
+        *,
+        bot: Bot,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
+        try:
+            rendered_text, rendered_entities = convert(text)
+            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+            for index, (chunk_text, chunk_entities) in enumerate(chunks):
+                current_reply_markup = reply_markup if index == 0 else None
+                if chunk_entities:
+                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk_text,
+                            entities=entities,
+                            reply_markup=current_reply_markup,
+                        )
+                    except TelegramError:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk_text,
+                            reply_markup=current_reply_markup,
+                        )
+                else:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        reply_markup=current_reply_markup,
+                    )
+        except (RuntimeError, ValueError, TypeError):
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
