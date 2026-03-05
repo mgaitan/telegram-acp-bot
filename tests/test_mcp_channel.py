@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from telegram_acp_bot import mcp_channel
-from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, save_session_chat_map
+from telegram_acp_bot.mcp_channel_state import (
+    STATE_FILE_ENV,
+    TOKEN_ENV,
+    save_last_session_id,
+    save_session_chat_map,
+)
 
 
 def test_telegram_channel_info_reports_active_capabilities():
@@ -35,10 +40,11 @@ async def test_send_attachment_from_path_as_photo(tmp_path: Path, monkeypatch: p
     bot = mocker.AsyncMock()
     mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
 
-    result = await mcp_channel.telegram_send_attachment(session_id="s1", path=str(image_file))
+    result = await mcp_channel.telegram_send_attachment(path=str(image_file))
 
     assert result["ok"] is True
     assert result["delivered_as"] == "photo"
+    assert result["session_id"] == "s1"
     bot.send_photo.assert_awaited_once()
     bot.send_document.assert_not_called()
 
@@ -47,6 +53,7 @@ async def test_send_attachment_from_path_as_photo(tmp_path: Path, monkeypatch: p
 async def test_send_attachment_from_base64_as_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker):
     state_file = tmp_path / "state.json"
     save_session_chat_map(state_file, {"s1": 123})
+    save_last_session_id(state_file, "s1")
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
