@@ -1269,6 +1269,27 @@ async def test_format_activity_block_execute_command_with_backticks_uses_fenced_
     assert "\\_" not in rendered
 
 
+async def test_format_activity_block_execute_command_with_triple_backticks_uses_longer_fence():
+    command = "gh api -f 'body=markdown ```code``` example'"
+    block = AgentActivityBlock(kind="execute", title=f"Run {command}", status="in_progress")
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert f"Run\n````sh\n{command}\n````" in rendered
+
+
+async def test_format_activity_block_execute_preserves_escaped_backticks_and_underscores():
+    command = r"gh api -f 'body=implemented in 55881c9. \`path\` and ACP_TELEGRAM_CHANNEL_ALLOW_PATH'"
+    block = AgentActivityBlock(kind="execute", title=f"Run {command}", status="in_progress")
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert f"Run\n```sh\n{command}\n```" in rendered
+    assert r"\`path\`" in rendered
+    assert r"\\`path\\`" not in rendered
+    assert "ACP_TELEGRAM_CHANNEL_ALLOW_PATH" in rendered
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 
@@ -1292,6 +1313,11 @@ async def test_format_activity_block_execute_multiple_run_segments_use_single_fe
 async def test_normalize_execute_commands_keeps_original_on_empty_segments():
     command = "which ffmpeg, Run "
     assert TelegramBridge._normalize_execute_commands(command) == command
+
+
+async def test_format_fenced_code_without_language_uses_plain_fence():
+    rendered = TelegramBridge._format_fenced_code("echo ok")
+    assert rendered == "```\necho ok\n```"
 
 
 async def test_send_helpers_with_no_message():

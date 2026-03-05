@@ -767,7 +767,8 @@ class TelegramBridge:
         if block.kind == "execute" and title.startswith("Run "):
             command = title[4:].strip()
             if command:
-                return f"Run\n```sh\n{TelegramBridge._normalize_execute_commands(command)}\n```"
+                normalized_command = TelegramBridge._normalize_execute_commands(command)
+                return f"Run\n{TelegramBridge._format_fenced_code(normalized_command, language='sh')}"
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and title.startswith(path_prefix):
             return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
@@ -854,6 +855,23 @@ class TelegramBridge:
         if commands and all(commands):
             return "\n".join(commands)
         return command
+
+    @staticmethod
+    def _format_fenced_code(text: str, *, language: str = "") -> str:
+        max_backtick_run = 0
+        current_run = 0
+        for char in text:
+            if char == "`":
+                current_run += 1
+                max_backtick_run = max(max_backtick_run, current_run)
+                continue
+            current_run = 0
+
+        fence = "`" * max(3, max_backtick_run + 1)
+        info_string = language.strip()
+        if info_string:
+            return f"{fence}{info_string}\n{text}\n{fence}"
+        return f"{fence}\n{text}\n{fence}"
 
     @staticmethod
     async def _reply_markdown_message(message: Message, *, text: str) -> None:
