@@ -190,8 +190,7 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Send a message to start in the default workspace, or use "
-            "/new [workspace] or /resume [N|workspace].",
+            "Send a message to start in the default workspace, or use /new [workspace] or /resume [N|workspace].",
         )
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
