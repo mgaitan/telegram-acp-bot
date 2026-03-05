@@ -132,7 +132,7 @@ class FailingMarkdownBot(DummyBot):
 class DummyCallbackQuery:
     def __init__(self, data: str) -> None:
         self.data = data
-        self.message = SimpleNamespace(text="Permission required for:\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
+        self.message = SimpleNamespace(text="Permission required\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
         self.answers: list[str] = []
         self.reply_markup_cleared = False
         self.edited_text: str | None = None
@@ -804,7 +804,7 @@ async def test_concurrent_first_prompts_start_only_one_implicit_session(tmp_path
     assert TEST_CHAT_ID not in bridge._implicit_start_locks_by_chat
 
 
-async def test_on_text_entities_fallback_to_plain():
+async def test_on_text_plain_reply_when_response_has_no_entities():
     bridge = make_bridge()
     update = make_update(text="hello")
     assert update.message is not None
@@ -1233,7 +1233,7 @@ async def test_format_activity_block_preserves_thinking_inline_code():
 async def test_format_activity_block_execute_wraps_command_as_fenced_code_block():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
-    assert "Run\n```sh\ngit diff -- README.md docs/index.md\n```" in rendered
+    assert "Run\n```\ngit diff -- README.md docs/index.md\n```" in rendered
 
 
 async def test_format_activity_block_execute_multiline_command_uses_fenced_code_block():
@@ -1243,7 +1243,7 @@ async def test_format_activity_block_execute_multiline_command_uses_fenced_code_
         status="in_progress",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
+    assert "Run\n```\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
 async def test_format_activity_block_execute_long_command_uses_fenced_code_block():
@@ -1255,7 +1255,7 @@ async def test_format_activity_block_execute_long_command_uses_fenced_code_block
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"Run\n```sh\n{command}\n```" in rendered
+    assert f"Run\n```\n{command}\n```" in rendered
 
 
 async def test_format_activity_block_execute_command_with_backticks_uses_fenced_code_block():
@@ -1264,7 +1264,7 @@ async def test_format_activity_block_execute_command_with_backticks_uses_fenced_
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"Run\n```sh\n{command}\n```" in rendered
+    assert f"Run\n```\n{command}\n```" in rendered
     assert "\\_" not in rendered
 
 
@@ -1274,7 +1274,7 @@ async def test_format_activity_block_execute_command_with_triple_backticks_uses_
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"Run\n````sh\n{command}\n````" in rendered
+    assert f"Run\n````\n{command}\n````" in rendered
 
 
 async def test_format_activity_block_execute_preserves_escaped_backticks_and_underscores():
@@ -1283,7 +1283,7 @@ async def test_format_activity_block_execute_preserves_escaped_backticks_and_und
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"Run\n```sh\n{command}\n```" in rendered
+    assert f"Run\n```\n{command}\n```" in rendered
     assert r"\`path\`" in rendered
     assert r"\\`path\\`" not in rendered
     assert "ACP_TELEGRAM_CHANNEL_ALLOW_PATH" in rendered
@@ -1305,7 +1305,7 @@ async def test_format_activity_block_execute_multiple_run_segments_use_single_fe
     )
     rendered = TelegramBridge._format_activity_block(block)
     assert (
-        "Run\n```sh\nwhich ffmpeg\nffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png\n```" in rendered
+        "Run\n```\nwhich ffmpeg\nffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png\n```" in rendered
     )
 
 
@@ -1334,7 +1334,7 @@ async def test_reply_activity_block_with_no_message_is_noop():
     await TelegramBridge._reply_activity_block(update, block)
 
 
-async def test_reply_activity_block_failed_status_with_markdown_fallback():
+async def test_reply_activity_block_failed_status_appends_failed_marker():
     update = make_update()
     assert update.message is not None
     block = AgentActivityBlock(kind="other", title="Run command", status="failed", text="boom")
@@ -1369,7 +1369,7 @@ async def test_on_permission_request_sends_buttons():
     assert len(dummy_bot.sent_messages) == 1
     payload = dummy_bot.sent_messages[0]
     assert payload["chat_id"] == TEST_CHAT_ID
-    assert "⚠️ Permission required for:" in cast(str, payload["text"])
+    assert cast(str, payload["text"]).startswith("Permission required")
     assert "Run\n\nls" in cast(str, payload["text"])
     assert "parse_mode" not in payload
     assert "entities" in payload
@@ -1414,7 +1414,7 @@ async def test_on_permission_request_markdown_fallback_uses_plain_text():
 
     assert len(failing_bot.sent_messages) == 1
     payload = failing_bot.sent_messages[0]
-    assert payload["text"] == "⚠️ Permission required for:\n\nRun\n\nls"
+    assert payload["text"] == "Permission required\n\nRun\n\nls"
     assert "parse_mode" not in payload
     assert "entities" not in payload
 
@@ -1457,7 +1457,7 @@ async def test_on_permission_callback_accepts_action():
     await bridge.on_permission_callback(cast(Update, update), make_context())
     assert callback.answers[-1] == "Approved this time."
     assert callback.edited_text is not None
-    assert "Permission required for:" in callback.edited_text
+    assert "Permission required" in callback.edited_text
     assert "Decision: Approved this time." in callback.edited_text
 
 
@@ -1609,7 +1609,7 @@ async def test_on_permission_callback_uses_query_message_chat_when_effective_cha
         agent_service=cast(AgentService, PermissionService()),
     )
     callback = DummyCallbackQuery("perm|req-chat-fallback|once")
-    callback.message = SimpleNamespace(text="Permission required for:\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
+    callback.message = SimpleNamespace(text="Permission required\nRun ls", chat=SimpleNamespace(id=TEST_CHAT_ID))
     update = cast(
         Update,
         SimpleNamespace(
@@ -1962,7 +1962,7 @@ async def test_reply_agent_uses_entities_split_flow(monkeypatch: pytest.MonkeyPa
     assert update.message.reply_kwargs[1] == {}
 
 
-async def test_reply_agent_falls_back_to_markdown_parse_mode_on_convert_error(
+async def test_reply_agent_falls_back_to_plain_text_on_convert_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
     update = make_update()
@@ -1991,12 +1991,11 @@ async def test_reply_falls_back_to_plain_when_entity_send_fails():
     assert update.message.replies[-1] == "x"
 
 
-async def test_reply_agent_falls_back_to_plain_when_convert_fails_even_if_markdown_flag_is_set(
+async def test_reply_agent_falls_back_to_plain_when_convert_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
     update = make_update()
     assert update.message is not None
-    update.message.fail_markdown = True
 
     def boom(_: str):
         raise RuntimeError
@@ -2021,6 +2020,21 @@ async def test_send_markdown_to_chat_falls_back_to_plain_when_entity_send_fails(
     assert len(failing_bot.sent_messages) == 1
     payload = failing_bot.sent_messages[0]
     assert payload["text"] == "bold"
+    assert "entities" not in payload
+
+
+async def test_send_markdown_to_chat_without_entities_omits_entities_kwarg():
+    dummy_bot = DummyBot()
+
+    await TelegramBridge._send_markdown_to_chat(
+        bot=cast(bot_module.Bot, dummy_bot),
+        chat_id=TEST_CHAT_ID,
+        text="plain text",
+    )
+
+    assert len(dummy_bot.sent_messages) == 1
+    payload = dummy_bot.sent_messages[0]
+    assert payload["text"] == "plain text"
     assert "entities" not in payload
 
 

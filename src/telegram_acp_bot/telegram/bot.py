@@ -313,7 +313,7 @@ class TelegramBridge:
 
         keyboard = self._permission_keyboard(request)
         title = TelegramBridge._format_permission_tool_title(request.tool_title)
-        message_parts = ["*⚠️ Permission required for:*"]
+        message_parts = ["Permission required"]
         if title:
             message_parts.append(TelegramBridge._render_activity_part(title))
         message = "\n\n".join(message_parts)
@@ -768,7 +768,7 @@ class TelegramBridge:
             command = title[4:].strip()
             if command:
                 normalized_command = TelegramBridge._normalize_execute_commands(command)
-                return f"Run\n{TelegramBridge._format_fenced_code(normalized_command, language='sh')}"
+                return f"Run\n{TelegramBridge._format_fenced_code(normalized_command)}"
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and title.startswith(path_prefix):
             return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
@@ -857,7 +857,7 @@ class TelegramBridge:
         return command
 
     @staticmethod
-    def _format_fenced_code(text: str, *, language: str = "") -> str:
+    def _format_fenced_code(text: str) -> str:
         max_backtick_run = 0
         current_run = 0
         for char in text:
@@ -868,9 +868,6 @@ class TelegramBridge:
             current_run = 0
 
         fence = "`" * max(3, max_backtick_run + 1)
-        info_string = language.strip()
-        if info_string:
-            return f"{fence}{info_string}\n{text}\n{fence}"
         return f"{fence}\n{text}\n{fence}"
 
     @staticmethod
@@ -902,16 +899,23 @@ class TelegramBridge:
             rendered_text, rendered_entities = convert(text)
             chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
             for index, (chunk_text, chunk_entities) in enumerate(chunks):
-                entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities] or None
                 current_reply_markup = reply_markup if index == 0 else None
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=chunk_text,
-                        entities=entities,
-                        reply_markup=current_reply_markup,
-                    )
-                except TelegramError:
+                if chunk_entities:
+                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk_text,
+                            entities=entities,
+                            reply_markup=current_reply_markup,
+                        )
+                    except TelegramError:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk_text,
+                            reply_markup=current_reply_markup,
+                        )
+                else:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=chunk_text,
