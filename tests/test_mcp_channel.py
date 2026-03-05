@@ -81,3 +81,73 @@ async def test_send_attachment_rejects_missing_session_mapping(tmp_path: Path, m
     result = await mcp_channel.telegram_send_attachment(session_id="unknown", path=str(tmp_path / "x.jpg"))
     assert result["ok"] is False
     assert "unknown session_id" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_send_attachment_rejects_invalid_base64_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": 123})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+
+    result = await mcp_channel.telegram_send_attachment(session_id="s1", data_base64="***not-base64***")
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid base64 payload"
+
+
+def test_load_attachment_bytes_rejects_missing_path(tmp_path: Path):
+    result = mcp_channel._load_attachment_bytes(path=str(tmp_path / "missing.bin"), data_base64=None, name=None)
+    assert isinstance(result, str)
+    assert result.startswith("file not found:")
+
+
+def test_resolve_request_context_requires_exactly_one_payload_source():
+    result = mcp_channel._resolve_request_context(session_id="s1", path=None, data_base64=None)
+    assert result == "provide exactly one of `path` or `data_base64`"
+
+
+def test_resolve_request_context_requires_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(TOKEN_ENV, raising=False)
+    monkeypatch.setenv(STATE_FILE_ENV, str(tmp_path / "state.json"))
+    result = mcp_channel._resolve_request_context(session_id="s1", path="file.bin", data_base64=None)
+    assert result == f"missing {TOKEN_ENV}"
+
+
+def test_resolve_request_context_requires_state_file_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.delenv(STATE_FILE_ENV, raising=False)
+    result = mcp_channel._resolve_request_context(session_id="s1", path="file.bin", data_base64=None)
+    assert result == f"missing {STATE_FILE_ENV}"
+
+
+def test_resolve_request_context_requires_inferable_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+
+    result = mcp_channel._resolve_request_context(session_id=None, path="file.bin", data_base64=None)
+
+    assert result == "missing session_id and no active session could be inferred"
+
+
+def test_load_session_chat_map_handles_invalid_json(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{invalid", encoding="utf-8")
+
+    assert mcp_channel.load_session_chat_map(state_file) == {}
+
+
+def test_load_session_chat_map_handles_non_dict_sessions(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"sessions": []}', encoding="utf-8")
+
+    assert mcp_channel.load_session_chat_map(state_file) == {}
+
+
+def test_load_last_session_id_handles_invalid_json(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{invalid", encoding="utf-8")
+
+    assert mcp_channel.load_last_session_id(state_file) is None

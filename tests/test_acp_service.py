@@ -43,7 +43,12 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.mcp_channel_state import load_last_session_id, load_session_chat_map
+from telegram_acp_bot.mcp_channel_state import (
+    load_last_session_id,
+    load_session_chat_map,
+    save_last_session_id,
+    save_session_chat_map,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -345,6 +350,8 @@ async def test_acp_client_append_text_chunk_branch_coverage():
     target = ["10."]
     _AcpClient._append_text_chunk(target, "1")
     assert target == ["10.", "1"]
+
+    assert _AcpClient._is_numeric_dot_continuation(previous=".", chunk="1") is False
 
 
 async def test_acp_client_non_text_chunk_in_active_tool_block_is_captured():
@@ -937,6 +944,18 @@ async def test_service_persists_channel_session_mapping(tmp_path: Path):
     await service.stop(chat_id=9)
     assert load_session_chat_map(state_file) == {}
     assert load_last_session_id(state_file) is None
+
+
+async def test_drop_channel_session_mapping_ignores_unknown_session(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    save_session_chat_map(state_file, {"known": 11})
+    save_last_session_id(state_file, "known")
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    service._drop_channel_session_mapping(session_id="unknown")
+
+    assert load_session_chat_map(state_file) == {"known": 11}
+    assert load_last_session_id(state_file) == "known"
 
 
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):

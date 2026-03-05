@@ -166,5 +166,5 @@ def main() -> None:
     mcp.run("stdio")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
