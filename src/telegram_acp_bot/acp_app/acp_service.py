@@ -8,6 +8,7 @@ import mimetypes
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Protocol, cast
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
@@ -319,7 +320,9 @@ class _AcpClient:
             return False
         if len(previous) < MIN_NUMERIC_DOT_PREFIX_LENGTH:
             return False
-        return previous[-2].isdigit()
+        if not previous[-2].isdigit() or len(chunk) < 2:
+            return False
+        return chunk[1].isdigit() or chunk[1] == "."
 
     async def _open_tool_block(self, *, session_id: str, tool_call_id: str, kind: str, title: str) -> None:
         await self._close_active_tool_block(session_id=session_id, status="in_progress")
@@ -469,6 +472,7 @@ class AcpAgentService:
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
         self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
+        self._channel_state_lock = Lock()
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
@@ -1002,26 +1006,29 @@ class AcpAgentService:
     def _save_channel_session_mapping(self, *, chat_id: int, session_id: str) -> None:
         if self._channel_state_file is None:
             return
-        mapping = load_session_chat_map(self._channel_state_file)
-        mapping[session_id] = chat_id
-        save_session_chat_map(self._channel_state_file, mapping)
-        self._set_last_channel_session(session_id=session_id)
+        with self._channel_state_lock:
+            mapping = load_session_chat_map(self._channel_state_file)
+            mapping[session_id] = chat_id
+            save_session_chat_map(self._channel_state_file, mapping)
+            save_last_session_id(self._channel_state_file, session_id)
 
     def _drop_channel_session_mapping(self, *, session_id: str) -> None:
         if self._channel_state_file is None:
             return
-        mapping = load_session_chat_map(self._channel_state_file)
-        if session_id not in mapping:
-            return
-        mapping.pop(session_id, None)
-        save_session_chat_map(self._channel_state_file, mapping)
-        if load_last_session_id(self._channel_state_file) == session_id:
-            save_last_session_id(self._channel_state_file, None)
+        with self._channel_state_lock:
+            mapping = load_session_chat_map(self._channel_state_file)
+            if session_id not in mapping:
+                return
+            mapping.pop(session_id, None)
+            save_session_chat_map(self._channel_state_file, mapping)
+            if load_last_session_id(self._channel_state_file) == session_id:
+                save_last_session_id(self._channel_state_file, None)
 
     def _set_last_channel_session(self, *, session_id: str) -> None:
         if self._channel_state_file is None:
             return
-        save_last_session_id(self._channel_state_file, session_id)
+        with self._channel_state_lock:
+            save_last_session_id(self._channel_state_file, session_id)
 
     @staticmethod
     def _resolve_local_file_uri(uri: str, workspace_root: Path) -> tuple[Path | None, str | None]:

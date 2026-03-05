@@ -349,9 +349,11 @@ async def test_acp_client_append_text_chunk_branch_coverage():
 
     target = ["10."]
     _AcpClient._append_text_chunk(target, "1")
-    assert target == ["10.", "1"]
+    assert target == ["10.", " ", "1"]
 
     assert _AcpClient._is_numeric_dot_continuation(previous=".", chunk="1") is False
+    assert _AcpClient._is_numeric_dot_continuation(previous="Step 1.", chunk="2) detail") is False
+    assert _AcpClient._is_numeric_dot_continuation(previous="Version 1.", chunk="2.3") is True
 
 
 async def test_acp_client_non_text_chunk_in_active_tool_block_is_captured():
@@ -956,6 +958,15 @@ async def test_drop_channel_session_mapping_ignores_unknown_session(tmp_path: Pa
 
     assert load_session_chat_map(state_file) == {"known": 11}
     assert load_last_session_id(state_file) == "known"
+
+
+async def test_set_last_channel_session_updates_state_file(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    service._set_last_channel_session(session_id="latest")
+
+    assert load_last_session_id(state_file) == "latest"
 
 
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):

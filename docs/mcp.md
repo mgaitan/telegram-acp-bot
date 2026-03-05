@@ -36,7 +36,7 @@ Inputs:
 
 - `session_id` (optional)
 - Exactly one of:
-  - `path`
+  - `path` (disabled by default; enable with `ACP_TELEGRAM_CHANNEL_ALLOW_PATH=1`)
   - `data_base64`
 - `name` (optional)
 - `mime_type` (optional)
@@ -45,6 +45,7 @@ Behavior:
 
 - If mime resolves to `image/*`, it sends as Telegram photo.
 - Otherwise it sends as Telegram document.
+- For security, prefer `data_base64` unless you explicitly trust local file-path inputs.
 
 ## Session routing
 
@@ -52,7 +53,8 @@ To map MCP calls to the right Telegram chat:
 
 - `AcpAgentService` stores `session_id -> chat_id` in a local state file.
 - The MCP server reads that mapping before sending attachments.
-- If `session_id` is omitted, MCP resolves it from the last active/prompted session.
+- If `session_id` is omitted, MCP infers it only when there is exactly one active mapped session.
+- When multiple mapped sessions exist, provide `session_id` explicitly.
 
 ## Sequence
 
@@ -67,8 +69,8 @@ sequenceDiagram
 
     U->>B: "Send me /webcam.jpg"
     B->>A: ACP prompt
-    A->>M: telegram_send_attachment(path="/webcam.jpg")
-    M->>M: resolve session_id (explicit or last active)
+    A->>M: telegram_send_attachment(session_id="s1", data_base64="...")
+    M->>M: resolve session_id (explicit or single active mapping)
     M->>M: map session_id -> chat_id
     M->>T: sendPhoto/sendDocument(chat_id, file)
     T-->>U: Attachment delivered

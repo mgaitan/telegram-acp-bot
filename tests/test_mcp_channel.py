@@ -13,6 +13,7 @@ from telegram_acp_bot import mcp_channel
 from telegram_acp_bot.mcp_channel_state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
+    load_last_session_id,
     save_last_session_id,
     save_session_chat_map,
 )
@@ -172,6 +173,19 @@ def test_resolve_request_context_requires_inferable_session(tmp_path: Path, monk
     assert result == "missing session_id and no active session could be inferred"
 
 
+def test_resolve_request_context_requires_explicit_session_when_multiple_mappings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": 123, "s2": 456})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+
+    result = mcp_channel._resolve_request_context(session_id=None, path="file.bin", data_base64=None)
+
+    assert result == "missing session_id when multiple active sessions exist"
+
+
 def test_load_session_chat_map_handles_invalid_json(tmp_path: Path):
     state_file = tmp_path / "state.json"
     state_file.write_text("{invalid", encoding="utf-8")
@@ -190,7 +204,7 @@ def test_load_last_session_id_handles_invalid_json(tmp_path: Path):
     state_file = tmp_path / "state.json"
     state_file.write_text("{invalid", encoding="utf-8")
 
-    assert mcp_channel.load_last_session_id(state_file) is None
+    assert load_last_session_id(state_file) is None
 
 
 def test_save_last_session_id_coerces_non_dict_sessions(tmp_path: Path):

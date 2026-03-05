@@ -20,7 +20,6 @@ from telegram import Bot, InputFile
 from telegram_acp_bot.mcp_channel_state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
-    load_last_session_id,
     load_session_chat_map,
 )
 
@@ -152,10 +151,10 @@ def _resolve_request_context(
     state_file = Path(state_file_raw)
     mapping = load_session_chat_map(state_file)
     selected_session_id = (session_id or "").strip() or None
-    if selected_session_id is None:
-        selected_session_id = load_last_session_id(state_file)
     if selected_session_id is None and len(mapping) == 1:
         selected_session_id = next(iter(mapping))
+    if selected_session_id is None and len(mapping) > 1:
+        return "missing session_id when multiple active sessions exist"
     if selected_session_id is None:
         return "missing session_id and no active session could be inferred"
 
