@@ -1746,6 +1746,37 @@ async def test_reply_agent_falls_back_to_markdown_parse_mode_on_convert_error(
     assert update.message.replies[-1] == "*x*"
 
 
+async def test_reply_falls_back_to_plain_when_markdown_parse_fails():
+    update = make_update()
+    assert update.message is not None
+    update.message.fail_markdown = True
+
+    await TelegramBridge._reply(update, "*x*")
+
+    assert update.message.reply_kwargs[-2] == {"parse_mode": "Markdown"}
+    assert update.message.reply_kwargs[-1] == {}
+    assert update.message.replies[-1] == "*x*"
+
+
+async def test_reply_agent_falls_back_to_plain_when_convert_and_markdown_fail(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    update = make_update()
+    assert update.message is not None
+    update.message.fail_markdown = True
+
+    def boom(_: str):
+        raise RuntimeError
+
+    monkeypatch.setattr(bot_module, "convert", boom)
+
+    await TelegramBridge._reply_agent(update, "*x*")
+
+    assert update.message.reply_kwargs[-2] == {"parse_mode": "Markdown"}
+    assert update.message.reply_kwargs[-1] == {}
+    assert update.message.replies[-1] == "*x*"
+
+
 async def test_on_text_ignores_when_message_is_missing():
     bridge = make_bridge()
     update = make_update(with_message=False)
