@@ -62,7 +62,12 @@ from telegram_acp_bot.acp_app.models import (
     ToolCallStatus,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.mcp_channel_state import load_session_chat_map, save_session_chat_map
+from telegram_acp_bot.mcp_channel_state import (
+    load_last_session_id,
+    load_session_chat_map,
+    save_last_session_id,
+    save_session_chat_map,
+)
 
 logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
@@ -581,6 +586,7 @@ class AcpAgentService:
             return None
 
         async with live.prompt_lock:
+            self._set_last_channel_session(session_id=live.acp_session_id)
             if live.next_prompt_auto_approve:
                 live.active_prompt_auto_approve = True
                 live.next_prompt_auto_approve = False
@@ -999,6 +1005,7 @@ class AcpAgentService:
         mapping = load_session_chat_map(self._channel_state_file)
         mapping[session_id] = chat_id
         save_session_chat_map(self._channel_state_file, mapping)
+        self._set_last_channel_session(session_id=session_id)
 
     def _drop_channel_session_mapping(self, *, session_id: str) -> None:
         if self._channel_state_file is None:
@@ -1008,6 +1015,13 @@ class AcpAgentService:
             return
         mapping.pop(session_id, None)
         save_session_chat_map(self._channel_state_file, mapping)
+        if load_last_session_id(self._channel_state_file) == session_id:
+            save_last_session_id(self._channel_state_file, None)
+
+    def _set_last_channel_session(self, *, session_id: str) -> None:
+        if self._channel_state_file is None:
+            return
+        save_last_session_id(self._channel_state_file, session_id)
 
     @staticmethod
     def _resolve_local_file_uri(uri: str, workspace_root: Path) -> tuple[Path | None, str | None]:

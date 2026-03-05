@@ -31,7 +31,7 @@ About async:
 ## Minimal Tool Set (Phase 1)
 
 1. `telegram_send_attachment`
-- Inputs: `name`, `mime_type`, and either `path` or `data_base64`.
+- Inputs: optional `session_id`, optional `name`, optional `mime_type`, and either `path` or `data_base64`.
 - Effect: send a Telegram document/photo in the current chat.
 
 2. `telegram_suggest_followups`
@@ -49,6 +49,7 @@ Implementation note:
 Current implementation:
 - The bot persists `session_id -> chat_id` to a local state file.
 - The internal MCP server reads that mapping and delivers attachments through Telegram Bot API.
+- If `session_id` is omitted, the server infers it from the last active/prompted session.
 
 ## Safety Rules
 
