@@ -256,7 +256,7 @@ class TelegramBridge:
             if parsed_args.resume_index < 0 or parsed_args.resume_index >= len(candidates):
                 await self._reply(
                     update,
-                    f"Invalid resume index `{parsed_args.resume_index + 1}`. Choose 1..{len(candidates)}.",
+                    f"Invalid resume index `{parsed_args.resume_index}`. Choose 0..{len(candidates) - 1}.",
                 )
                 return
             await self._resume_candidate(update=update, chat_id=chat_id, candidate=candidates[parsed_args.resume_index])
@@ -351,7 +351,7 @@ class TelegramBridge:
             if parsed_args.resume_index < 0 or parsed_args.resume_index >= len(candidates):
                 await self._reply(
                     update,
-                    f"Invalid restart index `{parsed_args.resume_index + 1}`. Choose 1..{len(candidates)}.",
+                    f"Invalid restart index `{parsed_args.resume_index}`. Choose 0..{len(candidates) - 1}.",
                 )
                 return
             await self._resume_candidate(
@@ -727,7 +727,7 @@ class TelegramBridge:
         rows: list[list[InlineKeyboardButton]] = []
         for index, candidate in enumerate(candidates[:RESUME_KEYBOARD_MAX_ROWS]):
             title = candidate.title.strip() or candidate.session_id
-            label = title[:48]
+            label = f"{index}. {title}"[:48]
             callback_data = f"{RESUME_CALLBACK_PREFIX}|{index}"
             rows.append([InlineKeyboardButton(text=label, callback_data=callback_data)])
         return InlineKeyboardMarkup(rows)
@@ -796,9 +796,7 @@ class TelegramBridge:
         arg = args[0]
         if arg.isdigit():
             raw_index = int(arg)
-            if raw_index < 1:
-                return None
-            return _ResumeArgs(resume_index=raw_index - 1, workspace=None)
+            return _ResumeArgs(resume_index=raw_index, workspace=None)
         return _ResumeArgs(resume_index=None, workspace=self._workspace_from_args([arg]))
 
     def _parse_restart_args(self, args: list[str]) -> _RestartArgs | None:
@@ -815,10 +813,8 @@ class TelegramBridge:
             if workspace_arg is not None:
                 return None
             workspace_arg = arg
-        if raw_index is not None and raw_index < 1:
-            return None
         workspace = self._workspace_from_args([workspace_arg]) if workspace_arg is not None else None
-        resume_index = raw_index - 1 if raw_index is not None else None
+        resume_index = raw_index
         return _RestartArgs(resume_index=resume_index, workspace=workspace)
 
     @staticmethod

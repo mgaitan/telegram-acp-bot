@@ -40,10 +40,10 @@ List resumable sessions and pick one from buttons:
 /resume
 ```
 
-Resume by list index (1-based):
+Resume by list index (0-based, where `0` is the most recent):
 
 ```text
-/resume 2
+/resume 0
 ```
 
 List resumable sessions for a specific workspace:
@@ -99,7 +99,7 @@ The bot exits polling and re-execs the process (or uses `ACP_RESTART_COMMAND` if
 Restart by resuming a specific saved session (without restarting the process):
 
 ```text
-/restart 1
+/restart 0
 ```
 
 You can combine index and workspace filter:

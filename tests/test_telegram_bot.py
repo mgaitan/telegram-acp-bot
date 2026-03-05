@@ -436,7 +436,7 @@ async def test_restart_with_index_resumes_selected_candidate():
     )
     update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
 
-    await bridge.restart(update, make_context(args=["1"]))
+    await bridge.restart(update, make_context(args=["0"]))
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
@@ -464,13 +464,18 @@ async def test_restart_with_too_many_args_reports_usage():
 
 
 async def test_restart_with_zero_index_reports_usage():
-    bridge = make_bridge()
-    update = make_update(with_message=True)
+    service = ResumeService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
 
     await bridge.restart(update, make_context(args=["0"]))
 
+    assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == ["Usage: /restart or /restart N [workspace]"]
+    assert update.message.replies == ["Session restarted: s-resume-1 in /tmp/ws1"]
 
 
 async def test_restart_with_two_indexes_reports_usage():
@@ -506,7 +511,7 @@ async def test_restart_with_index_reports_list_error():
     )
     update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
 
-    await bridge.restart(update, make_context(args=["1"]))
+    await bridge.restart(update, make_context(args=["0"]))
 
     assert update.message is not None
     assert update.message.replies == ["Failed to list resumable sessions: list boom"]
@@ -521,7 +526,7 @@ async def test_restart_with_index_reports_list_not_supported():
     )
     update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
 
-    await bridge.restart(update, make_context(args=["1"]))
+    await bridge.restart(update, make_context(args=["0"]))
 
     assert update.message is not None
     assert update.message.replies == ["Agent does not support ACP session/list."]
@@ -536,7 +541,7 @@ async def test_restart_with_index_reports_empty_results():
     )
     update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
 
-    await bridge.restart(update, make_context(args=["1"]))
+    await bridge.restart(update, make_context(args=["0"]))
 
     assert update.message is not None
     assert update.message.replies == ["No resumable sessions found."]
@@ -553,7 +558,7 @@ async def test_restart_with_invalid_index_reports_error():
     await bridge.restart(update, make_context(args=["9"]))
 
     assert update.message is not None
-    assert update.message.replies == ["Invalid restart index 9. Choose 1..2."]
+    assert update.message.replies == ["Invalid restart index 9. Choose 0..1."]
 
 
 async def test_restart_with_index_reports_load_failure():
@@ -565,7 +570,7 @@ async def test_restart_with_index_reports_load_failure():
     )
     update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
 
-    await bridge.restart(update, make_context(args=["1"]))
+    await bridge.restart(update, make_context(args=["0"]))
 
     assert update.message is not None
     assert update.message.replies == ["Failed to resume session s-resume-1: load failed"]
@@ -716,7 +721,7 @@ async def test_resume_session_with_index_arg_loads_selected_candidate():
     )
     update = make_update(chat_id=TEST_CHAT_ID)
 
-    await bridge.resume_session(update, make_context(args=["2"]))
+    await bridge.resume_session(update, make_context(args=["1"]))
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-2", Path("/tmp/ws2"))
     assert update.message is not None
@@ -734,17 +739,22 @@ async def test_resume_session_with_invalid_index_reports_error():
     await bridge.resume_session(update, make_context(args=["9"]))
 
     assert update.message is not None
-    assert update.message.replies == ["Invalid resume index 9. Choose 1..2."]
+    assert update.message.replies == ["Invalid resume index 9. Choose 0..1."]
 
 
 async def test_resume_session_with_zero_index_reports_usage():
-    bridge = make_bridge()
+    service = ResumeService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
     update = make_update(chat_id=TEST_CHAT_ID)
 
     await bridge.resume_session(update, make_context(args=["0"]))
 
+    assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == ["Usage: /resume, /resume N, or /resume [workspace]"]
+    assert update.message.replies == ["Session resumed: s-resume-1 in /tmp/ws1"]
 
 
 async def test_resume_session_rejects_combined_index_and_workspace_args():
@@ -1373,6 +1383,8 @@ async def test_resume_keyboard_limits_to_ten_entries():
     )
     keyboard = TelegramBridge._resume_keyboard(candidates=candidates)
     assert len(keyboard.inline_keyboard) == RESUME_KEYBOARD_MAX_ROWS
+    assert keyboard.inline_keyboard[0][0].text.startswith("0. ")
+    assert keyboard.inline_keyboard[1][0].text.startswith("1. ")
 
 
 async def test_format_activity_block_read_escapes_markdown_and_removes_read_prefix():
