@@ -14,6 +14,7 @@ import sys
 from importlib import metadata
 from typing import cast
 
+from acp.schema import McpServerStdio
 from dotenv import load_dotenv
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService
@@ -80,7 +81,46 @@ def get_parser() -> argparse.ArgumentParser:
         default=os.getenv("ACP_RESTART_COMMAND", ""),
         help="Optional command used by /restart to relaunch the bot (e.g. 'uv run acp-bot').",
     )
+    parser.add_argument(
+        "--mcp-server-stdio-name",
+        default=os.getenv("ACP_MCP_SERVER_STDIO_NAME", ""),
+        help="Optional MCP stdio server name to expose to the ACP agent.",
+    )
+    parser.add_argument(
+        "--mcp-server-stdio-command",
+        default=os.getenv("ACP_MCP_SERVER_STDIO_COMMAND", ""),
+        help="Optional MCP stdio server command line to expose to the ACP agent.",
+    )
     return parser
+
+
+def _parse_optional_mcp_stdio_server(
+    *,
+    parser: argparse.ArgumentParser,
+    server_name: str,
+    server_command: str,
+) -> tuple[McpServerStdio, ...]:
+    normalized_name = server_name.strip()
+    normalized_command = server_command.strip()
+    if bool(normalized_name) != bool(normalized_command):
+        parser.error(
+            "--mcp-server-stdio-name and --mcp-server-stdio-command must be configured together "
+            "(or both omitted)"
+        )
+    if not normalized_command:
+        return ()
+
+    mcp_command_parts = shlex.split(normalized_command)
+    if not mcp_command_parts:
+        parser.error("--mcp-server-stdio-command is empty after parsing")
+    return (
+        McpServerStdio(
+            name=normalized_name,
+            command=mcp_command_parts[0],
+            args=mcp_command_parts[1:],
+            env=[],
+        ),
+    )
 
 
 def main(args: list[str] | None = None) -> int:
@@ -104,6 +144,11 @@ def main(args: list[str] | None = None) -> int:
     if not command_parts:
         parser.error("--agent-command is empty after parsing")
     restart_command_parts = shlex.split(opts.restart_command) if opts.restart_command.strip() else None
+    mcp_servers = _parse_optional_mcp_stdio_server(
+        parser=parser,
+        server_name=opts.mcp_server_stdio_name,
+        server_command=opts.mcp_server_stdio_command,
+    )
 
     config = make_config(
         token=opts.telegram_token,
@@ -116,6 +161,7 @@ def main(args: list[str] | None = None) -> int:
         args=command_parts[1:],
         default_permission_mode=cast(PermissionMode, opts.permission_mode),
         permission_event_output=cast(PermissionEventOutput, opts.permission_event_output),
+        mcp_servers=mcp_servers,
         stdio_limit=opts.acp_stdio_limit,
         connect_timeout=opts.acp_connect_timeout,
     )

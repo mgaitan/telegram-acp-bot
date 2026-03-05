@@ -38,6 +38,17 @@ ACP_CONNECT_TIMEOUT
   Prevents `/new` from hanging forever if the agent does not speak ACP over stdio.
   Maps to `--acp-connect-timeout`.
 
+ACP_MCP_SERVER_STDIO_NAME
+  Optional MCP stdio server name to advertise to the ACP agent when creating/loading sessions.
+  Must be set together with {term}`ACP_MCP_SERVER_STDIO_COMMAND`.
+  Maps to `--mcp-server-stdio-name`.
+
+ACP_MCP_SERVER_STDIO_COMMAND
+  Optional MCP stdio server command line to advertise to the ACP agent when creating/loading sessions.
+  Must be set together with {term}`ACP_MCP_SERVER_STDIO_NAME`.
+  Example: `uv run -m telegram_acp_bot.mcp_channel`.
+  Maps to `--mcp-server-stdio-command`.
+
 ACP_LOG_LEVEL
   Application log level.
   Common values: `DEBUG`, `INFO`, `WARNING`, `ERROR`.
@@ -53,5 +64,7 @@ ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608
 ACP_CONNECT_TIMEOUT=30
+ACP_MCP_SERVER_STDIO_NAME=telegram-channel
+ACP_MCP_SERVER_STDIO_COMMAND="uv run -m telegram_acp_bot.mcp_channel"
 ACP_LOG_LEVEL=INFO
 ```

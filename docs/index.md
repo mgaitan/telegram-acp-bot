@@ -76,4 +76,5 @@ cli.md
 ../CODE_OF_CONDUCT.md
 about_the_docs.md
 preliminary_ux.md
+mcp_draft.md
 ```
