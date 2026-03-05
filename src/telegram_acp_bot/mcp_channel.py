@@ -24,6 +24,8 @@ from telegram_acp_bot.mcp_channel_state import (
     load_session_chat_map,
 )
 
+ALLOW_PATH_ENV = "ACP_TELEGRAM_CHANNEL_ALLOW_PATH"
+
 mcp = FastMCP(
     name="telegram-channel",
     instructions=(
@@ -75,6 +77,9 @@ async def telegram_send_attachment(
     def fail(error: str) -> dict[str, object]:
         return {"ok": False, "error": error}
 
+    if path is not None and not _allow_path_inputs():
+        return fail(f"`path` input is disabled by default. Set {ALLOW_PATH_ENV}=1 to enable it.")
+
     context = _resolve_request_context(session_id=session_id, path=path, data_base64=data_base64)
     if isinstance(context, str):
         return fail(context)
@@ -115,12 +120,12 @@ def _load_attachment_bytes(
             return f"file not found: {source_path}"
         raw = source_path.read_bytes()
         filename = name or source_path.name
-        guessed_mime = mimetypes.guess_type(source_path.name)[0]
+        guessed_mime = mimetypes.guess_type(filename)[0]
         return _AttachmentPayload(raw=raw, filename=filename, guessed_mime=guessed_mime)
 
     assert data_base64 is not None
     try:
-        raw = base64.b64decode(data_base64)
+        raw = base64.b64decode(data_base64, validate=True)
     except (ValueError, binascii.Error):
         return "invalid base64 payload"
     filename = name or "attachment.bin"
@@ -158,6 +163,11 @@ def _resolve_request_context(
     if chat_id is None:
         return f"unknown session_id `{selected_session_id}`"
     return _RequestContext(token=token, chat_id=chat_id, session_id=selected_session_id)
+
+
+def _allow_path_inputs() -> bool:
+    value = os.getenv(ALLOW_PATH_ENV, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def main() -> None:
