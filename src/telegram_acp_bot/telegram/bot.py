@@ -899,18 +899,20 @@ class TelegramBridge:
             rendered_text, rendered_entities = convert(text)
             chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
             for index, (chunk_text, chunk_entities) in enumerate(chunks):
-                kwargs: dict[str, object] = {"chat_id": chat_id, "text": chunk_text}
-                if chunk_entities:
-                    kwargs["entities"] = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
-                if reply_markup is not None and index == 0:
-                    kwargs["reply_markup"] = reply_markup
+                entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities] or None
+                current_reply_markup = reply_markup if index == 0 else None
                 try:
-                    await bot.send_message(**kwargs)
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        entities=entities,
+                        reply_markup=current_reply_markup,
+                    )
                 except TelegramError:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=chunk_text,
-                        reply_markup=reply_markup if index == 0 else None,
+                        reply_markup=current_reply_markup,
                     )
         except (RuntimeError, ValueError, TypeError):
             await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)

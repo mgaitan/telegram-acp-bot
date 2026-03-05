@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from telegram import Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import Application
 
@@ -2015,7 +2015,9 @@ async def test_send_markdown_to_chat_falls_back_to_plain_when_entity_send_fails(
     failing_bot = FailingMarkdownBot()
     bridge._app = cast(Application, SimpleNamespace(bot=failing_bot))
 
-    await TelegramBridge._send_markdown_to_chat(bot=failing_bot, chat_id=TEST_CHAT_ID, text="*bold*")
+    await TelegramBridge._send_markdown_to_chat(
+        bot=cast(bot_module.Bot, failing_bot), chat_id=TEST_CHAT_ID, text="*bold*"
+    )
 
     assert len(failing_bot.sent_messages) == 1
     payload = failing_bot.sent_messages[0]
@@ -2032,10 +2034,10 @@ async def test_send_markdown_to_chat_falls_back_to_plain_when_convert_fails(monk
     monkeypatch.setattr(bot_module, "convert", boom)
 
     await TelegramBridge._send_markdown_to_chat(
-        bot=dummy_bot,
+        bot=cast(bot_module.Bot, dummy_bot),
         chat_id=TEST_CHAT_ID,
         text="*bold*",
-        reply_markup=SimpleNamespace(name="markup"),
+        reply_markup=InlineKeyboardMarkup([]),
     )
 
     assert len(dummy_bot.sent_messages) == 1
