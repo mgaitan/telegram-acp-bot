@@ -134,7 +134,7 @@ def _load_attachment_bytes(
     return _AttachmentPayload(raw=raw, filename=filename, guessed_mime=guessed_mime)
 
 
-def _resolve_request_context(
+def _resolve_request_context(  # noqa: PLR0911
     *,
     session_id: str | None,
     path: str | None,
