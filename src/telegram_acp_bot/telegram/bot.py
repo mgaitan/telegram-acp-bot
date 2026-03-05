@@ -163,7 +163,10 @@ class TelegramBridge:
         del context
         if not await self._require_access(update):
             return
-        await self._reply(update, "Use /new [workspace] or /resume [workspace] to start a session.")
+        await self._reply(
+            update,
+            "Send a message to start in the default workspace, or use /new [workspace] / /resume [workspace].",
+        )
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -467,6 +470,10 @@ class TelegramBridge:
             return
 
         chat_id = self._chat_id(update)
+        if self._agent_service.get_workspace(chat_id=chat_id) is None:
+            started = await self._start_implicit_session(update=update, chat_id=chat_id)
+            if not started:
+                return
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         try:
             reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
@@ -478,7 +485,7 @@ class TelegramBridge:
             )
             return
         if reply is None:
-            await self._reply(update, "No active session. Use /new first.")
+            await self._reply(update, "No active session. Send a message again or use /new [workspace].")
             return
 
         if self._app is None:
@@ -488,6 +495,22 @@ class TelegramBridge:
         if reply.text.strip():
             await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
+
+    async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
+        workspace = self._config.default_workspace
+        try:
+            await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
+        except ValueError as exc:
+            message = str(exc) or str(workspace)
+            await self._reply(update, f"Invalid default workspace: {message}")
+            return False
+        except RuntimeError:
+            await self._reply(update, "Failed to start session: agent process did not expose stdio pipes.")
+            return False
+        except Exception as exc:  # noqa: BLE001
+            await self._reply(update, f"Failed to start session: {exc}")
+            return False
+        return True
 
     async def _extract_prompt_images(
         self,

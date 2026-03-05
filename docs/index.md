@@ -45,6 +45,10 @@ Supported bot commands:
 - `/stop`
 - `/clear`
 
+Session behavior:
+- The first user prompt in a chat starts a session implicitly in the default workspace.
+- Use `/new [workspace]` when you want to explicitly switch to another session/workspace.
+
 Attachment behavior:
 - Telegram inbound photos/documents are forwarded to ACP prompts.
 - ACP `file://` resources are delivered back as Telegram attachments when the file is inside the active workspace.

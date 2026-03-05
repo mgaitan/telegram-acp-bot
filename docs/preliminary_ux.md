@@ -52,7 +52,7 @@ Patterns worth adopting:
 
 ### Session model
 
-- Session starts with `/new` (agent + workspace).
+- Session starts implicitly on first prompt in default workspace, or explicitly with `/new` (agent + workspace).
 - Session can be paused (`/stop`) and resumed (`/resume`).
 - Session can be fully reset (`/clear`).
 - Users can inspect current session state (`/session`).

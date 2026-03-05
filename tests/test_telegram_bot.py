@@ -321,7 +321,7 @@ async def test_start_and_help():
     await bridge.help(update, context)
 
     assert update.message is not None
-    assert "Use /new" in update.message.replies[0]
+    assert "Send a message to start in the default workspace" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
     assert "/restart" in update.message.replies[1]
@@ -381,7 +381,7 @@ async def test_access_allowed_with_allowlist():
 
     assert update.message is not None
     assert len(update.message.replies) == 1
-    assert "Use /new" in update.message.replies[0]
+    assert "Send a message to start in the default workspace" in update.message.replies[0]
 
 
 async def test_denied_paths_for_other_handlers():
@@ -617,11 +617,168 @@ async def test_on_text_without_and_with_session():
     await bridge.on_message(update, context)
 
     assert update.message is not None
-    assert update.message.replies[0] == "No active session. Use /new first."
+    assert len(update.message.replies) == 3
+    assert update.message.replies[0].endswith("hello")
     assert update.message.replies[-1].endswith("hello")
     assert context.bot.actions == [(100, "typing"), (100, "typing")]
     assert "entities" in update.message.reply_kwargs[-1]
     assert "parse_mode" not in update.message.reply_kwargs[-1]
+
+
+async def test_first_prompt_starts_implicit_session_in_default_workspace(tmp_path: Path):
+    class RecordingService:
+        def __init__(self) -> None:
+            self.new_session_calls: list[tuple[int, Path]] = []
+
+        async def new_session(self, *, chat_id: int, workspace: Path):
+            self.new_session_calls.append((chat_id, workspace))
+            return "s-1"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            return AgentReply(text="ok")
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+            return None
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    service = RecordingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path))
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update = make_update(text="hello")
+
+    await bridge.on_message(update, make_context())
+
+    assert service.new_session_calls == [(TEST_CHAT_ID, tmp_path)]
+    assert update.message is not None
+    assert update.message.replies == ["ok"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ValueError("/bad-default"), "Invalid default workspace: /bad-default"),
+        (RuntimeError(), "Failed to start session: agent process did not expose stdio pipes."),
+        (Exception("boom"), "Failed to start session: boom"),
+    ],
+)
+async def test_first_prompt_reports_implicit_session_start_errors(error: Exception, expected: str):
+    class FailingService:
+        async def new_session(self, *, chat_id: int, workspace: Path):
+            del chat_id, workspace
+            raise error
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            return AgentReply(text="ok")
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+            return None
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, FailingService()))
+    update = make_update(text="hello")
+    context = make_context()
+
+    await bridge.on_message(update, context)
+
+    assert update.message is not None
+    assert update.message.replies == [expected]
+    assert context.bot.actions == []
+
+
+async def test_on_message_without_session_after_implicit_start_reports_missing_session():
+    class PromptWithoutSessionService:
+        async def new_session(self, *, chat_id: int, workspace: Path):
+            del chat_id, workspace
+            return "s-1"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del chat_id, text, images, files
+            return None
+
+        def get_workspace(self, *, chat_id: int):
+            del chat_id
+            return None
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, PromptWithoutSessionService()))
+    update = make_update(text="hello")
+
+    await bridge.on_message(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["No active session. Send a message again or use /new [workspace]."]
 
 
 async def test_on_text_entities_fallback_to_plain():
