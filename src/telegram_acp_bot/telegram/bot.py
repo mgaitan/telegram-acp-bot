@@ -879,10 +879,13 @@ class TelegramBridge:
             rendered_text, rendered_entities = convert(text)
             chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
             for chunk_text, chunk_entities in chunks:
-                entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
-                try:
-                    await message.reply_text(chunk_text, entities=entities)
-                except TelegramError:
+                if chunk_entities:
+                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                    try:
+                        await message.reply_text(chunk_text, entities=entities)
+                    except TelegramError:
+                        await message.reply_text(chunk_text)
+                else:
                     await message.reply_text(chunk_text)
         except (RuntimeError, ValueError, TypeError):
             await message.reply_text(text)

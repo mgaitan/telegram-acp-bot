@@ -708,7 +708,7 @@ async def test_on_text_without_and_with_session():
     assert update.message.replies[0].endswith("hello")
     assert update.message.replies[-1].endswith("hello")
     assert context.bot.actions == [(100, "typing"), (100, "typing")]
-    assert "entities" in update.message.reply_kwargs[-1]
+    assert update.message.reply_kwargs[-1] == {}
     assert "parse_mode" not in update.message.reply_kwargs[-1]
 
 
@@ -815,7 +815,6 @@ async def test_on_text_entities_fallback_to_plain():
     await bridge.on_message(update, context)
 
     assert update.message.replies[-1].endswith("hello")
-    assert "entities" in update.message.reply_kwargs[-2]
     assert update.message.reply_kwargs[-1] == {}
 
 
@@ -1960,7 +1959,7 @@ async def test_reply_agent_uses_entities_split_flow(monkeypatch: pytest.MonkeyPa
     assert update.message.replies == ["hello ", "world"]
     assert "entities" in update.message.reply_kwargs[0]
     assert "parse_mode" not in update.message.reply_kwargs[0]
-    assert "entities" in update.message.reply_kwargs[1]
+    assert update.message.reply_kwargs[1] == {}
 
 
 async def test_reply_agent_falls_back_to_markdown_parse_mode_on_convert_error(
