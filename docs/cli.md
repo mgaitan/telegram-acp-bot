@@ -43,16 +43,6 @@ The bot entrypoint is `acp-bot`.
   Default: {term}`ACP_CONNECT_TIMEOUT`.
   Timeout in seconds for ACP `initialize` + `new_session` handshake.
 
-- `--mcp-server-stdio-name`
-  Default: {term}`ACP_MCP_SERVER_STDIO_NAME`.
-  Optional MCP stdio server name to pass to ACP `new_session` / `load_session`.
-  Must be set together with `--mcp-server-stdio-command`.
-
-- `--mcp-server-stdio-command`
-  Default: {term}`ACP_MCP_SERVER_STDIO_COMMAND`.
-  Optional MCP stdio server command line to pass to ACP `new_session` / `load_session`.
-  Must be set together with `--mcp-server-stdio-name`.
-
 - `-V`, `--version`
   Print CLI version and exit.
 
@@ -61,3 +51,5 @@ The bot entrypoint is `acp-bot`.
 - `/restart` behavior:
   - If {term}`ACP_RESTART_COMMAND` (or `--restart-command`) is set, that command is executed.
   - Otherwise, the bot re-execs itself using `sys.executable + sys.argv`.
+- MCP behavior:
+  - `acp-bot` always advertises an internal MCP stdio server (`telegram-channel`) to the ACP agent.

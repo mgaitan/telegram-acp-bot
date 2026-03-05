@@ -20,8 +20,6 @@ def isolate_token_sources(monkeypatch: pytest.MonkeyPatch, mocker):
     """Prevent tests from loading real token values from environment or .env files."""
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
-    monkeypatch.delenv("ACP_MCP_SERVER_STDIO_NAME", raising=False)
-    monkeypatch.delenv("ACP_MCP_SERVER_STDIO_COMMAND", raising=False)
     return mocker.patch("telegram_acp_bot.load_dotenv")
 
 
@@ -167,49 +165,19 @@ def test_main_passes_connect_timeout_to_service(mocker):
     assert mock_service.call_args.kwargs["connect_timeout"] == CUSTOM_CONNECT_TIMEOUT
 
 
-def test_main_passes_stdio_mcp_server_to_service(mocker):
-    """CLI forwards optional MCP stdio server config to service constructor."""
+def test_main_passes_default_internal_mcp_server_to_service(mocker):
+    """CLI always forwards the built-in MCP stdio server to service constructor."""
     mock_service = mocker.patch("telegram_acp_bot.AcpAgentService")
     mocker.patch("telegram_acp_bot.run_polling", return_value=0)
 
-    assert (
-        main(
-            [
-                "--telegram-token",
-                "TOKEN",
-                "--agent-command",
-                "agent",
-                "--mcp-server-stdio-name",
-                "telegram-channel",
-                "--mcp-server-stdio-command",
-                "uv run -m telegram_acp_bot.mcp_channel",
-            ]
-        )
-        == 0
-    )
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
     assert mock_service.call_args is not None
     mcp_servers = mock_service.call_args.kwargs["mcp_servers"]
     assert len(mcp_servers) == 1
     server = mcp_servers[0]
     assert server.name == "telegram-channel"
-    assert server.command == "uv"
-    assert server.args == ["run", "-m", "telegram_acp_bot.mcp_channel"]
-
-
-def test_main_rejects_partial_mcp_server_configuration(mocker):
-    """MCP stdio server requires both name and command."""
-    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
-    with pytest.raises(SystemExit):
-        main(
-            [
-                "--telegram-token",
-                "TOKEN",
-                "--agent-command",
-                "agent",
-                "--mcp-server-stdio-name",
-                "telegram-channel",
-            ]
-        )
+    assert server.command == sys.executable
+    assert server.args == ["-m", "telegram_acp_bot.mcp_channel"]
 
 
 def test_show_help(capsys: pytest.CaptureFixture):
