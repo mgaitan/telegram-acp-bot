@@ -39,7 +39,7 @@ You can also set `TELEGRAM_BOT_TOKEN` and `ACP_AGENT_COMMAND` in a local `.env` 
 
 Supported bot commands:
 - `/new [workspace]`
-- `/resume [workspace|N [workspace]]`
+- `/resume [N|workspace]`
 - `/session`
 - `/cancel`
 - `/stop`

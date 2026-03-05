@@ -52,13 +52,11 @@ List resumable sessions for a specific workspace:
 /resume /home/user/project
 ```
 
-Resume by index inside a specific workspace:
-
-```text
-/resume 1 /home/user/project
-```
+This resumes the most recent session in that workspace.
 
 When you tap a button, the bot calls ACP `session/load` and switches the active conversation for that chat.
+
+`/resume` accepts either an index or a workspace path (not both in the same command).
 
 If your agent does not support ACP `session/list`, `/resume` will report it.
 

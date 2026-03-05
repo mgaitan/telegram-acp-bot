@@ -572,7 +572,7 @@ async def test_resume_session_with_app_sends_picker_message():
     assert payload["reply_markup"] is not None
 
 
-async def test_resume_session_with_workspace_arg_includes_workspace_in_message(tmp_path: Path):
+async def test_resume_session_with_workspace_arg_loads_most_recent_for_workspace(tmp_path: Path):
     service = ResumeService()
     bridge = TelegramBridge(
         config=make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path)),
@@ -584,9 +584,10 @@ async def test_resume_session_with_workspace_arg_includes_workspace_in_message(t
 
     await bridge.resume_session(update, make_context(args=["/tmp/ws2"]))
 
-    assert bot.sent_messages
-    payload = bot.sent_messages[-1]
-    assert "Pick a session to resume in" in cast(str, payload["text"])
+    assert service.loaded == (TEST_CHAT_ID, "s-resume-2", Path("/tmp/ws2"))
+    assert update.message is not None
+    assert update.message.replies == ["Session resumed: s-resume-2 in /tmp/ws2"]
+    assert bot.sent_messages == []
 
 
 async def test_resume_session_with_index_arg_loads_selected_candidate():
@@ -616,6 +617,16 @@ async def test_resume_session_with_invalid_index_reports_error():
 
     assert update.message is not None
     assert update.message.replies == ["Invalid resume index 9. Choose 1..2."]
+
+
+async def test_resume_session_rejects_combined_index_and_workspace_args():
+    bridge = make_bridge()
+    update = make_update(chat_id=TEST_CHAT_ID)
+
+    await bridge.resume_session(update, make_context(args=["1", "/tmp/ws1"]))
+
+    assert update.message is not None
+    assert update.message.replies == ["Usage: /resume, /resume N, or /resume [workspace]"]
 
 
 async def test_resume_session_reports_list_not_supported():
