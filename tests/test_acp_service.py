@@ -43,6 +43,7 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.mcp_channel_state import load_session_chat_map
 
 pytestmark = pytest.mark.asyncio
 
@@ -904,6 +905,36 @@ async def test_service_passes_configured_mcp_servers_to_new_and_load_session(tmp
     assert connection.new_session_mcp_servers == [server]
     await service.load_session(chat_id=2, session_id="loaded-session", workspace=tmp_path)
     assert connection.load_session_mcp_servers == [server]
+
+
+async def test_service_persists_channel_session_mapping(tmp_path: Path):
+    process = FakeProcess()
+    connection = FakeConnection(session_id="mapped-session", supports_load_session=True)
+    state_file = tmp_path / "channel-state.json"
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        channel_state_file=state_file,
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+
+    await service.new_session(chat_id=9, workspace=tmp_path)
+    assert load_session_chat_map(state_file) == {"mapped-session": 9}
+
+    await service.stop(chat_id=9)
+    assert load_session_chat_map(state_file) == {}
 
 
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):
