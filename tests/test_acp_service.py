@@ -19,6 +19,7 @@ from acp.schema import (
     DeniedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
+    McpServerStdio,
     PermissionOption,
     RequestPermissionResponse,
     ResourceContentBlock,
@@ -42,6 +43,12 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.mcp_channel_state import (
+    load_last_session_id,
+    load_session_chat_map,
+    save_last_session_id,
+    save_session_chat_map,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -99,6 +106,8 @@ class FakeConnection:
         self._supports_session_list = supports_session_list
         self._listed_sessions = listed_sessions or []
         self._session_id = session_id
+        self.new_session_mcp_servers: list | None = None
+        self.load_session_mcp_servers: list | None = None
 
     async def initialize(self, **kwargs):
         self.initialized = True
@@ -115,12 +124,12 @@ class FakeConnection:
 
     async def new_session(self, *, cwd: str, mcp_servers: list) -> SimpleNamespace:
         self.cwd = cwd
-        assert mcp_servers == []
+        self.new_session_mcp_servers = mcp_servers
         return SimpleNamespace(session_id=self._session_id)
 
     async def load_session(self, *, cwd: str, session_id: str, mcp_servers: list) -> SimpleNamespace:
         self.cwd = cwd
-        assert mcp_servers == []
+        self.load_session_mcp_servers = mcp_servers
         return SimpleNamespace(config_options=[], models=[], modes=[])
 
     async def list_sessions(self, *, cursor: str | None = None, cwd: str | None = None) -> SimpleNamespace:
@@ -230,6 +239,32 @@ async def test_acp_client_joins_adjacent_text_chunks_with_spacing():
     assert reply.text == "Created (deleted). Done."
 
 
+async def test_acp_client_does_not_insert_space_inside_semver_or_ip_chunks():
+    client = make_client()
+    session_id = "s-text-semver-ip"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("Version 10."), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("1.2"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block(" and host 192."), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("168.0.1"), session_update="agent_message_chunk"),
+    )
+
+    reply = await client.finish_capture(session_id)
+    assert reply.text == "Version 10.1.2 and host 192.168.0.1"
+
+
 async def test_acp_client_does_not_insert_space_inside_split_word():
     client = make_client()
     session_id = "s-text-word-split"
@@ -311,6 +346,14 @@ async def test_acp_client_append_text_chunk_branch_coverage():
     target = ["Sil"]
     _AcpClient._append_text_chunk(target, "ence")
     assert target == ["Sil", "ence"]
+
+    target = ["10."]
+    _AcpClient._append_text_chunk(target, "1")
+    assert target == ["10.", " ", "1"]
+
+    assert _AcpClient._is_numeric_dot_continuation(previous=".", chunk="1") is False
+    assert _AcpClient._is_numeric_dot_continuation(previous="Step 1.", chunk="2) detail") is False
+    assert _AcpClient._is_numeric_dot_continuation(previous="Version 1.", chunk="2.3") is True
 
 
 async def test_acp_client_non_text_chunk_in_active_tool_block_is_captured():
@@ -807,6 +850,7 @@ async def test_new_session_and_prompt(tmp_path: Path):
     assert session_id == "real-session"
     assert connection.initialized
     assert connection.cwd == str(tmp_path.resolve())
+    assert connection.new_session_mcp_servers == []
     assert service.get_workspace(chat_id=2) == tmp_path.resolve()
 
     reply = await service.prompt(chat_id=2, text="hi")
@@ -838,8 +882,96 @@ async def test_load_session_and_supports_session_loading(tmp_path: Path):
     loaded_id = await service.load_session(chat_id=2, session_id="loaded-session", workspace=tmp_path)
     assert loaded_id == "loaded-session"
     assert connection.cwd == str(tmp_path.resolve())
+    assert connection.load_session_mcp_servers == []
     assert service.get_workspace(chat_id=2) == tmp_path.resolve()
     assert service.supports_session_loading(chat_id=2) is True
+
+
+async def test_service_passes_configured_mcp_servers_to_new_and_load_session(tmp_path: Path):
+    process = FakeProcess()
+    connection = FakeConnection(session_id="real-session", supports_load_session=True)
+    server = McpServerStdio(name="telegram-channel", command="uv", args=["run", "mcp-server"], env=[])
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        mcp_servers=(server,),
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+
+    await service.new_session(chat_id=2, workspace=tmp_path)
+    assert connection.new_session_mcp_servers == [server]
+    await service.load_session(chat_id=2, session_id="loaded-session", workspace=tmp_path)
+    assert connection.load_session_mcp_servers == [server]
+
+
+async def test_service_persists_channel_session_mapping(tmp_path: Path):
+    process = FakeProcess()
+    connection = FakeConnection(session_id="mapped-session", supports_load_session=True)
+    state_file = tmp_path / "channel-state.json"
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        channel_state_file=state_file,
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+
+    await service.new_session(chat_id=9, workspace=tmp_path)
+    assert load_session_chat_map(state_file) == {"mapped-session": 9}
+    assert load_last_session_id(state_file) == "mapped-session"
+
+    await service.stop(chat_id=9)
+    assert load_session_chat_map(state_file) == {}
+    assert load_last_session_id(state_file) is None
+
+
+async def test_drop_channel_session_mapping_ignores_unknown_session(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    save_session_chat_map(state_file, {"known": 11})
+    save_last_session_id(state_file, "known")
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    await service._drop_channel_session_mapping(session_id="unknown")
+
+    assert load_session_chat_map(state_file) == {"known": 11}
+    assert load_last_session_id(state_file) == "known"
+
+
+async def test_set_last_channel_session_updates_state_file(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    await service._set_last_channel_session(session_id="latest")
+
+    assert load_last_session_id(state_file) == "latest"
+
+
+async def test_set_last_channel_session_without_state_file_is_noop():
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    await service._set_last_channel_session(session_id="ignored")
 
 
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):
@@ -890,10 +1022,19 @@ async def test_load_session_replaces_existing_and_shuts_down(tmp_path: Path):
         connection.client = client
         return connection
 
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+        channel_state_file=state_file,
+    )
     await service.new_session(chat_id=3, workspace=tmp_path)
     await service.load_session(chat_id=3, session_id="reloaded", workspace=tmp_path)
     assert first.terminated
+    assert load_session_chat_map(state_file) == {"reloaded": 3}
 
 
 async def test_load_session_times_out(tmp_path: Path):
@@ -1663,12 +1804,21 @@ async def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monk
         conn.client = client
         return conn
 
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+        channel_state_file=state_file,
+    )
     await service.new_session(chat_id=5, workspace=tmp_path)
     await service.new_session(chat_id=5, workspace=tmp_path)
 
     assert first.terminated
     assert not second.terminated
+    assert load_session_chat_map(state_file) == {"s-2": 5}
 
     async def fake_wait_for(fut, **kwargs):
         del kwargs

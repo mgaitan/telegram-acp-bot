@@ -51,3 +51,5 @@ The bot entrypoint is `acp-bot`.
 - `/restart` behavior:
   - If {term}`ACP_RESTART_COMMAND` (or `--restart-command`) is set, that command is executed.
   - Otherwise, the bot re-execs itself using `sys.executable + sys.argv`.
+- MCP behavior:
+  - `acp-bot` always advertises an internal MCP stdio server (`telegram-channel`) to the ACP agent.

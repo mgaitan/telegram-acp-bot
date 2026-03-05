@@ -9,6 +9,7 @@ from importlib import metadata
 import pytest
 
 from telegram_acp_bot import get_version, main
+from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE
 
 CUSTOM_STDIO_LIMIT = 12_345
@@ -163,6 +164,24 @@ def test_main_passes_connect_timeout_to_service(mocker):
     )
     assert mock_service.call_args is not None
     assert mock_service.call_args.kwargs["connect_timeout"] == CUSTOM_CONNECT_TIMEOUT
+
+
+def test_main_passes_default_internal_mcp_server_to_service(mocker):
+    """CLI always forwards the built-in MCP stdio server to service constructor."""
+    mock_service = mocker.patch("telegram_acp_bot.AcpAgentService")
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
+    assert mock_service.call_args is not None
+    mcp_servers = mock_service.call_args.kwargs["mcp_servers"]
+    assert len(mcp_servers) == 1
+    server = mcp_servers[0]
+    assert server.name == "telegram-channel"
+    assert server.command == sys.executable
+    assert server.args == ["-m", "telegram_acp_bot.mcp_channel"]
+    env = {item.name: item.value for item in server.env}
+    assert env[TOKEN_ENV] == "TOKEN"
+    assert STATE_FILE_ENV in env
 
 
 def test_show_help(capsys: pytest.CaptureFixture):

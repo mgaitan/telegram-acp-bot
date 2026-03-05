@@ -12,13 +12,16 @@ import os
 import shlex
 import sys
 from importlib import metadata
+from pathlib import Path
 from typing import cast
 
+from acp.schema import EnvVariable, McpServerStdio
 from dotenv import load_dotenv
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService
 from telegram_acp_bot.acp_app.models import PermissionEventOutput, PermissionMode
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, TelegramBridge, make_config, run_polling
 
 
@@ -83,6 +86,22 @@ def get_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _default_mcp_servers(*, telegram_token: str, state_file: Path) -> tuple[McpServerStdio, ...]:
+    """Return MCP servers that should always be exposed to the ACP agent."""
+
+    return (
+        McpServerStdio(
+            name="telegram-channel",
+            command=sys.executable,
+            args=["-m", "telegram_acp_bot.mcp_channel"],
+            env=[
+                EnvVariable(name=TOKEN_ENV, value=telegram_token),
+                EnvVariable(name=STATE_FILE_ENV, value=str(state_file)),
+            ],
+        ),
+    )
+
+
 def main(args: list[str] | None = None) -> int:
     """Run the main program."""
     load_dotenv(override=False)
@@ -104,6 +123,8 @@ def main(args: list[str] | None = None) -> int:
     if not command_parts:
         parser.error("--agent-command is empty after parsing")
     restart_command_parts = shlex.split(opts.restart_command) if opts.restart_command.strip() else None
+    channel_state_file = default_state_file(pid=os.getpid())
+    mcp_servers = _default_mcp_servers(telegram_token=opts.telegram_token, state_file=channel_state_file)
 
     config = make_config(
         token=opts.telegram_token,
@@ -116,6 +137,8 @@ def main(args: list[str] | None = None) -> int:
         args=command_parts[1:],
         default_permission_mode=cast(PermissionMode, opts.permission_mode),
         permission_event_output=cast(PermissionEventOutput, opts.permission_event_output),
+        mcp_servers=mcp_servers,
+        channel_state_file=channel_state_file,
         stdio_limit=opts.acp_stdio_limit,
         connect_timeout=opts.acp_connect_timeout,
     )

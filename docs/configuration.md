@@ -55,3 +55,8 @@ ACP_STDIO_LIMIT=8388608
 ACP_CONNECT_TIMEOUT=30
 ACP_LOG_LEVEL=INFO
 ```
+
+## MCP behavior
+
+The bot always advertises an internal MCP stdio server named `telegram-channel`
+to the ACP agent. No extra configuration is required.

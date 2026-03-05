@@ -28,6 +28,7 @@ from acp.schema import (
     ImageContentBlock,
     Implementation,
     KillTerminalCommandResponse,
+    McpServerStdio,
     PermissionOption,
     ReadTextFileResponse,
     ReleaseTerminalResponse,
@@ -61,9 +62,17 @@ from telegram_acp_bot.acp_app.models import (
     ToolCallStatus,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.mcp_channel_state import (
+    load_last_session_id,
+    load_session_chat_map,
+    save_last_session_id,
+    save_session_chat_map,
+)
 
 logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
+MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
+MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
 
 
 class AcpConnectionFactory(Protocol):
@@ -295,9 +304,25 @@ class _AcpClient:
         if previous[-1].isspace() or chunk[0].isspace():
             target.append(chunk)
             return
-        if previous[-1] in {".", "!", "?", ";", ":", ")", "]", "}"} and chunk[0].isalnum():
+        if (
+            previous[-1] in {".", "!", "?", ";", ":", ")", "]", "}"}
+            and chunk[0].isalnum()
+            and not _AcpClient._is_numeric_dot_continuation(previous=previous, chunk=chunk)
+        ):
             target.append(" ")
         target.append(chunk)
+
+    @staticmethod
+    def _is_numeric_dot_continuation(*, previous: str, chunk: str) -> bool:
+        """Return true when two chunks continue a numeric dot token like `10.1`."""
+
+        if previous[-1] != "." or not chunk[0].isdigit():
+            return False
+        if len(previous) < MIN_NUMERIC_DOT_PREFIX_LENGTH:
+            return False
+        if not previous[-2].isdigit() or len(chunk) < MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH:
+            return False
+        return chunk[1].isdigit() or chunk[1] == "."
 
     async def _open_tool_block(self, *, session_id: str, tool_call_id: str, kind: str, title: str) -> None:
         await self._close_active_tool_block(session_id=session_id, status="in_progress")
@@ -421,6 +446,8 @@ class AcpAgentService:
         args: list[str],
         default_permission_mode: PermissionMode = "ask",
         permission_event_output: PermissionEventOutput = "stdout",
+        mcp_servers: tuple[McpServerStdio, ...] = (),
+        channel_state_file: Path | None = None,
         stdio_limit: int = 8_388_608,
         connect_timeout: float = 30.0,
         connector: AcpConnectionFactory | None = None,
@@ -435,6 +462,8 @@ class AcpAgentService:
         self._args = args
         self._default_permission_mode = default_permission_mode
         self._permission_event_output = permission_event_output
+        self._mcp_servers = mcp_servers
+        self._channel_state_file = channel_state_file
         self._stdio_limit = stdio_limit
         self._connect_timeout = connect_timeout
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
@@ -443,6 +472,7 @@ class AcpAgentService:
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
         self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
+        self._channel_state_lock = asyncio.Lock()
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
@@ -454,12 +484,13 @@ class AcpAgentService:
         existing = self._live_by_chat.pop(chat_id, None)
         if existing is not None:
             await self._shutdown(existing.process)
+            await self._drop_channel_session_mapping(session_id=existing.acp_session_id)
 
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         try:
             logger.debug("Requesting ACP new_session for chat_id=%s", chat_id)
             session = await asyncio.wait_for(
-                connection.new_session(cwd=str(workspace), mcp_servers=[]),
+                connection.new_session(cwd=str(workspace), mcp_servers=list(self._mcp_servers)),
                 timeout=self._connect_timeout,
             )
         except TimeoutError as exc:
@@ -467,6 +498,7 @@ class AcpAgentService:
             raise AcpHandshakeTimeoutError(self._connect_timeout) from exc
 
         self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session.session_id)
+        await self._save_channel_session_mapping(chat_id=chat_id, session_id=session.session_id)
         self._live_by_chat[chat_id] = _LiveSession(
             acp_session_id=session.session_id,
             workspace=workspace,
@@ -489,6 +521,7 @@ class AcpAgentService:
         existing = self._live_by_chat.pop(chat_id, None)
         if existing is not None:
             await self._shutdown(existing.process)
+            await self._drop_channel_session_mapping(session_id=existing.acp_session_id)
 
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         if not self._supports_load_session(capabilities):
@@ -496,7 +529,11 @@ class AcpAgentService:
             raise SessionLoadNotSupportedError()
         try:
             await asyncio.wait_for(
-                connection.load_session(cwd=str(workspace), session_id=session_id, mcp_servers=[]),
+                connection.load_session(
+                    cwd=str(workspace),
+                    session_id=session_id,
+                    mcp_servers=list(self._mcp_servers),
+                ),
                 timeout=self._connect_timeout,
             )
         except TimeoutError as exc:
@@ -504,6 +541,7 @@ class AcpAgentService:
             raise AcpHandshakeTimeoutError(self._connect_timeout) from exc
 
         self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session_id)
+        await self._save_channel_session_mapping(chat_id=chat_id, session_id=session_id)
         self._live_by_chat[chat_id] = _LiveSession(
             acp_session_id=session_id,
             workspace=workspace,
@@ -618,6 +656,7 @@ class AcpAgentService:
 
         await self._shutdown(live.process)
         self._registry.clear(chat_id)
+        await self._drop_channel_session_mapping(session_id=live.acp_session_id)
         return True
 
     async def clear(self, *, chat_id: int) -> bool:
@@ -964,6 +1003,41 @@ class AcpAgentService:
             images=tuple(images),
             files=tuple(files),
         )
+
+    async def _save_channel_session_mapping(self, *, chat_id: int, session_id: str) -> None:
+        if self._channel_state_file is None:
+            return
+        async with self._channel_state_lock:
+            await asyncio.to_thread(self._write_channel_session_mapping, chat_id=chat_id, session_id=session_id)
+
+    async def _drop_channel_session_mapping(self, *, session_id: str) -> None:
+        if self._channel_state_file is None:
+            return
+        async with self._channel_state_lock:
+            await asyncio.to_thread(self._remove_channel_session_mapping, session_id=session_id)
+
+    async def _set_last_channel_session(self, *, session_id: str) -> None:
+        if self._channel_state_file is None:
+            return
+        async with self._channel_state_lock:
+            await asyncio.to_thread(save_last_session_id, self._channel_state_file, session_id)
+
+    def _write_channel_session_mapping(self, *, chat_id: int, session_id: str) -> None:
+        assert self._channel_state_file is not None
+        mapping = load_session_chat_map(self._channel_state_file)
+        mapping[session_id] = chat_id
+        save_session_chat_map(self._channel_state_file, mapping)
+        save_last_session_id(self._channel_state_file, session_id)
+
+    def _remove_channel_session_mapping(self, *, session_id: str) -> None:
+        assert self._channel_state_file is not None
+        mapping = load_session_chat_map(self._channel_state_file)
+        if session_id not in mapping:
+            return
+        mapping.pop(session_id, None)
+        save_session_chat_map(self._channel_state_file, mapping)
+        if load_last_session_id(self._channel_state_file) == session_id:
+            save_last_session_id(self._channel_state_file, None)
 
     @staticmethod
     def _resolve_local_file_uri(uri: str, workspace_root: Path) -> tuple[Path | None, str | None]:
