@@ -10,6 +10,7 @@ import base64
 import binascii
 import mimetypes
 import os
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -29,6 +30,20 @@ mcp = FastMCP(
         "Channel helper tools for Telegram clients. Use these tools when you need channel-specific behavior."
     ),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _RequestContext:
+    token: str
+    chat_id: int
+    session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AttachmentPayload:
+    raw: bytes
+    filename: str
+    guessed_mime: str | None
 
 
 @mcp.tool(
@@ -61,37 +76,29 @@ async def telegram_send_attachment(
         return {"ok": False, "error": error}
 
     context = _resolve_request_context(session_id=session_id, path=path, data_base64=data_base64)
-    if context["error"] is not None:
-        return fail(context["error"])
-    token = context["token"]
-    chat_id = context["chat_id"]
-    assert token is not None
-    assert chat_id is not None
+    if isinstance(context, str):
+        return fail(context)
 
     loaded = _load_attachment_bytes(path=path, data_base64=data_base64, name=name)
-    if loaded["error"] is not None:
-        return fail(loaded["error"])
-    raw = loaded["raw"]
-    assert raw is not None
-    filename = loaded["filename"]
-    guessed_mime = loaded["guessed_mime"]
+    if isinstance(loaded, str):
+        return fail(loaded)
 
-    resolved_mime = mime_type or guessed_mime or "application/octet-stream"
-    bot = Bot(token=token)
-    input_file = InputFile(BytesIO(raw), filename=filename)
+    resolved_mime = mime_type or loaded.guessed_mime or "application/octet-stream"
+    bot = Bot(token=context.token)
+    input_file = InputFile(BytesIO(loaded.raw), filename=loaded.filename)
     if resolved_mime.startswith("image/"):
-        await bot.send_photo(chat_id=chat_id, photo=input_file)
+        await bot.send_photo(chat_id=context.chat_id, photo=input_file)
         delivered_as = "photo"
     else:
-        await bot.send_document(chat_id=chat_id, document=input_file)
+        await bot.send_document(chat_id=context.chat_id, document=input_file)
         delivered_as = "document"
 
     return {
         "ok": True,
-        "session_id": context["session_id"],
-        "chat_id": chat_id,
+        "session_id": context.session_id,
+        "chat_id": context.chat_id,
         "delivered_as": delivered_as,
-        "name": filename,
+        "name": loaded.filename,
         "mime_type": resolved_mime,
     }
 
@@ -101,44 +108,24 @@ def _load_attachment_bytes(
     path: str | None,
     data_base64: str | None,
     name: str | None,
-) -> dict[str, bytes | str | None]:
+) -> _AttachmentPayload | str:
     if path is not None:
         source_path = Path(path).expanduser().resolve(strict=False)
         if not source_path.is_file():
-            return {
-                "error": f"file not found: {source_path}",
-                "raw": None,
-                "filename": None,
-                "guessed_mime": None,
-            }
+            return f"file not found: {source_path}"
         raw = source_path.read_bytes()
         filename = name or source_path.name
         guessed_mime = mimetypes.guess_type(source_path.name)[0]
-        return {
-            "error": None,
-            "raw": raw,
-            "filename": filename,
-            "guessed_mime": guessed_mime,
-        }
+        return _AttachmentPayload(raw=raw, filename=filename, guessed_mime=guessed_mime)
 
     assert data_base64 is not None
     try:
         raw = base64.b64decode(data_base64)
     except (ValueError, binascii.Error):
-        return {
-            "error": "invalid base64 payload",
-            "raw": None,
-            "filename": None,
-            "guessed_mime": None,
-        }
+        return "invalid base64 payload"
     filename = name or "attachment.bin"
     guessed_mime = mimetypes.guess_type(filename)[0]
-    return {
-        "error": None,
-        "raw": raw,
-        "filename": filename,
-        "guessed_mime": guessed_mime,
-    }
+    return _AttachmentPayload(raw=raw, filename=filename, guessed_mime=guessed_mime)
 
 
 def _resolve_request_context(
@@ -146,21 +133,16 @@ def _resolve_request_context(
     session_id: str | None,
     path: str | None,
     data_base64: str | None,
-) -> dict[str, str | int | None]:
+) -> _RequestContext | str:
     if bool(path) == bool(data_base64):
-        return {
-            "error": "provide exactly one of `path` or `data_base64`",
-            "token": None,
-            "chat_id": None,
-            "session_id": None,
-        }
+        return "provide exactly one of `path` or `data_base64`"
 
     token = os.getenv(TOKEN_ENV, "").strip()
     if not token:
-        return {"error": f"missing {TOKEN_ENV}", "token": None, "chat_id": None, "session_id": None}
+        return f"missing {TOKEN_ENV}"
     state_file_raw = os.getenv(STATE_FILE_ENV, "").strip()
     if not state_file_raw:
-        return {"error": f"missing {STATE_FILE_ENV}", "token": None, "chat_id": None, "session_id": None}
+        return f"missing {STATE_FILE_ENV}"
 
     state_file = Path(state_file_raw)
     mapping = load_session_chat_map(state_file)
@@ -170,22 +152,12 @@ def _resolve_request_context(
     if selected_session_id is None and len(mapping) == 1:
         selected_session_id = next(iter(mapping))
     if selected_session_id is None:
-        return {
-            "error": "missing session_id and no active session could be inferred",
-            "token": None,
-            "chat_id": None,
-            "session_id": None,
-        }
+        return "missing session_id and no active session could be inferred"
 
     chat_id = mapping.get(selected_session_id)
     if chat_id is None:
-        return {
-            "error": f"unknown session_id `{selected_session_id}`",
-            "token": None,
-            "chat_id": None,
-            "session_id": None,
-        }
-    return {"error": None, "token": token, "chat_id": chat_id, "session_id": selected_session_id}
+        return f"unknown session_id `{selected_session_id}`"
+    return _RequestContext(token=token, chat_id=chat_id, session_id=selected_session_id)
 
 
 def main() -> None:
