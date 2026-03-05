@@ -1247,6 +1247,28 @@ async def test_format_activity_block_execute_multiline_command_uses_fenced_code_
     assert "Run\n```sh\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
+async def test_format_activity_block_execute_long_command_uses_fenced_code_block():
+    command = (
+        "gh api repos/mgaitan/telegram-acp-bot/pulls/67/comments -X POST "
+        "-F in_reply_to=2889504154 -f body='Implemented in 55881c9 with detailed context text'"
+    )
+    block = AgentActivityBlock(kind="execute", title=f"Run {command}", status="in_progress")
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert f"Run\n```sh\n{command}\n```" in rendered
+
+
+async def test_format_activity_block_execute_command_with_backticks_uses_fenced_code_block():
+    command = "gh api -f 'body=implemented in 55881c9. `path` and ACP_TELEGRAM_CHANNEL_ALLOW_PATH'"
+    block = AgentActivityBlock(kind="execute", title=f"Run {command}", status="in_progress")
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert f"Run\n```sh\n{command}\n```" in rendered
+    assert "\\_" not in rendered
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 

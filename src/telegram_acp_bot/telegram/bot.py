@@ -47,6 +47,7 @@ RESUME_CALLBACK_PARTS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
 TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
+EXECUTE_INLINE_COMMAND_MAX_LENGTH = 120
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
     "think": "💡 Thinking",
@@ -796,7 +797,7 @@ class TelegramBridge:
         if block.kind == "execute" and title.startswith("Run "):
             command = title[4:].strip()
             if command:
-                if "\n" in command:
+                if TelegramBridge._should_render_execute_as_block(command):
                     return f"Run\n```sh\n{command}\n```"
                 if ", Run " in command:
                     commands = [part.strip() for part in command.split(", Run ")]
@@ -816,6 +817,10 @@ class TelegramBridge:
         if path_prefix and text.startswith(path_prefix) and "\n" not in text:
             return TelegramBridge._format_read_path(text[len(path_prefix) :], workspace=workspace)
         return text
+
+    @staticmethod
+    def _should_render_execute_as_block(command: str) -> bool:
+        return "\n" in command or "`" in command or len(command) > EXECUTE_INLINE_COMMAND_MAX_LENGTH
 
     @staticmethod
     def _escape_markdown_preserving_code(text: str) -> str:
