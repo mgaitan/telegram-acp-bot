@@ -224,7 +224,7 @@ class TelegramBridge:
             response = f"{response}\nCreated workspace: `{active_workspace}`"
         await self._reply(update, response)
 
-    async def resume_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: C901, PLR0911
+    async def resume_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: PLR0911
         if not await self._require_access(update):
             return
 
@@ -269,8 +269,6 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat[chat_id] = candidates
         keyboard = self._resume_keyboard(candidates=candidates)
         message = "Pick a session to resume:"
-        if parsed_args.workspace is not None:
-            message = f"Pick a session to resume in `{parsed_args.workspace}`:"
         await self._app.bot.send_message(
             chat_id=chat_id,
             text=message,
