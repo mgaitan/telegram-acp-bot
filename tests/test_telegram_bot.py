@@ -40,6 +40,7 @@ EXPECTED_OUTBOUND_DOCUMENTS = 2
 TEST_CHAT_ID = 100
 EXPECTED_ACTIVITY_MESSAGES = 3
 ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
+EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
 
 
 class MarkdownFailureError(TelegramError):
@@ -268,6 +269,75 @@ class ResumeService:
     async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
         del chat_id, enabled
         return False
+
+
+class ImplicitSessionServiceBase:
+    def __init__(self) -> None:
+        self._workspace_by_chat: dict[int, Path] = {}
+
+    def get_workspace(self, *, chat_id: int):
+        return self._workspace_by_chat.get(chat_id)
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+
+class RecordingImplicitService(ImplicitSessionServiceBase):
+    def __init__(self) -> None:
+        super().__init__()
+        self.new_session_calls: list[tuple[int, Path]] = []
+
+    async def new_session(self, *, chat_id: int, workspace: Path):
+        self.new_session_calls.append((chat_id, workspace))
+        self._workspace_by_chat[chat_id] = workspace
+        return "s-1"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del chat_id, text, images, files
+        return AgentReply(text="ok")
+
+
+class FailingImplicitService(ImplicitSessionServiceBase):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    async def new_session(self, *, chat_id: int, workspace: Path):
+        del chat_id, workspace
+        raise self._error
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del chat_id, text, images, files
+        return AgentReply(text="ok")
+
+
+class PromptWithoutSessionImplicitService(ImplicitSessionServiceBase):
+    async def new_session(self, *, chat_id: int, workspace: Path):
+        self._workspace_by_chat[chat_id] = workspace
+        return "s-1"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del chat_id, text, images, files
 
 
 def make_update(  # noqa: PLR0913
@@ -617,7 +687,7 @@ async def test_on_text_without_and_with_session():
     await bridge.on_message(update, context)
 
     assert update.message is not None
-    assert len(update.message.replies) == 3
+    assert len(update.message.replies) == EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION
     assert update.message.replies[0].endswith("hello")
     assert update.message.replies[-1].endswith("hello")
     assert context.bot.actions == [(100, "typing"), (100, "typing")]
@@ -626,46 +696,7 @@ async def test_on_text_without_and_with_session():
 
 
 async def test_first_prompt_starts_implicit_session_in_default_workspace(tmp_path: Path):
-    class RecordingService:
-        def __init__(self) -> None:
-            self.new_session_calls: list[tuple[int, Path]] = []
-
-        async def new_session(self, *, chat_id: int, workspace: Path):
-            self.new_session_calls.append((chat_id, workspace))
-            return "s-1"
-
-        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
-            del chat_id, text, images, files
-            return AgentReply(text="ok")
-
-        def get_workspace(self, *, chat_id: int):
-            del chat_id
-            return None
-
-        async def cancel(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def stop(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def clear(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        def get_permission_policy(self, *, chat_id: int):
-            del chat_id
-
-        async def set_session_permission_mode(self, *, chat_id: int, mode):
-            del chat_id, mode
-            return False
-
-        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
-            del chat_id, enabled
-            return False
-
-    service = RecordingService()
+    service = RecordingImplicitService()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=str(tmp_path))
     bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
     update = make_update(text="hello")
@@ -686,44 +717,9 @@ async def test_first_prompt_starts_implicit_session_in_default_workspace(tmp_pat
     ],
 )
 async def test_first_prompt_reports_implicit_session_start_errors(error: Exception, expected: str):
-    class FailingService:
-        async def new_session(self, *, chat_id: int, workspace: Path):
-            del chat_id, workspace
-            raise error
-
-        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
-            del chat_id, text, images, files
-            return AgentReply(text="ok")
-
-        def get_workspace(self, *, chat_id: int):
-            del chat_id
-            return None
-
-        async def cancel(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def stop(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def clear(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        def get_permission_policy(self, *, chat_id: int):
-            del chat_id
-
-        async def set_session_permission_mode(self, *, chat_id: int, mode):
-            del chat_id, mode
-            return False
-
-        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
-            del chat_id, enabled
-            return False
-
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, FailingService()))
+    service = FailingImplicitService(error)
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
     update = make_update(text="hello")
     context = make_context()
 
@@ -735,44 +731,11 @@ async def test_first_prompt_reports_implicit_session_start_errors(error: Excepti
 
 
 async def test_on_message_without_session_after_implicit_start_reports_missing_session():
-    class PromptWithoutSessionService:
-        async def new_session(self, *, chat_id: int, workspace: Path):
-            del chat_id, workspace
-            return "s-1"
-
-        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
-            del chat_id, text, images, files
-            return None
-
-        def get_workspace(self, *, chat_id: int):
-            del chat_id
-            return None
-
-        async def cancel(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def stop(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def clear(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        def get_permission_policy(self, *, chat_id: int):
-            del chat_id
-
-        async def set_session_permission_mode(self, *, chat_id: int, mode):
-            del chat_id, mode
-            return False
-
-        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
-            del chat_id, enabled
-            return False
-
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
-    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, PromptWithoutSessionService()))
+    bridge = TelegramBridge(
+        config=config,
+        agent_service=cast(AgentService, PromptWithoutSessionImplicitService()),
+    )
     update = make_update(text="hello")
 
     await bridge.on_message(update, make_context())

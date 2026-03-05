@@ -66,6 +66,14 @@ class BotConfig:
     default_workspace: Path
 
 
+@dataclass(slots=True, frozen=True)
+class _PromptInput:
+    chat_id: int
+    text: str
+    images: tuple[PromptImage, ...]
+    files: tuple[PromptFile, ...]
+
+
 class ChatRequiredError(ValueError):
     """Raised when a Telegram update does not include a chat object."""
 
@@ -459,37 +467,23 @@ class TelegramBridge:
         if not await self._require_access(update):
             return
 
-        message = update.message
-        if message is None:
+        prompt_input = await self._prompt_input(update=update, context=context)
+        if prompt_input is None:
             return
 
-        text = message.text or message.caption or ""
-        images = await self._extract_prompt_images(message=message, context=context)
-        files = await self._extract_prompt_files(message=message, context=context)
-        if not text and not images and not files:
+        if not await self._ensure_session_for_chat(update=update, chat_id=prompt_input.chat_id):
             return
 
-        chat_id = self._chat_id(update)
-        if self._agent_service.get_workspace(chat_id=chat_id) is None:
-            started = await self._start_implicit_session(update=update, chat_id=chat_id)
-            if not started:
-                return
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        try:
-            reply = await self._agent_service.prompt(chat_id=chat_id, text=text, images=images, files=files)
-        except AgentOutputLimitExceededError:
-            await self._reply(
-                update,
-                "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
-                "(or `ACP_STDIO_LIMIT`).",
-            )
-            return
+        reply = await self._request_reply(
+            update=update,
+            context=context,
+            prompt_input=prompt_input,
+        )
         if reply is None:
-            await self._reply(update, "No active session. Send a message again or use /new [workspace].")
             return
 
         if self._app is None:
-            workspace = self._activity_workspace(chat_id=chat_id)
+            workspace = self._activity_workspace(chat_id=prompt_input.chat_id)
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
         if reply.text.strip():
@@ -511,6 +505,51 @@ class TelegramBridge:
             await self._reply(update, f"Failed to start session: {exc}")
             return False
         return True
+
+    async def _prompt_input(
+        self, *, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> _PromptInput | None:
+        message = update.message
+        if message is None:
+            return None
+        text = message.text or message.caption or ""
+        images = await self._extract_prompt_images(message=message, context=context)
+        files = await self._extract_prompt_files(message=message, context=context)
+        if not text and not images and not files:
+            return None
+        return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=files)
+
+    async def _ensure_session_for_chat(self, *, update: Update, chat_id: int) -> bool:
+        if self._agent_service.get_workspace(chat_id=chat_id) is not None:
+            return True
+        return await self._start_implicit_session(update=update, chat_id=chat_id)
+
+    async def _request_reply(
+        self,
+        *,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        prompt_input: _PromptInput,
+    ) -> AgentReply | None:
+        await context.bot.send_chat_action(chat_id=prompt_input.chat_id, action=ChatAction.TYPING)
+        try:
+            reply = await self._agent_service.prompt(
+                chat_id=prompt_input.chat_id,
+                text=prompt_input.text,
+                images=prompt_input.images,
+                files=prompt_input.files,
+            )
+        except AgentOutputLimitExceededError:
+            await self._reply(
+                update,
+                "Agent output exceeded ACP stdio limit. Restart with a higher `--acp-stdio-limit` "
+                "(or `ACP_STDIO_LIMIT`).",
+            )
+            return None
+        if reply is not None:
+            return reply
+        await self._reply(update, "No active session. Send a message again or use /new [workspace].")
+        return None
 
     async def _extract_prompt_images(
         self,
