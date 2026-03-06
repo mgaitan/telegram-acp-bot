@@ -177,6 +177,7 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
         self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
+        self._active_prompt_chats: set[int] = set()
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -607,43 +608,45 @@ class TelegramBridge:
             return
 
         chat_id = prompt_input.chat_id
-        lock = self._chat_prompt_lock(chat_id)
-
-        if lock.locked():
+        if chat_id in self._active_prompt_chats:
             await self._queue_busy_prompt(chat_id=chat_id, prompt_input=prompt_input, update=update)
             return
 
-        async with lock:
-            current_input: _PromptInput = prompt_input
-            current_update: Update = update
+        self._active_prompt_chats.add(chat_id)
+        lock = self._chat_prompt_lock(chat_id)
+        try:
+            async with lock:
+                current_input: _PromptInput = prompt_input
+                current_update: Update = update
 
-            while True:
-                reply = await self._request_reply(
-                    update=current_update,
-                    context=context,
-                    prompt_input=current_input,
-                )
+                while True:
+                    reply = await self._request_reply(
+                        update=current_update,
+                        context=context,
+                        prompt_input=current_input,
+                    )
 
-                # Pop any pending prompt before sending the reply.  Because asyncio
-                # is single-threaded, this pop and the reply dispatch below happen
-                # without yielding, so a concurrent on_message cannot sneak in between.
-                pending = self._pending_prompts_by_chat.pop(chat_id, None)
-                await self._clear_busy_button(pending)
+                    # Pop any pending prompt before sending the reply.  Because asyncio
+                    # is single-threaded, this pop and the reply dispatch below happen
+                    # without yielding, so a concurrent on_message cannot sneak in between.
+                    pending = self._pending_prompts_by_chat.pop(chat_id, None)
+                    await self._clear_busy_button(pending)
+                    if reply is not None:
+                        if self._app is None:
+                            workspace = self._activity_workspace(chat_id=chat_id)
+                            for block in reply.activity_blocks:
+                                await self._reply_activity_block(current_update, block, workspace=workspace)
+                        if reply.text.strip():
+                            await self._reply_agent(current_update, reply.text)
+                        await self._send_attachments(current_update, reply)
 
-                if reply is not None:
-                    if self._app is None:
-                        workspace = self._activity_workspace(chat_id=chat_id)
-                        for block in reply.activity_blocks:
-                            await self._reply_activity_block(current_update, block, workspace=workspace)
-                    if reply.text.strip():
-                        await self._reply_agent(current_update, reply.text)
-                    await self._send_attachments(current_update, reply)
+                    if pending is None:
+                        break
 
-                if pending is None:
-                    break
-
-                current_input = pending.prompt_input
-                current_update = pending.update
+                    current_input = pending.prompt_input
+                    current_update = pending.update
+        finally:
+            self._active_prompt_chats.discard(chat_id)
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
