@@ -1,0 +1,46 @@
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+hooks = [
+  { id = "check-ast" },
+  { id = "trailing-whitespace" },
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "end-of-file-fixer" },
+  { id = "check-json" },
+  { id = "check-yaml" },
+  { id = "check-toml" },
+  { id = "check-xml" },
+  { id = "mixed-line-ending" },
+  { id = "check-symlinks" },
+  { id = "check-merge-conflict" },
+  { id = "detect-private-key" },
+  { id = "check-executables-have-shebangs" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "ruff-check"
+name = "ruff check"
+language = "system"
+entry = "uv run --only-group lint ruff check"
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "ruff-format"
+name = "ruff format"
+language = "system"
+entry = "uv run --only-group lint ruff format --check"
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "ty-check"
+name = "ty check"
+language = "system"
+entry = "uv run --group qa ty check"
+pass_filenames = false
+always_run = true
