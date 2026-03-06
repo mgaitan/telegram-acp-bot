@@ -10,7 +10,7 @@ Description: A Telegram bot that implements Agent Client Protocol to interact wi
 - **Tests:** pytest, factory-boy, pytest-mock. `make test` to run tests. or `uv run pytest`
 - **Productivity:** Dependencies managed with `uv` via `pyproject.toml`;
 - **lint/format:** Ruff.
-- **Git:** and Github
+- **Git:** and GitHub
 
 ## Python preferences
 
@@ -33,11 +33,11 @@ Description: A Telegram bot that implements Agent Client Protocol to interact wi
 - Prefer flat code: use early returns, guard clauses, fixtures over context managers on tests, etc.
 - Never hallucinate APIs or behaviours. If uncertain, inspect the code and/or check online documentation (ensure it's the correct version declared by uv.lock) or ask the developer
 
-## Git/Github preferences
+## Git/GitHub preferences
 
 - Ensure you are in a proper branch for each new feature or bugfix.
 - Never commit or push automatically unless instructed otherwise.
-- Prefer `gh` CLI for all interactions with Github if possible. Eg. Use it to open PRs / manage issues.
+- Prefer `gh` CLI for all interactions with GitHub if possible. Eg. Use it to open PRs / manage issues.
 - For `gh pr` interactions, prefer `--body-file` with a temporary file created under `/tmp/`.
 - Consider mentioning yourself in the commits as co-author if you helped enough. Use the standard Git co-author trailer:
   "Co-authored-by: Name <email>".
@@ -62,6 +62,6 @@ Description: A Telegram bot that implements Agent Client Protocol to interact wi
 
 ## Language preferences
 
-- The public language is English: all committable text and Github interactions must be in simple English (including documentation, comments, docstrings, commit messages, PR descriptions, etc.).
+- The public language is English: all committable text and GitHub interactions must be in simple English (including documentation, comments, docstrings, commit messages, PR descriptions, etc.).
 - However, when interacting with the developer in chat, respond in the language they use.
 - Avoid sexist or exclusionary language. Always prefer gender-neutral phrasing.

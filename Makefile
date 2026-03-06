@@ -1,5 +1,5 @@
 .PHONY: install
-install: ## Install the virtual environment and install the pre-commit hooks
+install: ## Install the virtual environment and git hooks via prek
 	@echo "🚀 Creating virtual environment using uv"
 	@uv sync
 	@if command -v prek >/dev/null 2>&1; then \
@@ -19,7 +19,11 @@ qa: ## Run local QA checks via prek
 		echo "🔍 Running prek checks"; \
 		prek run --all-files; \
 	else \
-		echo "ℹ️  prek is not installed. Install it with: uv tool install prek"; \
+		echo "ℹ️  prek is not installed. Falling back to direct QA commands. Install it with: uv tool install prek"; \
+		set -e; \
+		uv run --only-group lint ruff check; \
+		uv run --only-group lint ruff format --check; \
+		uv run --group qa ty check; \
 	fi
 
 .PHONY: bump
