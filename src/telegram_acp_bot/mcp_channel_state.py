@@ -39,7 +39,7 @@ def save_session_chat_map(path: Path, mapping: dict[str, int]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = _load_raw_state(path)
-    payload: dict[str, object] = {"sessions": mapping}
+    payload = {"sessions": mapping}
     if isinstance(existing.get("last_session_id"), str):
         payload["last_session_id"] = existing["last_session_id"]
     _write_json_atomic(path, payload)
