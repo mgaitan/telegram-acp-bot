@@ -37,7 +37,7 @@ def get_version() -> str:
 
 def get_parser() -> argparse.ArgumentParser:
     """Return the CLI argument parser."""
-    parser = argparse.ArgumentParser(prog="acp-bot")
+    parser = argparse.ArgumentParser(prog="telegram-acp-bot")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {get_version()}")
     parser.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN", ""), help="Telegram bot token")
     parser.add_argument(
@@ -90,7 +90,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--restart-command",
         default=os.getenv("ACP_RESTART_COMMAND", ""),
-        help="Optional command used by /restart to relaunch the bot (e.g. 'uv run acp-bot').",
+        help="Optional command used by /restart to relaunch the bot (e.g. 'uv run telegram-acp-bot').",
     )
     return parser
 

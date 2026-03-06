@@ -111,13 +111,24 @@ def test_main_reexecs_process_on_restart_request(mocker):
     mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)
     mock_execvp = mocker.patch("telegram_acp_bot.os.execvp")
     mock_execv = mocker.patch("telegram_acp_bot.os.execv", side_effect=OSError("exec failed"))
-    mocker.patch("telegram_acp_bot.sys.argv", ["acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"])
+    mocker.patch(
+        "telegram_acp_bot.sys.argv",
+        ["telegram-acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"],
+    )
     mocker.patch("telegram_acp_bot.sys.executable", "/usr/bin/python3")
 
     assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 1
     mock_execvp.assert_not_called()
     mock_execv.assert_called_once_with(
-        "/usr/bin/python3", ["/usr/bin/python3", "acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"]
+        "/usr/bin/python3",
+        [
+            "/usr/bin/python3",
+            "telegram-acp-bot",
+            "--telegram-token",
+            "TOKEN",
+            "--agent-command",
+            "agent",
+        ],
     )
 
 
@@ -135,14 +146,14 @@ def test_main_reexecs_using_restart_command(mocker):
                 "--agent-command",
                 "agent",
                 "--restart-command",
-                "uv run acp-bot --telegram-token TOKEN --agent-command agent",
+                "uv run telegram-acp-bot --telegram-token TOKEN --agent-command agent",
             ]
         )
         == 1
     )
     mock_execvp.assert_called_once_with(
         "uv",
-        ["uv", "run", "acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"],
+        ["uv", "run", "telegram-acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"],
     )
     mock_execv.assert_not_called()
 
@@ -248,7 +259,7 @@ def test_show_help(capsys: pytest.CaptureFixture):
     with pytest.raises(SystemExit):
         main(["-h"])
     captured = capsys.readouterr()
-    assert "acp-bot" in captured.out
+    assert "telegram-acp-bot" in captured.out
 
 
 def test_show_version(mocker, capsys: pytest.CaptureFixture):
@@ -268,8 +279,8 @@ def test_show_version(mocker, capsys: pytest.CaptureFixture):
 def test_main_module(mocker):
     """Test running the CLI via __main__ (python -m ...)."""
     module_name = "telegram_acp_bot.__main__"
-    # Simulate: python -m acp-bot --version
-    mocker.patch.object(sys, "argv", ["acp-bot", "-V"])
+    # Simulate: python -m telegram-acp-bot --version
+    mocker.patch.object(sys, "argv", ["telegram-acp-bot", "-V"])
     with pytest.raises(SystemExit):
         runpy.run_module(module_name, run_name="__main__", alter_sys=False)
 

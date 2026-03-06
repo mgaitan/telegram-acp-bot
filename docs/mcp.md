@@ -5,7 +5,7 @@ This project includes a built-in MCP server that is automatically exposed to the
 You do not need extra configuration for this. If you run:
 
 ```bash
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 the bot advertises an MCP stdio server named `telegram-channel` when ACP sessions are created or loaded.

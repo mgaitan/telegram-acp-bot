@@ -20,7 +20,7 @@ uvx telegram-acp-bot --help
 Run the latest development version from git:
 
 ```bash
-uvx --from git+https://github.com/mgaitan/telegram-acp-bot acp-bot --help
+uvx --from git+https://github.com/mgaitan/telegram-acp-bot telegram-acp-bot --help
 ```
 
 ```{richterm} env PYTHONPATH=../src uv run -m telegram_acp_bot --help

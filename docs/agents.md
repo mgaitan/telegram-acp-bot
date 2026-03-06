@@ -22,7 +22,7 @@ Use {term}`ACP_AGENT_COMMAND` to define the command executed by `/new`.
 ```bash
 GEMINI_API_KEY=... \
 ACP_AGENT_COMMAND="npx @google/gemini-cli --experimental-acp" \
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 If `/new` does not return, set a lower {term}`ACP_CONNECT_TIMEOUT` and `ACP_LOG_LEVEL=DEBUG` to see where handshake stops.
@@ -35,7 +35,7 @@ See also [Gemini CLI repository](https://github.com/google-gemini/gemini-cli).
 ```bash
 OPENAI_API_KEY=... \
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp" \
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 You can also install the adapter binary from [adapter releases](https://github.com/zed-industries/codex-acp/releases) and use `codex-acp` directly.
@@ -51,7 +51,7 @@ If you need deterministic behavior in Telegram, pass explicit Codex config overr
 ```bash
 OPENAI_API_KEY=... \
 ACP_AGENT_COMMAND='npx @zed-industries/codex-acp -c sandbox_mode="danger-full-access" -c approval_policy="never"' \
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 Safer alternative:
@@ -59,7 +59,7 @@ Safer alternative:
 ```bash
 OPENAI_API_KEY=... \
 ACP_AGENT_COMMAND='npx @zed-industries/codex-acp -c sandbox_mode="workspace-write" -c approval_policy="on-request"' \
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 If a tool works in Zed but fails in Telegram with permission-like runtime errors, check the active runtime policy inside
@@ -71,7 +71,7 @@ If you already have Copilot CLI installed and authenticated, run:
 
 ```bash
 ACP_AGENT_COMMAND="copilot --acp" \
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 ## Claude Agent / Claude Code (via adapter)
@@ -81,14 +81,14 @@ Claude integration for ACP clients is provided by [`@zed-industries/claude-agent
 ```bash
 ANTHROPIC_API_KEY=... \
 ACP_AGENT_COMMAND="npx @zed-industries/claude-agent-acp" \
-uv run acp-bot
+uv run telegram-acp-bot
 ```
 
 If you prefer global install:
 
 ```bash
 npm install -g @zed-industries/claude-agent-acp
-ANTHROPIC_API_KEY=... ACP_AGENT_COMMAND="claude-agent-acp" uv run acp-bot
+ANTHROPIC_API_KEY=... ACP_AGENT_COMMAND="claude-agent-acp" uv run telegram-acp-bot
 ```
 
 ## Other agents

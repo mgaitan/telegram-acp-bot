@@ -25,7 +25,7 @@ ACP_AGENT_COMMAND
 ACP_RESTART_COMMAND
   Optional command used by `/restart` to relaunch the bot process.
   Recommended when you run with `uv run ...` and need to preserve its flags.
-  Example: `uv run acp-bot --telegram-token ... --agent-command ...`.
+  Example: `uv run telegram-acp-bot --telegram-token ... --agent-command ...`.
 
 ACP_PERMISSION_MODE
   Default permission policy for ACP tool calls.
@@ -59,7 +59,7 @@ TELEGRAM_BOT_TOKEN=123456:abc
 TELEGRAM_ALLOWED_USER_IDS=123456789
 # TELEGRAM_ALLOWED_USERNAMES=alice,@bob
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
-ACP_RESTART_COMMAND="uv run acp-bot --telegram-token 123456:abc --agent-command \"npx @zed-industries/codex-acp\""
+ACP_RESTART_COMMAND="uv run telegram-acp-bot --telegram-token 123456:abc --agent-command \"npx @zed-industries/codex-acp\""
 ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608

@@ -28,7 +28,7 @@ uvx telegram-acp-bot --help
 Run the latest development version from git:
 
 ```bash
-uvx --from git+https://github.com/mgaitan/telegram-acp-bot acp-bot --help
+uvx --from git+https://github.com/mgaitan/telegram-acp-bot telegram-acp-bot --help
 ```
 
 Run the bot with a real ACP agent:
@@ -76,7 +76,7 @@ TELEGRAM_BOT_TOKEN=123456:abc
 TELEGRAM_ALLOWED_USER_IDS=123456789
 # TELEGRAM_ALLOWED_USERNAMES=alice,@bob
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
-ACP_RESTART_COMMAND="uv run acp-bot --telegram-token <TOKEN> --agent-command \"npx @zed-industries/codex-acp\""
+ACP_RESTART_COMMAND="uv run telegram-acp-bot --telegram-token <TOKEN> --agent-command \"npx @zed-industries/codex-acp\""
 ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608
@@ -101,7 +101,7 @@ uv tool install telegram-acp-bot
 ## Development
 
 - Install dependencies with `uv sync`.
-- Then run `uv run acp-bot`
+- Then run `uv run telegram-acp-bot`
 - New dependency releases are delayed by one week via `uv` cooldown (`[tool.uv].exclude-newer = "1 week"`), with per-package overrides when required (for example, `ty`).
 - Run the QA bundle with [`ty`](https://github.com/astral-sh/ty):
 
