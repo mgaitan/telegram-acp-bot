@@ -1099,9 +1099,7 @@ def make_config(
     allowed_usernames: list[str] | None = None,
 ) -> BotConfig:
     normalized_usernames = {
-        username.lstrip("@").strip().lower()
-        for username in (allowed_usernames or [])
-        if username.strip()
+        username.lstrip("@").strip().lower() for username in (allowed_usernames or []) if username.strip()
     }
     return BotConfig(
         token=token,
