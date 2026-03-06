@@ -2,19 +2,25 @@
 install: ## Install the virtual environment and install the pre-commit hooks
 	@echo "🚀 Creating virtual environment using uv"
 	@uv sync
+	@if command -v prek >/dev/null 2>&1; then \
+		echo "🪝 Installing git hooks with prek"; \
+		prek install; \
+	else \
+		echo "ℹ️  prek is not installed. Install it with: uv tool install prek"; \
+	fi
 
 .PHONY: test qa
 test: ## Run tests with coverage
 	@echo "🧪 Running tests with coverage"
 	@uv run pytest
 
-qa: ## Run local QA checks (Ruff + Ty)
-	@echo "🔍 Running Ruff lint checks"
-	@uv run ruff check --fix
-	@echo "✨ Verifying Ruff formatting"
-	@uv run ruff format --check
-	@echo "🧹 Running Ty checks"
-	@uv run ty check
+qa: ## Run local QA checks via prek
+	@if command -v prek >/dev/null 2>&1; then \
+		echo "🔍 Running prek checks"; \
+		prek run --all-files; \
+	else \
+		echo "ℹ️  prek is not installed. Install it with: uv tool install prek"; \
+	fi
 
 .PHONY: bump
 bump:

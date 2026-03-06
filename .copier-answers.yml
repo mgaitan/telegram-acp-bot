@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier.
-_commit: 0.4.0
+_commit: 0.4.1
 _src_path: gh:mgaitan/python-package-copier-template
 author_email: gaitan@gmail.com
 author_fullname: Martín Gaitán
@@ -13,4 +13,3 @@ python_package_command_line_name: acp-bot
 python_package_distribution_name: telegram-acp-bot
 python_package_import_name: telegram_acp_bot
 repository_name: telegram-acp-bot
-
