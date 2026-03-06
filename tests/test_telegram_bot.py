@@ -2619,6 +2619,32 @@ async def test_on_message_while_busy_shows_send_now_button():
     await task_one
 
 
+async def test_on_message_busy_detection_uses_active_chat_marker():
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._active_prompt_chats.add(TEST_CHAT_ID)
+
+    update = make_update(chat_id=TEST_CHAT_ID, text="queued")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    await bridge.on_message(update, context)
+
+    assert len(bot.sent_messages) == 1
+    busy_msg = bot.sent_messages[0]
+    assert busy_msg["chat_id"] == TEST_CHAT_ID
+    assert "queued" in cast(str, busy_msg["text"]).lower()
+    markup = cast(InlineKeyboardMarkup, busy_msg["reply_markup"])
+    assert markup is not None
+    button = markup.inline_keyboard[0][0]
+    assert button.text == "Send now"
+    assert button.callback_data is not None
+    callback_data = cast(str, button.callback_data)
+    assert callback_data.startswith(f"{BUSY_CALLBACK_PREFIX}|")
+
+
 async def test_on_message_queued_runs_automatically_and_button_is_removed():
     service = BlockingService()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
