@@ -25,6 +25,7 @@ from telegram_acp_bot.acp_app.models import (
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
+    BUSY_CALLBACK_PREFIX,
     RESTART_EXIT_CODE,
     RESUME_KEYBOARD_MAX_ROWS,
     AgentService,
@@ -111,6 +112,8 @@ class DummyBot:
         self.actions: list[tuple[int, str]] = []
         self.files: dict[str, bytes] = {}
         self.sent_messages: list[dict[str, object]] = []
+        self._next_message_id = 1
+        self.edited_reply_markups: list[dict[str, object]] = []
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         self.actions.append((chat_id, action))
@@ -118,8 +121,14 @@ class DummyBot:
     async def get_file(self, file_id: str) -> DummyDownloadedFile:
         return DummyDownloadedFile(self.files[file_id])
 
-    async def send_message(self, **kwargs: object) -> None:
+    async def send_message(self, **kwargs: object) -> SimpleNamespace:
         self.sent_messages.append(kwargs)
+        msg = SimpleNamespace(message_id=self._next_message_id)
+        self._next_message_id += 1
+        return msg
+
+    async def edit_message_reply_markup(self, **kwargs: object) -> None:
+        self.edited_reply_markups.append(kwargs)
 
 
 class FailingMarkdownBot(DummyBot):
@@ -2322,3 +2331,500 @@ async def test_run_polling_returns_restart_exit_code(monkeypatch):
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = make_bridge()
     assert run_polling(config, bridge) == RESTART_EXIT_CODE
+
+
+# ---------------------------------------------------------------------------
+# Busy-state tests
+# ---------------------------------------------------------------------------
+
+
+class BlockingService:
+    """Service whose prompt blocks until `release()` is called, for busy-state tests."""
+
+    def __init__(self) -> None:
+        self._workspace: Path | None = None
+        self._prompt_started = asyncio.Event()
+        self._prompt_gate = asyncio.Event()
+        self.cancelled = False
+        self.prompts: list[str] = []
+
+    async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+        del chat_id
+        self._workspace = workspace
+        return "s-blocking"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()) -> AgentReply:
+        del chat_id, images, files
+        self.prompts.append(text)
+        self._prompt_started.set()
+        await self._prompt_gate.wait()
+        return AgentReply(text=f"done:{text}")
+
+    def get_workspace(self, *, chat_id: int) -> Path | None:
+        del chat_id
+        return self._workspace
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        self.cancelled = True
+        self._prompt_gate.set()
+        return True
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+    def release(self) -> None:
+        self._prompt_gate.set()
+
+
+async def test_on_message_while_busy_shows_send_now_button():
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    # Start first message - it will block
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+
+    # Wait until first prompt is actually running
+    await service._prompt_started.wait()
+
+    # Send second message while busy
+    await bridge.on_message(update_two, context)
+
+    # The second message should be queued and a "Send now" button should appear
+    assert len(bot.sent_messages) == 1
+    busy_msg = bot.sent_messages[0]
+    assert busy_msg["chat_id"] == TEST_CHAT_ID
+    assert "queued" in cast(str, busy_msg["text"]).lower()
+    markup = cast(InlineKeyboardMarkup, busy_msg["reply_markup"])
+    assert markup is not None
+    button = markup.inline_keyboard[0][0]
+    assert button.text == "Send now"
+    assert button.callback_data is not None
+    assert button.callback_data.startswith(f"{BUSY_CALLBACK_PREFIX}|")
+
+    # Finish first task
+    service.release()
+    await task_one
+
+
+async def test_on_message_queued_runs_automatically_and_button_is_removed():
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    await bridge.on_message(update_two, context)
+
+    # Notify button was shown with message_id=1
+    assert bot.sent_messages[0]["reply_markup"] is not None
+
+    # Release first prompt; pump loop should clear button then process second
+    service.release()
+    await task_one
+
+    # Button should have been removed via edit_message_reply_markup
+    assert any(e.get("message_id") == 1 for e in bot.edited_reply_markups)
+    # Both updates should have received replies
+    assert update_one.message is not None
+    assert update_two.message is not None
+    assert "done:first" in update_one.message.replies[-1]
+    assert "done:second" in update_two.message.replies[-1]
+
+
+async def test_on_busy_callback_send_now_cancels_and_queued_runs():
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    await bridge.on_message(update_two, context)
+
+    # Grab the token from the "Send now" button
+    markup = cast(InlineKeyboardMarkup, bot.sent_messages[0]["reply_markup"])
+    token = cast(str, markup.inline_keyboard[0][0].callback_data).split("|", 1)[1]
+
+    # User presses "Send now"
+    callback = DummyCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|{token}")
+    update_cb = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update_cb, make_context())
+
+    assert "Sending now" in callback.answers[-1]
+    assert service.cancelled
+
+    await task_one
+
+    # Second message should have been processed
+    assert update_two.message is not None
+    assert "done:second" in update_two.message.replies[-1]
+
+
+async def test_on_busy_callback_stale_token_is_rejected():
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    # Press button with an old/random token (simulates already-processed pending)
+    callback = DummyCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|stale-token")
+    update_cb = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update_cb, make_context())
+
+    assert callback.answers[-1] == "Already sent."
+    assert callback.reply_markup_cleared
+
+    service.release()
+    await task_one
+
+
+async def test_on_busy_callback_stale_after_auto_drain():
+    """Queued message ran automatically; old button press returns 'Already sent.'"""
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+    await bridge.on_message(update_two, context)
+
+    markup = cast(InlineKeyboardMarkup, bot.sent_messages[0]["reply_markup"])
+    token = cast(str, markup.inline_keyboard[0][0].callback_data).split("|", 1)[1]
+
+    # Let first task finish naturally -> auto-drains second
+    service.release()
+    await task_one
+
+    # Now the pending is gone; pressing button should get "Already sent."
+    callback = DummyCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|{token}")
+    update_cb = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update_cb, make_context())
+
+    assert callback.answers[-1] == "Already sent."
+
+
+async def test_on_busy_callback_no_query_is_noop():
+    bridge = make_bridge()
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=None,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update, make_context())
+
+
+async def test_on_busy_callback_invalid_data_format():
+    bridge = make_bridge()
+    callback = DummyCallbackQuery("busy")  # missing token part
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update, make_context())
+    assert callback.answers[-1] == "Invalid action."
+
+
+async def test_on_busy_callback_access_denied():
+    bridge = make_bridge(allowed_ids={99})
+    callback = DummyCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|some-token")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update, make_context())
+    assert callback.answers[-1] == "Access denied."
+
+
+async def test_on_busy_callback_missing_chat():
+    bridge = make_bridge()
+    callback = DummyCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|some-token")
+    callback.message = None
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=None,
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update, make_context())
+    assert callback.answers[-1] == "Missing chat."
+
+
+async def test_busy_queue_replaces_previous_pending_and_removes_old_button():
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    update_three = make_update(chat_id=TEST_CHAT_ID, text="third")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    await bridge.on_message(update_two, context)
+    # First notify button sent (message_id=1)
+    assert len(bot.sent_messages) == 1
+
+    # Send third message while still busy - should replace second pending
+    await bridge.on_message(update_three, context)
+
+    # Old button (message_id=1) should be removed
+    assert any(e.get("message_id") == 1 for e in bot.edited_reply_markups)
+    # New button sent (message_id=2)
+    assert len(bot.sent_messages) == 2
+
+    service.release()
+    await task_one
+
+    # Only "third" should be processed (second was replaced)
+    assert update_two.message is not None
+    assert update_three.message is not None
+    assert update_two.message.replies == []
+    assert "done:third" in update_three.message.replies[-1]
+
+
+async def test_on_busy_callback_edit_failure_is_handled_gracefully():
+    """Edit of stale button may fail with TelegramError; that must not propagate."""
+
+    class FailingEditOnStaleCallbackQuery(DummyCallbackQuery):
+        async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
+            raise MarkdownFailureError
+
+    bridge = make_bridge()
+    callback = FailingEditOnStaleCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|stale")
+    callback.message = SimpleNamespace(text="busy", chat=SimpleNamespace(id=TEST_CHAT_ID))
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    # No pending for TEST_CHAT_ID -> "Already sent." + edit attempt (which fails gracefully)
+    await bridge.on_busy_callback(update, make_context())
+    assert callback.answers[-1] == "Already sent."
+
+
+async def test_on_busy_callback_send_now_edit_failure_is_handled():
+    """TelegramError on edit after 'Sending now' must not propagate."""
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+    await bridge.on_message(update_two, context)
+
+    markup = cast(InlineKeyboardMarkup, bot.sent_messages[0]["reply_markup"])
+    token = cast(str, markup.inline_keyboard[0][0].callback_data).split("|", 1)[1]
+
+    class FailingEditAfterAnswer(DummyCallbackQuery):
+        async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
+            if self.answers:
+                raise MarkdownFailureError
+            await super().edit_message_reply_markup(reply_markup=reply_markup)
+
+    callback = FailingEditAfterAnswer(f"{BUSY_CALLBACK_PREFIX}|{token}")
+    update_cb = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update_cb, make_context())
+
+    assert "Sending now" in callback.answers[-1]
+    service.release()
+    await task_one
+
+
+async def test_queue_busy_prompt_edit_old_button_failure_is_handled():
+    """TelegramError when removing old pending button must not propagate."""
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+
+    class FailingEditBot(DummyBot):
+        async def edit_message_reply_markup(self, **kwargs: object) -> None:
+            raise MarkdownFailureError
+
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    update_three = make_update(chat_id=TEST_CHAT_ID, text="third")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    await bridge.on_message(update_two, context)
+    # Now queue a third message - old button removal fails gracefully
+    await bridge.on_message(update_three, context)
+
+    service.release()
+    await task_one
+
+
+async def test_queue_busy_prompt_send_message_failure_is_handled():
+    """TelegramError when sending the notify message must not propagate."""
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+
+    class FailingSendBot(DummyBot):
+        async def send_message(self, **kwargs: object) -> SimpleNamespace:
+            raise MarkdownFailureError
+
+    bot = FailingSendBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    # send_message raises - must not propagate
+    await bridge.on_message(update_two, context)
+
+    service.release()
+    await task_one
+
+
+async def test_clear_busy_button_telegram_error_is_swallowed():
+    """TelegramError when clearing the busy button must not propagate."""
+    service = BlockingService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+
+    class FailingEditBot(DummyBot):
+        async def edit_message_reply_markup(self, **kwargs: object) -> None:
+            raise MarkdownFailureError
+
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    update_one = make_update(chat_id=TEST_CHAT_ID, text="first")
+    update_two = make_update(chat_id=TEST_CHAT_ID, text="second")
+    context = make_context(application=SimpleNamespace(bot=bot))
+
+    task_one = asyncio.create_task(bridge.on_message(update_one, context))
+    await service._prompt_started.wait()
+
+    # Queue second message - notify_msg_id is None (send failed), but we manually set one
+    await bridge.on_message(update_two, context)
+    pending = bridge._pending_prompts_by_chat.get(TEST_CHAT_ID)
+    if pending is not None:
+        pending.notify_msg_id = 42  # force a non-None id so _clear_busy_button tries to edit
+
+    # Release - _clear_busy_button will try to edit and fail
+    service.release()
+    await task_one  # must complete without exception
