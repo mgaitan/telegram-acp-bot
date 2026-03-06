@@ -883,7 +883,11 @@ class TelegramBridge:
                 return "\n".join(TelegramBridge._format_fenced_code(item) for item in commands)
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and title.startswith(path_prefix):
-            return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
+            return TelegramBridge._format_path_activity_targets(
+                title[len(path_prefix) :],
+                prefix=path_prefix.strip(),
+                workspace=workspace,
+            )
         return title
 
     @staticmethod
@@ -891,8 +895,17 @@ class TelegramBridge:
         text = block.text.strip()
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and text.startswith(path_prefix) and "\n" not in text:
-            return TelegramBridge._format_read_path(text[len(path_prefix) :], workspace=workspace)
+            return TelegramBridge._format_path_activity_targets(
+                text[len(path_prefix) :],
+                prefix=path_prefix.strip(),
+                workspace=workspace,
+            )
         return text
+
+    @staticmethod
+    def _format_path_activity_targets(raw_targets: str, *, prefix: str, workspace: Path | None) -> str:
+        targets = TelegramBridge._split_path_activity_targets(raw_targets, prefix=prefix)
+        return "\n".join(TelegramBridge._format_read_path(target, workspace=workspace) for target in targets)
 
     @staticmethod
     def _normalize_search_activity(*, title: str, text: str) -> tuple[str, str]:
@@ -1020,6 +1033,16 @@ class TelegramBridge:
         if kind == "edit":
             return "Edit "
         return None
+
+    @staticmethod
+    def _split_path_activity_targets(raw_targets: str, *, prefix: str) -> list[str]:
+        delimiter = f", {prefix} "
+        if delimiter not in raw_targets:
+            return [raw_targets]
+        targets = [part.strip() for part in raw_targets.split(delimiter)]
+        if targets and all(targets):
+            return targets
+        return [raw_targets]
 
     @staticmethod
     def _format_permission_tool_title(tool_title: str) -> str:

@@ -1423,6 +1423,18 @@ async def test_format_activity_block_read_prefers_file_uri_path():
     assert "`/home/tin/lab/telegram-acp/README.md`" in rendered
 
 
+async def test_format_activity_block_read_normalizes_all_read_targets():
+    block = AgentActivityBlock(
+        kind="read",
+        title="Read /home/tin/lab/telegram-acp/bot.py, Read bot.py",
+        status="completed",
+    )
+    rendered = TelegramBridge._format_activity_block(block, workspace=Path("/tmp/ws"))
+    assert "`/home/tin/lab/telegram-acp/bot.py`" in rendered
+    assert "`/tmp/ws/bot.py`" in rendered
+    assert ", Read bot.py" not in rendered
+
+
 async def test_format_activity_block_search_uses_specific_label_not_tool_call():
     block = AgentActivityBlock(kind="search", title="Searching the Web", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
