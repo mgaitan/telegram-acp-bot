@@ -1,3 +1,11 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "playwright>=1.55.0",
+#   "python-dotenv>=1.2.1",
+# ]
+# ///
+
 from __future__ import annotations
 
 import argparse

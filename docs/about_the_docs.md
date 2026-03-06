@@ -125,3 +125,4 @@ uv run python scripts/demo/record_telegram_web_demo.py --mode record
 
 The recorder uses an iPhone-like viewport (`390x844`) and stores `.webm` files under `artifacts/demo-videos`.
 The dialogue is hardcoded in English to exercise key UX moments (`/new`, busy queue + `Send now`, MCP image request, MCP attachment request, `/resume`).
+The script declares its own runtime dependencies via PEP 723 metadata.
