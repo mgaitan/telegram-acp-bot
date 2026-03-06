@@ -74,13 +74,12 @@ Permission behavior:
 :maxdepth: 2
 :caption: Documentation
 
-configuration.md
-agents.md
 how-to.md
+agents.md
 cli.md
+mcp.md
+configuration.md
+about_the_docs.md
 ../CONTRIBUTING.md
 ../CODE_OF_CONDUCT.md
-about_the_docs.md
-preliminary_ux.md
-mcp.md
 ```
