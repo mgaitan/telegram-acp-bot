@@ -596,9 +596,15 @@ class AcpAgentService:
                 live.active_prompt_auto_approve = True
                 live.next_prompt_auto_approve = False
             live.client.start_capture(live.acp_session_id)
-            prompt_blocks = [text_block(text)]
+            prompt_blocks: list[
+                TextContentBlock
+                | ImageContentBlock
+                | AudioContentBlock
+                | ResourceContentBlock
+                | EmbeddedResourceContentBlock
+            ] = [text_block(text)]
             prompt_blocks.extend(
-                ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images
+                [ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images]
             )
             for file in files:
                 if file.text_content is not None:

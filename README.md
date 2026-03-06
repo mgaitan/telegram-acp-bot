@@ -2,13 +2,14 @@
 
 [![CI](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![docs](https://img.shields.io/badge/docs-blue.svg?style=flat)](https://mgaitan.github.io/telegram-acp-bot/)
-[![Changelog](https://img.shields.io/github/v/release/mgaitan/telegram-acp-bot?include_prereleases&label=changelog)](https://github.com/mgaitan/telegram-acp-bot/releases)
+[![Changelog](https://img.shields.io/badge/changelog-Releases-blue)](https://github.com/mgaitan/telegram-acp-bot/releases)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mgaitan/telegram-acp-bot/blob/main/LICENSE)
 
 A Telegram bot that implements the [Agent Client Protocol](https://agentclientprotocol.com/) to interact with AI agents.
 
 Project documentation: <https://mgaitan.github.io/telegram-acp-bot/>
+Docs source (fallback): <https://github.com/mgaitan/telegram-acp-bot/tree/main/docs>
 
 ## Status
 
@@ -62,12 +63,8 @@ Create your token with [@BotFather](https://t.me/BotFather):
 
 Store the token in your local `.env` file (gitignored):
 
-At least one allowlist entry is required (`TELEGRAM_ALLOWED_USER_IDS` or `TELEGRAM_ALLOWED_USERNAMES`).
-
 ```env
 TELEGRAM_BOT_TOKEN=123456:abc
-TELEGRAM_ALLOWED_USER_IDS=123456789
-# TELEGRAM_ALLOWED_USERNAMES=alice,@bob
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
 ACP_RESTART_COMMAND="uv run acp-bot --telegram-token <TOKEN> --agent-command \"npx @zed-industries/codex-acp\""
 ACP_PERMISSION_MODE=ask

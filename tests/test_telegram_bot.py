@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -67,12 +67,12 @@ class DummyMessage:
         text: str | None = None,
         *,
         caption: str | None = None,
-        photo: list[object] | None = None,
+        photo: Sequence[object] | None = None,
         document: object | None = None,
     ) -> None:
         self.text = text
         self.caption = caption
-        self.photo = photo or []
+        self.photo = list(photo) if photo is not None else []
         self.document = document
         self.replies: list[str] = []
         self.reply_kwargs: list[dict[str, object]] = []
@@ -364,7 +364,7 @@ def make_update(  # noqa: PLR0913
     chat_id: int = 100,
     text: str | None = None,
     caption: str | None = None,
-    photo: list[object] | None = None,
+    photo: Sequence[object] | None = None,
     document: object | None = None,
     with_message: bool = True,
 ):
