@@ -67,6 +67,7 @@ class BotConfig:
 
     token: str
     allowed_user_ids: set[int]
+    allowed_usernames: set[str]
     default_workspace: Path
 
 
@@ -733,13 +734,19 @@ class TelegramBridge:
         return InlineKeyboardMarkup(rows)
 
     async def _require_access(self, update: Update) -> bool:
-        allowed = self._config.allowed_user_ids
-        if not allowed:
+        allowed_ids = self._config.allowed_user_ids
+        allowed_usernames = self._config.allowed_usernames
+        if not allowed_ids and not allowed_usernames:
             return True
 
         user_id = update.effective_user.id if update.effective_user else None
-        if user_id in allowed:
+        if user_id in allowed_ids:
             return True
+        username_raw = getattr(update.effective_user, "username", None)
+        if isinstance(username_raw, str):
+            username = username_raw.lstrip("@").strip().lower()
+            if username in allowed_usernames:
+                return True
 
         await self._reply(update, "Access denied for this bot.")
         return False
@@ -1084,9 +1091,21 @@ def run_polling(config: BotConfig, bridge: TelegramBridge) -> int:
     return 0
 
 
-def make_config(*, token: str, allowed_user_ids: list[int], workspace: str) -> BotConfig:
+def make_config(
+    *,
+    token: str,
+    allowed_user_ids: list[int],
+    workspace: str,
+    allowed_usernames: list[str] | None = None,
+) -> BotConfig:
+    normalized_usernames = {
+        username.lstrip("@").strip().lower()
+        for username in (allowed_usernames or [])
+        if username.strip()
+    }
     return BotConfig(
         token=token,
         allowed_user_ids=set(allowed_user_ids),
+        allowed_usernames=normalized_usernames,
         default_workspace=Path(workspace).expanduser(),
     )

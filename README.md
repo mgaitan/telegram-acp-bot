@@ -62,8 +62,12 @@ Create your token with [@BotFather](https://t.me/BotFather):
 
 Store the token in your local `.env` file (gitignored):
 
+At least one allowlist entry is required (`TELEGRAM_ALLOWED_USER_IDS` or `TELEGRAM_ALLOWED_USERNAMES`).
+
 ```env
 TELEGRAM_BOT_TOKEN=123456:abc
+TELEGRAM_ALLOWED_USER_IDS=123456789
+# TELEGRAM_ALLOWED_USERNAMES=alice,@bob
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
 ACP_RESTART_COMMAND="uv run acp-bot --telegram-token <TOKEN> --agent-command \"npx @zed-industries/codex-acp\""
 ACP_PERMISSION_MODE=ask

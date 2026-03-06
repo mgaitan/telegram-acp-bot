@@ -24,6 +24,9 @@ from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, TelegramBridge, make_config, run_polling
 
+ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
+ALLOWED_USERNAMES_ENV = "TELEGRAM_ALLOWED_USERNAMES"
+
 
 def get_version() -> str:
     try:
@@ -48,6 +51,12 @@ def get_parser() -> argparse.ArgumentParser:
         default=[],
         type=int,
         help="Allowed Telegram user ID. Can be repeated.",
+    )
+    parser.add_argument(
+        "--allowed-username",
+        action="append",
+        default=[],
+        help="Allowed Telegram username (with or without @). Can be repeated.",
     )
     parser.add_argument(
         "--workspace",
@@ -102,6 +111,31 @@ def _default_mcp_servers(*, telegram_token: str, state_file: Path) -> tuple[McpS
     )
 
 
+def _parse_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _normalize_username(username: str) -> str:
+    return username.lstrip("@").strip().lower()
+
+
+def _resolve_allowed_users(*, parser: argparse.ArgumentParser, opts: argparse.Namespace) -> tuple[list[int], list[str]]:
+    try:
+        env_allowed_ids = [int(item) for item in _parse_csv(os.getenv(ALLOWED_USER_IDS_ENV, ""))]
+    except ValueError:
+        parser.error(f"{ALLOWED_USER_IDS_ENV} must be a comma-separated list of integers")
+    env_allowed_usernames = [_normalize_username(item) for item in _parse_csv(os.getenv(ALLOWED_USERNAMES_ENV, ""))]
+    cli_allowed_usernames = [_normalize_username(item) for item in opts.allowed_username]
+    allowed_user_ids = [*env_allowed_ids, *opts.allowed_user_id]
+    allowed_usernames = [*env_allowed_usernames, *cli_allowed_usernames]
+    if not allowed_user_ids and not allowed_usernames:
+        parser.error(
+            "--allowed-user-id/--allowed-username (or TELEGRAM_ALLOWED_USER_IDS/TELEGRAM_ALLOWED_USERNAMES) "
+            "must include at least one allowed user",
+        )
+    return allowed_user_ids, allowed_usernames
+
+
 def main(args: list[str] | None = None) -> int:
     """Run the main program."""
     load_dotenv(override=False)
@@ -118,6 +152,7 @@ def main(args: list[str] | None = None) -> int:
         parser.error("--acp-stdio-limit must be a positive integer")
     if opts.acp_connect_timeout <= 0:
         parser.error("--acp-connect-timeout must be a positive number")
+    allowed_user_ids, allowed_usernames = _resolve_allowed_users(parser=parser, opts=opts)
 
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
@@ -128,7 +163,8 @@ def main(args: list[str] | None = None) -> int:
 
     config = make_config(
         token=opts.telegram_token,
-        allowed_user_ids=opts.allowed_user_id,
+        allowed_user_ids=allowed_user_ids,
+        allowed_usernames=allowed_usernames,
         workspace=opts.workspace,
     )
     service = AcpAgentService(
