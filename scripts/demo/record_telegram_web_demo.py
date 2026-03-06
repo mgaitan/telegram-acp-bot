@@ -28,6 +28,7 @@ from playwright.sync_api import (
 
 MISSING_BOT_USERNAME_MESSAGE = "Missing bot username. Set TELEGRAM_DEMO_BOT_USERNAME (or TELEGRAM_BOT_USERNAME) in .env"
 MISSING_COMPOSER_MESSAGE = "Could not find Telegram message composer. Is the bot chat open?"
+CHAT_URL_TEMPLATE = "https://web.telegram.org/k/#@{bot_username}"
 
 PRIMARY_TASK_PROMPT = (
     "If there are no objections on the review, merge the latest PR and prepare a new patch release. "
@@ -117,28 +118,19 @@ def _get_page(context: BrowserContext) -> Page:
 
 
 def _open_chat(page: Page, *, bot_username: str) -> None:
-    page.goto(f"https://web.telegram.org/k/#@{bot_username}", wait_until="domcontentloaded")
-    page.wait_for_timeout(1200)
-    if _composer_is_visible(page):
-        return
-
-    page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
-    page.wait_for_timeout(1000)
-    _open_chat_via_search(page, bot_username=bot_username)
+    page.goto(CHAT_URL_TEMPLATE.format(bot_username=bot_username), wait_until="domcontentloaded")
     _wait_for_composer(page, timeout_seconds=12.0)
 
 
 def _find_composer(page: Page) -> Locator:
     selectors = (
-        "div.input-message-container div[contenteditable='true']",
-        "div.composer_rich_textarea[contenteditable='true']",
-        "footer div[contenteditable='true']",
+        "div.input-message-container div.input-message-input[contenteditable='true']",
         "div.input-message-input[contenteditable='true']",
-        "div.input-message-container [aria-label*='Message'][contenteditable='true']",
-        "div.input-message-container [data-placeholder*='Message'][contenteditable='true']",
+        "div.input-message-container div[contenteditable='true'][dir='auto']",
+        "footer div.input-message-input[contenteditable='true']",
     )
     for selector in selectors:
-        locator = page.locator(selector).last
+        locator = page.locator(selector).first
         if locator.count() and locator.is_visible():
             return locator
     raise RuntimeError(MISSING_COMPOSER_MESSAGE)
@@ -164,36 +156,6 @@ def _wait_for_composer(page: Page, *, timeout_seconds: float) -> None:
     raise RuntimeError(MISSING_COMPOSER_MESSAGE)
 
 
-def _open_chat_via_search(page: Page, *, bot_username: str) -> None:
-    search_selectors = (
-        "input[placeholder*='Search']",
-        "input[placeholder*='Buscar']",
-        "input[type='text']",
-        "div[contenteditable='true'][aria-label*='Search']",
-        "div[contenteditable='true'][aria-label*='Buscar']",
-    )
-    query = f"@{bot_username}"
-    for selector in search_selectors:
-        search_box = page.locator(selector).first
-        if not search_box.count() or not search_box.is_visible():
-            continue
-        search_box.click()
-        search_box.fill(query)
-        page.wait_for_timeout(700)
-        break
-
-    result_patterns = (
-        re.compile(rf"@{re.escape(bot_username)}", re.IGNORECASE),
-        re.compile(rf"\b{re.escape(bot_username)}\b", re.IGNORECASE),
-    )
-    for pattern in result_patterns:
-        result = page.get_by_text(pattern).first
-        if result.count() and result.is_visible():
-            result.click()
-            page.wait_for_timeout(700)
-            return
-
-
 def _ensure_logged_in(page: Page) -> None:
     page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
     page.wait_for_timeout(1500)
@@ -214,8 +176,10 @@ def _try_click_start(page: Page) -> None:
 def _send_message(page: Page, text: str) -> None:
     composer = _find_composer(page)
     composer.click()
-    composer.fill(text)
-    composer.press("Enter")
+    page.keyboard.press("ControlOrMeta+A")
+    page.keyboard.press("Backspace")
+    page.keyboard.type(text)
+    page.keyboard.press("Enter")
 
 
 def _wait_for_activity_labels(page: Page, *, timeout_seconds: float) -> None:
