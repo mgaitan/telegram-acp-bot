@@ -31,6 +31,8 @@ from telegram_acp_bot.telegram.bot import (
     AgentService,
     ChatRequiredError,
     TelegramBridge,
+    _PendingPrompt,
+    _PromptInput,
     build_application,
     make_config,
     run_polling,
@@ -43,6 +45,7 @@ TEST_CHAT_ID = 100
 EXPECTED_ACTIVITY_MESSAGES = 3
 ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
+EXPECTED_TWO_BUSY_NOTIFICATIONS = 2
 
 
 class MarkdownFailureError(TelegramError):
@@ -60,6 +63,11 @@ class DummyLoadFailedError(RuntimeError):
 class DummyListBoomError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("list boom")
+
+
+class BusyCancelError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("cancel failed")
 
 
 class DummyMessage:
@@ -2533,6 +2541,47 @@ class BlockingService:
         self._prompt_gate.set()
 
 
+class FailingCancelService:
+    def __init__(self) -> None:
+        self._workspace: Path | None = Path(".")
+
+    async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+        del chat_id
+        self._workspace = workspace
+        return "s-fail"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()) -> AgentReply:
+        del chat_id, text, images, files
+        return AgentReply(text="ok")
+
+    def get_workspace(self, *, chat_id: int) -> Path | None:
+        del chat_id
+        return self._workspace
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        raise BusyCancelError
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+
 async def test_on_message_while_busy_shows_send_now_button():
     service = BlockingService()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
@@ -2805,7 +2854,7 @@ async def test_busy_queue_replaces_previous_pending_and_removes_old_button():
     # Old button (message_id=1) should be removed
     assert any(e.get("message_id") == 1 for e in bot.edited_reply_markups)
     # New button sent (message_id=2)
-    assert len(bot.sent_messages) == 2
+    assert len(bot.sent_messages) == EXPECTED_TWO_BUSY_NOTIFICATIONS
 
     service.release()
     await task_one
@@ -2972,50 +3021,9 @@ async def test_clear_busy_button_telegram_error_is_swallowed():
 
 async def test_on_busy_callback_cancel_failure_answers_safely():
     """If cancel() raises, on_busy_callback answers 'Cancel failed.' and returns cleanly."""
-    class FailingCancelService:
-        def __init__(self) -> None:
-            self._workspace: Path | None = Path(".")
-
-        async def new_session(self, *, chat_id: int, workspace: Path) -> str:
-            del chat_id
-            self._workspace = workspace
-            return "s-fail"
-
-        async def prompt(self, *, chat_id: int, text: str, images=(), files=()) -> AgentReply:
-            del chat_id, text, images, files
-            return AgentReply(text="ok")
-
-        def get_workspace(self, *, chat_id: int) -> Path | None:
-            del chat_id
-            return self._workspace
-
-        async def cancel(self, *, chat_id: int) -> bool:
-            del chat_id
-            raise RuntimeError("cancel boom")
-
-        async def stop(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        async def clear(self, *, chat_id: int) -> bool:
-            del chat_id
-            return False
-
-        def get_permission_policy(self, *, chat_id: int):
-            del chat_id
-
-        async def set_session_permission_mode(self, *, chat_id: int, mode):
-            del chat_id, mode
-            return False
-
-        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
-            del chat_id, enabled
-            return False
-
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = TelegramBridge(config=config, agent_service=cast(AgentService, FailingCancelService()))
     token = "test-token"
-    from telegram_acp_bot.telegram.bot import _PendingPrompt, _PromptInput
     dummy_update = make_update(chat_id=TEST_CHAT_ID, text="hi")
     prompt_input = _PromptInput(chat_id=TEST_CHAT_ID, text="hi", images=(), files=())
     bridge._pending_prompts_by_chat[TEST_CHAT_ID] = _PendingPrompt(

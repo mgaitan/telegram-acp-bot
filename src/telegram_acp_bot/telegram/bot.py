@@ -5,6 +5,7 @@ import base64
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -528,10 +529,8 @@ class TelegramBridge:
         pending = self._pending_prompts_by_chat.get(chat_id)
         if pending is None or pending.token != token:
             await query.answer("Already sent.")
-            try:
+            with suppress(TelegramError):
                 await query.edit_message_reply_markup(reply_markup=None)
-            except TelegramError:
-                pass
             return
 
         # Clear notify_msg_id *before* awaiting cancel() so that when the pump loop
@@ -546,10 +545,8 @@ class TelegramBridge:
             await query.answer("Cancel failed.")
             return
         await query.answer("Sending now…")
-        try:
+        with suppress(TelegramError):
             await query.edit_message_reply_markup(reply_markup=None)
-        except TelegramError:
-            pass
 
     async def _resolve_resume_selection(
         self,
@@ -631,15 +628,7 @@ class TelegramBridge:
                 # without yielding, so a concurrent on_message cannot sneak in between.
                 pending = self._pending_prompts_by_chat.pop(chat_id, None)
                 await self._clear_busy_button(pending)
-
-                if reply is not None:
-                    if self._app is None:
-                        workspace = self._activity_workspace(chat_id=chat_id)
-                        for block in reply.activity_blocks:
-                            await self._reply_activity_block(current_update, block, workspace=workspace)
-                    if reply.text.strip():
-                        await self._reply_agent(current_update, reply.text)
-                    await self._send_attachments(current_update, reply)
+                await self._dispatch_reply(update=current_update, chat_id=chat_id, reply=reply)
 
                 if pending is None:
                     break
@@ -737,14 +726,12 @@ class TelegramBridge:
         """Queue a prompt while the agent is busy and show a *Send now* inline button."""
         old_pending = self._pending_prompts_by_chat.get(chat_id)
         if old_pending is not None and old_pending.notify_msg_id is not None and self._app is not None:
-            try:
+            with suppress(TelegramError):
                 await self._app.bot.edit_message_reply_markup(
                     chat_id=chat_id,
                     message_id=old_pending.notify_msg_id,
                     reply_markup=None,
                 )
-            except TelegramError:
-                pass
 
         token = str(uuid4())
         pending = _PendingPrompt(prompt_input=prompt_input, update=update, token=token)
@@ -768,14 +755,23 @@ class TelegramBridge:
         """Remove the *Send now* button when the queued prompt is about to be processed."""
         if pending is None or pending.notify_msg_id is None or self._app is None:
             return
-        try:
+        with suppress(TelegramError):
             await self._app.bot.edit_message_reply_markup(
                 chat_id=pending.prompt_input.chat_id,
                 message_id=pending.notify_msg_id,
                 reply_markup=None,
             )
-        except TelegramError:
-            pass
+
+    async def _dispatch_reply(self, *, update: Update, chat_id: int, reply: AgentReply | None) -> None:
+        if reply is None:
+            return
+        if self._app is None:
+            workspace = self._activity_workspace(chat_id=chat_id)
+            for block in reply.activity_blocks:
+                await self._reply_activity_block(update, block, workspace=workspace)
+        if reply.text.strip():
+            await self._reply_agent(update, reply.text)
+        await self._send_attachments(update, reply)
 
     async def _request_reply(
         self,
