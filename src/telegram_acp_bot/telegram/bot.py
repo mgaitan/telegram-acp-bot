@@ -537,7 +537,12 @@ class TelegramBridge:
         # the redundant edit.  The button markup is removed by this callback below.
         pending.notify_msg_id = None
 
-        await self._agent_service.cancel(chat_id=chat_id)
+        try:
+            await self._agent_service.cancel(chat_id=chat_id)
+        except Exception:
+            logger.exception("Unhandled error while cancelling prompt in busy callback")
+            await query.answer("Cancel failed.")
+            return
         await query.answer("Sending now…")
         try:
             await query.edit_message_reply_markup(reply_markup=None)

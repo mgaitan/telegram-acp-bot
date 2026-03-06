@@ -132,10 +132,10 @@ class DummyBot:
 
 
 class FailingMarkdownBot(DummyBot):
-    async def send_message(self, **kwargs: object) -> None:
+    async def send_message(self, **kwargs: object) -> SimpleNamespace:
         if "entities" in kwargs:
             raise MarkdownFailureError
-        await super().send_message(**kwargs)
+        return await super().send_message(**kwargs)
 
 
 class DummyCallbackQuery:
@@ -2423,7 +2423,7 @@ async def test_on_message_while_busy_shows_send_now_button():
     button = markup.inline_keyboard[0][0]
     assert button.text == "Send now"
     assert button.callback_data is not None
-    assert button.callback_data.startswith(f"{BUSY_CALLBACK_PREFIX}|")
+    assert cast(str, button.callback_data).startswith(f"{BUSY_CALLBACK_PREFIX}|")
 
     # Finish first task
     service.release()
@@ -2828,3 +2828,69 @@ async def test_clear_busy_button_telegram_error_is_swallowed():
     # Release - _clear_busy_button will try to edit and fail
     service.release()
     await task_one  # must complete without exception
+
+
+async def test_on_busy_callback_cancel_failure_answers_safely():
+    """If cancel() raises, on_busy_callback answers 'Cancel failed.' and returns cleanly."""
+    class FailingCancelService:
+        def __init__(self) -> None:
+            self._workspace: Path | None = Path(".")
+
+        async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+            del chat_id
+            self._workspace = workspace
+            return "s-fail"
+
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()) -> AgentReply:
+            del chat_id, text, images, files
+            return AgentReply(text="ok")
+
+        def get_workspace(self, *, chat_id: int) -> Path | None:
+            del chat_id
+            return self._workspace
+
+        async def cancel(self, *, chat_id: int) -> bool:
+            del chat_id
+            raise RuntimeError("cancel boom")
+
+        async def stop(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        async def clear(self, *, chat_id: int) -> bool:
+            del chat_id
+            return False
+
+        def get_permission_policy(self, *, chat_id: int):
+            del chat_id
+
+        async def set_session_permission_mode(self, *, chat_id: int, mode):
+            del chat_id, mode
+            return False
+
+        async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+            del chat_id, enabled
+            return False
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, FailingCancelService()))
+    token = "test-token"
+    from telegram_acp_bot.telegram.bot import _PendingPrompt, _PromptInput
+    dummy_update = make_update(chat_id=TEST_CHAT_ID, text="hi")
+    prompt_input = _PromptInput(chat_id=TEST_CHAT_ID, text="hi", images=(), files=())
+    bridge._pending_prompts_by_chat[TEST_CHAT_ID] = _PendingPrompt(
+        prompt_input=prompt_input, update=cast(Update, dummy_update), token=token
+    )
+
+    callback = DummyCallbackQuery(f"{BUSY_CALLBACK_PREFIX}|{token}")
+    update_cb = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+    await bridge.on_busy_callback(update_cb, make_context())
+    assert callback.answers[-1] == "Cancel failed."
