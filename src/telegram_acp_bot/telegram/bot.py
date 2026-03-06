@@ -5,11 +5,12 @@ import base64
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from telegram import (
     Bot,
@@ -44,8 +45,10 @@ from telegram_acp_bot.acp_app.models import (
 
 PERMISSION_CALLBACK_PREFIX = "perm"
 RESUME_CALLBACK_PREFIX = "resume"
+BUSY_CALLBACK_PREFIX = "busy"
 PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
+BUSY_CALLBACK_PARTS = 2
 MAX_RESUME_ARGS = 1
 MAX_RESTART_ARGS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
@@ -90,6 +93,16 @@ class _ResumeArgs:
 class _RestartArgs:
     resume_index: int | None
     workspace: Path | None
+
+
+@dataclass(slots=True)
+class _PendingPrompt:
+    """A user message queued while the agent is busy processing another prompt."""
+
+    prompt_input: _PromptInput
+    update: Update
+    token: str
+    notify_msg_id: int | None = field(default=None)
 
 
 class ChatRequiredError(ValueError):
@@ -164,6 +177,8 @@ class TelegramBridge:
         self._restart_requested = False
         self._implicit_start_locks_by_chat: dict[int, asyncio.Lock] = {}
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
+        self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
+        self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -182,6 +197,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("restart", self.restart))
         app.add_handler(CallbackQueryHandler(self.on_permission_callback, pattern=r"^perm\|"))
         app.add_handler(CallbackQueryHandler(self.on_resume_callback, pattern=r"^resume\|"))
+        app.add_handler(CallbackQueryHandler(self.on_busy_callback, pattern=r"^busy\|"))
         app.add_handler(
             MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
         )
@@ -486,6 +502,50 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat.pop(chat_id, None)
         await self._reply(update, f"Session resumed: `{session_id}` in `{candidate.workspace}`")
 
+    async def on_busy_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle the *Send now* inline button shown when the agent is busy."""
+        del context
+        query = update.callback_query
+        if query is None:
+            return
+
+        if not await self._require_access(update):
+            await query.answer("Access denied.")
+            return
+
+        data = query.data or ""
+        parts = data.split("|", maxsplit=1)
+        if len(parts) != BUSY_CALLBACK_PARTS:
+            await query.answer("Invalid action.")
+            return
+        _, token = parts
+
+        chat_id = self._chat_id_from_update_or_query(update=update, query=query)
+        if chat_id is None:
+            await query.answer("Missing chat.")
+            return
+
+        pending = self._pending_prompts_by_chat.get(chat_id)
+        if pending is None or pending.token != token:
+            await query.answer("Already sent.")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except TelegramError:
+                pass
+            return
+
+        # Clear notify_msg_id *before* awaiting cancel() so that when the pump loop
+        # wakes up and pops the pending it already sees notify_msg_id=None and skips
+        # the redundant edit.  The button markup is removed by this callback below.
+        pending.notify_msg_id = None
+
+        await self._agent_service.cancel(chat_id=chat_id)
+        await query.answer("Sending now…")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError:
+            pass
+
     async def _resolve_resume_selection(
         self,
         *,
@@ -543,21 +603,44 @@ class TelegramBridge:
         if not await self._ensure_session_for_chat(update=update, chat_id=prompt_input.chat_id):
             return
 
-        reply = await self._request_reply(
-            update=update,
-            context=context,
-            prompt_input=prompt_input,
-        )
-        if reply is None:
+        chat_id = prompt_input.chat_id
+        lock = self._chat_prompt_lock(chat_id)
+
+        if lock.locked():
+            await self._queue_busy_prompt(chat_id=chat_id, prompt_input=prompt_input, update=update)
             return
 
-        if self._app is None:
-            workspace = self._activity_workspace(chat_id=prompt_input.chat_id)
-            for block in reply.activity_blocks:
-                await self._reply_activity_block(update, block, workspace=workspace)
-        if reply.text.strip():
-            await self._reply_agent(update, reply.text)
-        await self._send_attachments(update, reply)
+        async with lock:
+            current_input: _PromptInput = prompt_input
+            current_update: Update = update
+
+            while True:
+                reply = await self._request_reply(
+                    update=current_update,
+                    context=context,
+                    prompt_input=current_input,
+                )
+
+                # Pop any pending prompt before sending the reply.  Because asyncio
+                # is single-threaded, this pop and the reply dispatch below happen
+                # without yielding, so a concurrent on_message cannot sneak in between.
+                pending = self._pending_prompts_by_chat.pop(chat_id, None)
+                await self._clear_busy_button(pending)
+
+                if reply is not None:
+                    if self._app is None:
+                        workspace = self._activity_workspace(chat_id=chat_id)
+                        for block in reply.activity_blocks:
+                            await self._reply_activity_block(current_update, block, workspace=workspace)
+                    if reply.text.strip():
+                        await self._reply_agent(current_update, reply.text)
+                    await self._send_attachments(current_update, reply)
+
+                if pending is None:
+                    break
+
+                current_input = pending.prompt_input
+                current_update = pending.update
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
@@ -631,6 +714,63 @@ class TelegramBridge:
         if expected_lock is not None and current_lock is not expected_lock:
             return
         self._implicit_start_locks_by_chat.pop(chat_id, None)
+
+    def _chat_prompt_lock(self, chat_id: int) -> asyncio.Lock:
+        lock = self._chat_prompt_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chat_prompt_locks[chat_id] = lock
+        return lock
+
+    async def _queue_busy_prompt(
+        self,
+        *,
+        chat_id: int,
+        prompt_input: _PromptInput,
+        update: Update,
+    ) -> None:
+        """Queue a prompt while the agent is busy and show a *Send now* inline button."""
+        old_pending = self._pending_prompts_by_chat.get(chat_id)
+        if old_pending is not None and old_pending.notify_msg_id is not None and self._app is not None:
+            try:
+                await self._app.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=old_pending.notify_msg_id,
+                    reply_markup=None,
+                )
+            except TelegramError:
+                pass
+
+        token = str(uuid4())
+        pending = _PendingPrompt(prompt_input=prompt_input, update=update, token=token)
+        self._pending_prompts_by_chat[chat_id] = pending
+
+        if self._app is not None:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(text="Send now", callback_data=f"{BUSY_CALLBACK_PREFIX}|{token}")]]
+            )
+            try:
+                notify_msg = await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text="⏳ Agent is busy. Your message is queued.",
+                    reply_markup=keyboard,
+                )
+                pending.notify_msg_id = getattr(notify_msg, "message_id", None)
+            except TelegramError:
+                logger.exception("Failed to send busy notification for chat_id=%s", chat_id)
+
+    async def _clear_busy_button(self, pending: _PendingPrompt | None) -> None:
+        """Remove the *Send now* button when the queued prompt is about to be processed."""
+        if pending is None or pending.notify_msg_id is None or self._app is None:
+            return
+        try:
+            await self._app.bot.edit_message_reply_markup(
+                chat_id=pending.prompt_input.chat_id,
+                message_id=pending.notify_msg_id,
+                reply_markup=None,
+            )
+        except TelegramError:
+            pass
 
     async def _request_reply(
         self,
