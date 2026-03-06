@@ -2338,7 +2338,7 @@ async def test_reply_agent_falls_back_to_plain_text_on_convert_error(
     await TelegramBridge._reply_agent(update, "*x*")
 
     assert update.message.reply_kwargs[-1] == {}
-    assert update.message.replies[-1] == "*x*"
+    assert update.message.replies[-1] == "x"
 
 
 async def test_reply_falls_back_to_plain_when_entity_send_fails():
@@ -2367,7 +2367,7 @@ async def test_reply_agent_falls_back_to_plain_when_convert_fails(
     await TelegramBridge._reply_agent(update, "*x*")
 
     assert update.message.reply_kwargs[-1] == {}
-    assert update.message.replies[-1] == "*x*"
+    assert update.message.replies[-1] == "x"
 
 
 async def test_send_markdown_to_chat_falls_back_to_plain_when_entity_send_fails():
@@ -2417,8 +2417,24 @@ async def test_send_markdown_to_chat_falls_back_to_plain_when_convert_fails(monk
 
     assert len(dummy_bot.sent_messages) == 1
     payload = dummy_bot.sent_messages[0]
-    assert payload["text"] == "*bold*"
+    assert payload["text"] == "bold"
     assert payload["reply_markup"] is not None
+
+
+async def test_reply_activity_block_sanitizes_markdown_markers_when_convert_fails(monkeypatch: pytest.MonkeyPatch):
+    update = make_update()
+    assert update.message is not None
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="Issue **#90** selected")
+
+    def boom(_: str):
+        raise RuntimeError
+
+    monkeypatch.setattr(bot_module, "convert", boom)
+
+    await TelegramBridge._reply_activity_block(update, block)
+
+    assert update.message.reply_kwargs[-1] == {}
+    assert update.message.replies[-1] == "💡 Thinking\n\nIssue #90 selected"
 
 
 async def test_on_text_ignores_when_message_is_missing():

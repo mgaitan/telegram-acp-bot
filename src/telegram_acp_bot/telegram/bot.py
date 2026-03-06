@@ -1251,7 +1251,7 @@ class TelegramBridge:
                 else:
                     await message.reply_text(chunk_text)
         except (RuntimeError, ValueError, TypeError):
-            await message.reply_text(text)
+            await message.reply_text(TelegramBridge._sanitize_markdown_fallback(text))
 
     @staticmethod
     async def _send_markdown_to_chat(
@@ -1288,7 +1288,28 @@ class TelegramBridge:
                         reply_markup=current_reply_markup,
                     )
         except (RuntimeError, ValueError, TypeError):
-            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=TelegramBridge._sanitize_markdown_fallback(text),
+                reply_markup=reply_markup,
+            )
+
+    @staticmethod
+    def _sanitize_markdown_fallback(text: str) -> str:
+        """Return plain text when markdown conversion fails."""
+        sanitized = text
+        replacements = (
+            (r"\*\*(.+?)\*\*", r"\1"),
+            (r"__(.+?)__", r"\1"),
+            (r"~~(.+?)~~", r"\1"),
+            (r"`([^`]+)`", r"\1"),
+            (r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1"),
+            (r"(?<!_)_([^_\n]+)_(?!_)", r"\1"),
+        )
+        for pattern, replacement in replacements:
+            sanitized = re.sub(pattern, replacement, sanitized, flags=re.DOTALL)
+        sanitized = sanitized.replace("\\\\", "\\")
+        return re.sub(r"\\([^\w])", r"\1", sanitized)
 
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
