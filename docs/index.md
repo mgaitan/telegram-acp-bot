@@ -3,7 +3,7 @@
 [![ci](https://github.com/mgaitan/telegram-acp-bot/workflows/ci/badge.svg)](https://github.com/mgaitan/telegram-acp-bot/actions?query=workflow%3Aci)
 [![docs](https://img.shields.io/badge/docs-blue.svg?style=flat)](https://mgaitan.github.io/telegram-acp-bot/)
 [![pypi version](https://img.shields.io/pypi/v/telegram-acp-bot.svg)](https://pypi.org/project/telegram-acp-bot/)
-[![Changelog](https://img.shields.io/badge/changelog-Releases-blue)](https://github.com/mgaitan/telegram-acp-bot/releases)
+[![Changelog](https://img.shields.io/github/v/release/mgaitan/telegram-acp-bot?include_prereleases&label=changelog)](https://github.com/mgaitan/telegram-acp-bot/releases)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mgaitan/telegram-acp-bot/blob/main/LICENSE)
 
@@ -56,7 +56,8 @@ Attachment behavior:
 
 Tool activity behavior:
 - ACP tool updates are emitted as separate Telegram messages grouped by tool kind (`think`, `execute`, `read`, etc.).
-- Labels currently used in chat are: `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, and `🔎 Searching`.
+- Labels currently used in chat are: `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, and `🔎 Querying`.
+- Search activity blocks render compact details when available (`Query: "..."` and `URL: ...`) extracted from block title/text.
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
 - The final assistant answer is sent as a separate message after those activity blocks.
 - If the final text payload is empty, no dummy "(no text response)" message is emitted.
