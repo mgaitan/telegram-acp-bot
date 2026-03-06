@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -59,7 +59,7 @@ KIND_LABELS = {
     "think": "💡 Thinking",
     "execute": "⚙️ Running",
     "read": "📖 Reading",
-    "search": "🔎 Querying",
+    "search": "🔎 Searching",
     "edit": "✏️ Editing",
     "write": "✍️ Writing",
 }
@@ -71,7 +71,6 @@ class BotConfig:
 
     token: str
     allowed_user_ids: set[int]
-    allowed_usernames: set[str]
     default_workspace: Path
 
 
@@ -528,23 +527,23 @@ class TelegramBridge:
         pending = self._pending_prompts_by_chat.get(chat_id)
         if pending is None or pending.token != token:
             await query.answer("Already sent.")
-            try:
+            with suppress(TelegramError):
                 await query.edit_message_reply_markup(reply_markup=None)
-            except TelegramError:
-                pass
             return
 
-        # Clear notify_msg_id *before* awaiting cancel() so that when the pump loop
-        # wakes up and pops the pending it already sees notify_msg_id=None and skips
-        # the redundant edit.  The button markup is removed by this callback below.
-        pending.notify_msg_id = None
-
-        await self._agent_service.cancel(chat_id=chat_id)
-        await query.answer("Sending now…")
         try:
+            await self._agent_service.cancel(chat_id=chat_id)
+        except Exception:
+            logger.exception("Unhandled error while cancelling prompt in busy callback")
+            with suppress(TelegramError):
+                await query.edit_message_reply_markup(reply_markup=None)
+            pending.notify_msg_id = None
+            await query.answer("Cancel failed.")
+            return
+        await query.answer("Sending now…")
+        with suppress(TelegramError):
             await query.edit_message_reply_markup(reply_markup=None)
-        except TelegramError:
-            pass
+        pending.notify_msg_id = None
 
     async def _resolve_resume_selection(
         self,
@@ -611,36 +610,55 @@ class TelegramBridge:
             return
 
         async with lock:
-            current_input: _PromptInput = prompt_input
-            current_update: Update = update
+            await self._drain_prompt_queue(
+                chat_id=chat_id,
+                update=update,
+                context=context,
+                prompt_input=prompt_input,
+            )
 
-            while True:
-                reply = await self._request_reply(
-                    update=current_update,
-                    context=context,
-                    prompt_input=current_input,
-                )
+    async def _drain_prompt_queue(
+        self,
+        *,
+        chat_id: int,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        prompt_input: _PromptInput,
+    ) -> None:
+        current_input = prompt_input
+        current_update = update
 
-                # Pop any pending prompt before sending the reply.  Because asyncio
-                # is single-threaded, this pop and the reply dispatch below happen
-                # without yielding, so a concurrent on_message cannot sneak in between.
-                pending = self._pending_prompts_by_chat.pop(chat_id, None)
-                await self._clear_busy_button(pending)
+        while True:
+            reply = await self._request_reply(
+                update=current_update,
+                context=context,
+                prompt_input=current_input,
+            )
 
-                if reply is not None:
-                    if self._app is None:
-                        workspace = self._activity_workspace(chat_id=chat_id)
-                        for block in reply.activity_blocks:
-                            await self._reply_activity_block(current_update, block, workspace=workspace)
-                    if reply.text.strip():
-                        await self._reply_agent(current_update, reply.text)
-                    await self._send_attachments(current_update, reply)
+            # Pop any pending prompt before sending the reply. A concurrent
+            # on_message for this chat cannot interfere here because the
+            # per-chat lock is still held; new messages observe lock.locked()
+            # and take the queue path.
+            pending = self._pending_prompts_by_chat.pop(chat_id, None)
+            await self._clear_busy_button(pending)
 
-                if pending is None:
-                    break
+            if reply is not None:
+                await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
 
-                current_input = pending.prompt_input
-                current_update = pending.update
+            if pending is None:
+                return
+
+            current_input = pending.prompt_input
+            current_update = pending.update
+
+    async def _dispatch_reply(self, *, chat_id: int, update: Update, reply: AgentReply) -> None:
+        if self._app is None:
+            workspace = self._activity_workspace(chat_id=chat_id)
+            for block in reply.activity_blocks:
+                await self._reply_activity_block(update, block, workspace=workspace)
+        if reply.text.strip():
+            await self._reply_agent(update, reply.text)
+        await self._send_attachments(update, reply)
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
@@ -732,14 +750,12 @@ class TelegramBridge:
         """Queue a prompt while the agent is busy and show a *Send now* inline button."""
         old_pending = self._pending_prompts_by_chat.get(chat_id)
         if old_pending is not None and old_pending.notify_msg_id is not None and self._app is not None:
-            try:
+            with suppress(TelegramError):
                 await self._app.bot.edit_message_reply_markup(
                     chat_id=chat_id,
                     message_id=old_pending.notify_msg_id,
                     reply_markup=None,
                 )
-            except TelegramError:
-                pass
 
         token = str(uuid4())
         pending = _PendingPrompt(prompt_input=prompt_input, update=update, token=token)
@@ -749,12 +765,16 @@ class TelegramBridge:
             keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(text="Send now", callback_data=f"{BUSY_CALLBACK_PREFIX}|{token}")]]
             )
+            send_kwargs: dict[str, object] = {
+                "chat_id": chat_id,
+                "text": "⏳ Agent is busy. Your message is queued.",
+                "reply_markup": keyboard,
+            }
+            queued_message = update.message
+            if queued_message is not None and isinstance(queued_message.message_id, int):
+                send_kwargs["reply_to_message_id"] = queued_message.message_id
             try:
-                notify_msg = await self._app.bot.send_message(
-                    chat_id=chat_id,
-                    text="⏳ Agent is busy. Your message is queued.",
-                    reply_markup=keyboard,
-                )
+                notify_msg = await self._app.bot.send_message(**send_kwargs)
                 pending.notify_msg_id = getattr(notify_msg, "message_id", None)
             except TelegramError:
                 logger.exception("Failed to send busy notification for chat_id=%s", chat_id)
@@ -763,14 +783,12 @@ class TelegramBridge:
         """Remove the *Send now* button when the queued prompt is about to be processed."""
         if pending is None or pending.notify_msg_id is None or self._app is None:
             return
-        try:
+        with suppress(TelegramError):
             await self._app.bot.edit_message_reply_markup(
                 chat_id=pending.prompt_input.chat_id,
                 message_id=pending.notify_msg_id,
                 reply_markup=None,
             )
-        except TelegramError:
-            pass
 
     async def _request_reply(
         self,
@@ -875,19 +893,13 @@ class TelegramBridge:
         return InlineKeyboardMarkup(rows)
 
     async def _require_access(self, update: Update) -> bool:
-        allowed_ids = self._config.allowed_user_ids
-        allowed_usernames = self._config.allowed_usernames
-        if not allowed_ids and not allowed_usernames:
+        allowed = self._config.allowed_user_ids
+        if not allowed:
             return True
 
         user_id = update.effective_user.id if update.effective_user else None
-        if user_id in allowed_ids:
+        if user_id in allowed:
             return True
-        username_raw = getattr(update.effective_user, "username", None)
-        if isinstance(username_raw, str):
-            username = username_raw.lstrip("@").strip().lower()
-            if username in allowed_usernames:
-                return True
 
         await self._reply(update, "Access denied for this bot.")
         return False
@@ -1004,10 +1016,6 @@ class TelegramBridge:
         text_parts = [f"*{label}*"]
         normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
         normalized_text = TelegramBridge._normalize_activity_text(block, workspace=workspace)
-        if block.kind == "search":
-            normalized_title, normalized_text = TelegramBridge._normalize_search_activity(
-                title=normalized_title, text=normalized_text
-            )
         if normalized_title and normalized_text and normalized_title == normalized_text:
             normalized_title = ""
         if normalized_title:
@@ -1030,11 +1038,7 @@ class TelegramBridge:
                 return "\n".join(TelegramBridge._format_fenced_code(item) for item in commands)
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and title.startswith(path_prefix):
-            return TelegramBridge._format_path_activity_targets(
-                title[len(path_prefix) :],
-                prefix=path_prefix.strip(),
-                workspace=workspace,
-            )
+            return TelegramBridge._format_read_path(title[len(path_prefix) :], workspace=workspace)
         return title
 
     @staticmethod
@@ -1042,92 +1046,8 @@ class TelegramBridge:
         text = block.text.strip()
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and text.startswith(path_prefix) and "\n" not in text:
-            return TelegramBridge._format_path_activity_targets(
-                text[len(path_prefix) :],
-                prefix=path_prefix.strip(),
-                workspace=workspace,
-            )
+            return TelegramBridge._format_read_path(text[len(path_prefix) :], workspace=workspace)
         return text
-
-    @staticmethod
-    def _format_path_activity_targets(raw_targets: str, *, prefix: str, workspace: Path | None) -> str:
-        targets = TelegramBridge._split_path_activity_targets(raw_targets, prefix=prefix)
-        return "\n".join(TelegramBridge._format_read_path(target, workspace=workspace) for target in targets)
-
-    @staticmethod
-    def _normalize_search_activity(*, title: str, text: str) -> tuple[str, str]:
-        query = TelegramBridge._extract_search_query(title=title, text=text)
-        urls = TelegramBridge._extract_urls(f"{title}\n{text}")
-        details: list[str] = []
-        if query:
-            details.append(f'Query: "{query}"')
-        details.extend(f"URL: {url}" for url in urls)
-        if details:
-            return "", "\n".join(details)
-        if TelegramBridge._is_generic_search_label(title) and TelegramBridge._is_generic_search_label(text):
-            return "", ""
-        if TelegramBridge._is_generic_search_label(title):
-            return "", text
-        return title, text
-
-    @staticmethod
-    def _extract_search_query(*, title: str, text: str) -> str | None:
-        combined = "\n".join(part for part in (title, text) if part)
-        if not combined:
-            return None
-        candidates = (
-            re.search(r'(?im)\bquery\s*[:=]\s*["`]?(.+?)["`]?\s*$', combined),
-            re.search(r'(?im)\bq\s*[:=]\s*["`]?(.+?)["`]?\s*$', combined),
-            re.search(r'(?im)\bsearch(?:ing)?(?: the web)?(?: for)?\s*[:\-]?\s*["`]?(.+?)["`]?\s*$', combined),
-        )
-        for candidate in candidates:
-            if candidate is None:
-                continue
-            normalized = TelegramBridge._clean_search_query(candidate.group(1))
-            if normalized:
-                return normalized
-        if title and not TelegramBridge._is_generic_search_label(title):
-            normalized_title = TelegramBridge._clean_search_query(title)
-            if normalized_title:
-                return normalized_title
-        return None
-
-    @staticmethod
-    def _clean_search_query(raw_query: str) -> str:
-        query = re.sub(r"https?://\S+", "", raw_query)
-        query = " ".join(query.strip().strip("\"'`").split())
-        if not query:
-            return ""
-        if TelegramBridge._is_generic_search_label(query):
-            return ""
-        return query
-
-    @staticmethod
-    def _extract_urls(text: str) -> list[str]:
-        url_matches = re.findall(r"https?://[^\s)]+", text)
-        urls: list[str] = []
-        seen: set[str] = set()
-        for match in url_matches:
-            url = match.rstrip(".,;:")
-            if url in seen:
-                continue
-            seen.add(url)
-            urls.append(url)
-        return urls
-
-    @staticmethod
-    def _is_generic_search_label(text: str) -> bool:
-        normalized = " ".join(text.strip().casefold().split())
-        if not normalized:
-            return False
-        return normalized in {
-            "search",
-            "searching",
-            "searching web",
-            "searching the web",
-            "searching internet",
-            "searching the internet",
-        }
 
     @staticmethod
     def _escape_markdown_preserving_code(text: str) -> str:
@@ -1182,16 +1102,6 @@ class TelegramBridge:
         if kind == "edit":
             return "Edit "
         return None
-
-    @staticmethod
-    def _split_path_activity_targets(raw_targets: str, *, prefix: str) -> list[str]:
-        delimiter = f", {prefix} "
-        if delimiter not in raw_targets:
-            return [raw_targets]
-        targets = [part.strip() for part in raw_targets.split(delimiter)]
-        if targets and all(targets):
-            return targets
-        return [raw_targets]
 
     @staticmethod
     def _format_permission_tool_title(tool_title: str) -> str:
@@ -1334,19 +1244,9 @@ def run_polling(config: BotConfig, bridge: TelegramBridge) -> int:
     return 0
 
 
-def make_config(
-    *,
-    token: str,
-    allowed_user_ids: list[int],
-    workspace: str,
-    allowed_usernames: list[str] | None = None,
-) -> BotConfig:
-    normalized_usernames = {
-        username.lstrip("@").strip().lower() for username in (allowed_usernames or []) if username.strip()
-    }
+def make_config(*, token: str, allowed_user_ids: list[int], workspace: str) -> BotConfig:
     return BotConfig(
         token=token,
         allowed_user_ids=set(allowed_user_ids),
-        allowed_usernames=normalized_usernames,
         default_workspace=Path(workspace).expanduser(),
     )

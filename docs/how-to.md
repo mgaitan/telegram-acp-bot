@@ -93,6 +93,7 @@ Clear current session:
 When you send a message while the agent is already processing a previous prompt, the bot:
 
 - Queues your message automatically.
+- Replies to that queued message with the busy notice.
 - Shows a temporary **Send now** inline button.
 
 ### Send now
