@@ -56,7 +56,7 @@ Attachment behavior:
 
 Tool activity behavior:
 - ACP tool updates are emitted as separate Telegram messages grouped by tool kind (`think`, `execute`, `read`, etc.).
-- Labels currently used in chat are: `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, and `🌐 Searching`.
+- Labels currently used in chat are: `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, and `🔎 Querying`.
 - Search activity blocks render compact details when available (`Query: "..."` and `URL: ...`) extracted from block title/text.
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
 - The final assistant answer is sent as a separate message after those activity blocks.

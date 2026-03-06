@@ -60,7 +60,7 @@ KIND_LABELS = {
     "think": "💡 Thinking",
     "execute": "⚙️ Running",
     "read": "📖 Reading",
-    "search": "🌐 Searching",
+    "search": "🔎 Querying",
     "edit": "✏️ Editing",
     "write": "✍️ Writing",
 }

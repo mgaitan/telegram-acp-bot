@@ -1478,7 +1478,7 @@ async def test_format_activity_block_read_prefers_file_uri_path():
 async def test_format_activity_block_search_uses_specific_label_not_tool_call():
     block = AgentActivityBlock(kind="search", title="Searching the Web", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
-    assert "*🌐 Searching*" in rendered
+    assert "*🔎 Querying*" in rendered
     assert "Tool call" not in rendered
     assert "\n\nSearching the Web" not in rendered
 
@@ -1509,7 +1509,7 @@ async def test_format_activity_block_search_omits_generic_body_text():
         text="Searching the Web",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    assert "*🌐 Searching*" in rendered
+    assert "*🔎 Querying*" in rendered
     assert "\n\nSearching the Web" not in rendered
 
 
