@@ -119,19 +119,78 @@ def _get_page(context: BrowserContext) -> Page:
 def _open_chat(page: Page, *, bot_username: str) -> None:
     page.goto(f"https://web.telegram.org/k/#@{bot_username}", wait_until="domcontentloaded")
     page.wait_for_timeout(1200)
+    if _composer_is_visible(page):
+        return
+
+    page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
+    page.wait_for_timeout(1000)
+    _open_chat_via_search(page, bot_username=bot_username)
+    _wait_for_composer(page, timeout_seconds=12.0)
 
 
 def _find_composer(page: Page) -> Locator:
     selectors = (
+        "div.composer_rich_textarea[contenteditable='true']",
         "div.input-message-input[contenteditable='true']",
         "div[contenteditable='true'][role='textbox']",
         "div[contenteditable='true'][data-placeholder*='Message']",
+        "div[contenteditable='true'][aria-label*='Message']",
     )
     for selector in selectors:
         locator = page.locator(selector).last
         if locator.count() and locator.is_visible():
             return locator
     raise RuntimeError(MISSING_COMPOSER_MESSAGE)
+
+
+def _composer_is_visible(page: Page) -> bool:
+    try:
+        _find_composer(page)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _wait_for_composer(page: Page, *, timeout_seconds: float) -> None:
+    deadline_ms = int(timeout_seconds * 1000)
+    slice_ms = 300
+    elapsed = 0
+    while elapsed < deadline_ms:
+        if _composer_is_visible(page):
+            return
+        page.wait_for_timeout(slice_ms)
+        elapsed += slice_ms
+    raise RuntimeError(MISSING_COMPOSER_MESSAGE)
+
+
+def _open_chat_via_search(page: Page, *, bot_username: str) -> None:
+    search_selectors = (
+        "input[placeholder*='Search']",
+        "input[placeholder*='Buscar']",
+        "input[type='text']",
+        "div[contenteditable='true'][aria-label*='Search']",
+        "div[contenteditable='true'][aria-label*='Buscar']",
+    )
+    query = f"@{bot_username}"
+    for selector in search_selectors:
+        search_box = page.locator(selector).first
+        if not search_box.count() or not search_box.is_visible():
+            continue
+        search_box.click()
+        search_box.fill(query)
+        page.wait_for_timeout(700)
+        break
+
+    result_patterns = (
+        re.compile(rf"@{re.escape(bot_username)}", re.IGNORECASE),
+        re.compile(rf"\b{re.escape(bot_username)}\b", re.IGNORECASE),
+    )
+    for pattern in result_patterns:
+        result = page.get_by_text(pattern).first
+        if result.count() and result.is_visible():
+            result.click()
+            page.wait_for_timeout(700)
+            return
 
 
 def _ensure_logged_in(page: Page) -> None:
