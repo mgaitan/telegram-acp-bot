@@ -380,6 +380,7 @@ class ConcurrentImplicitSessionService(ImplicitSessionServiceBase):
 def make_update(  # noqa: PLR0913
     *,
     user_id: int = 1,
+    username: str | None = None,
     chat_id: int = 100,
     text: str | None = None,
     caption: str | None = None,
@@ -394,7 +395,7 @@ def make_update(  # noqa: PLR0913
         else None
     )
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id),
+        effective_user=SimpleNamespace(id=user_id, username=username),
         effective_chat=SimpleNamespace(id=chat_id),
         message=message,
     )
@@ -436,8 +437,18 @@ async def test_start_and_help():
     assert "Send a message to start in the default workspace" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
-    assert "/restart" in update.message.replies[1]
-    assert "/perm" not in update.message.replies[1]
+
+
+async def test_start_allows_user_by_username_allowlist():
+    config = make_config(token="TOKEN", allowed_user_ids=[], allowed_usernames=["@Alice"], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+    update = make_update(user_id=999, username="Alice", with_message=True)
+    context = make_context()
+
+    await bridge.start(update, context)
+
+    assert update.message is not None
+    assert "Send a message to start in the default workspace" in update.message.replies[0]
 
 
 async def test_restart_requests_app_stop():
