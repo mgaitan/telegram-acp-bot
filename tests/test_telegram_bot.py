@@ -1435,6 +1435,11 @@ async def test_format_activity_block_read_normalizes_all_read_targets():
     assert ", Read bot.py" not in rendered
 
 
+async def test_split_path_activity_targets_keeps_original_on_empty_segments():
+    raw_targets = "README.md, Read "
+    assert TelegramBridge._split_path_activity_targets(raw_targets, prefix="Read") == [raw_targets]
+
+
 async def test_format_activity_block_preserves_thinking_inline_code():
     block = AgentActivityBlock(
         kind="think",
