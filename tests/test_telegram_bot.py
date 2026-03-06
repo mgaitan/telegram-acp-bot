@@ -1058,7 +1058,7 @@ async def test_on_text_plain_reply_when_response_has_no_entities():
 
 async def test_on_message_with_photo_attachment():
     bridge = make_bridge()
-    photo = [SimpleNamespace(file_id="p1")]
+    photo: list[object] = [SimpleNamespace(file_id="p1")]
     update = make_update(photo=photo)
     context = make_context()
     context.bot.files["p1"] = b"abc"

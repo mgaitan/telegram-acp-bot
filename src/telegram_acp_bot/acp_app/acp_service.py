@@ -73,6 +73,9 @@ logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
 MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
+PromptContentBlock = (
+    TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
+)
 
 
 class AcpConnectionFactory(Protocol):
@@ -596,9 +599,9 @@ class AcpAgentService:
                 live.active_prompt_auto_approve = True
                 live.next_prompt_auto_approve = False
             live.client.start_capture(live.acp_session_id)
-            prompt_blocks = [text_block(text)]
+            prompt_blocks: list[PromptContentBlock] = [text_block(text)]
             prompt_blocks.extend(
-                ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images
+                [ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images]
             )
             for file in files:
                 if file.text_content is not None:
