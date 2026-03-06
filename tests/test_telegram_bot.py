@@ -360,6 +360,7 @@ class ConcurrentImplicitSessionService(ImplicitSessionServiceBase):
 def make_update(  # noqa: PLR0913
     *,
     user_id: int = 1,
+    username: str | None = None,
     chat_id: int = 100,
     text: str | None = None,
     caption: str | None = None,
@@ -369,7 +370,7 @@ def make_update(  # noqa: PLR0913
 ):
     message = DummyMessage(text, caption=caption, photo=photo, document=document) if with_message else None
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id),
+        effective_user=SimpleNamespace(id=user_id, username=username),
         effective_chat=SimpleNamespace(id=chat_id),
         message=message,
     )
@@ -379,15 +380,26 @@ def make_context(*, args: list[str] | None = None, application: object | None = 
     return SimpleNamespace(args=args or [], bot=DummyBot(), application=application)
 
 
-def make_bridge(*, allowed_ids: set[int] | None = None) -> TelegramBridge:
-    config = make_config(token="TOKEN", allowed_user_ids=list(allowed_ids or set()), workspace=".")
+def make_bridge(*, allowed_ids: set[int] | None = None, allowed_usernames: set[str] | None = None) -> TelegramBridge:
+    config = make_config(
+        token="TOKEN",
+        allowed_user_ids=list(allowed_ids or set()),
+        allowed_usernames=list(allowed_usernames or set()),
+        workspace=".",
+    )
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
 async def test_make_config():
-    config = make_config(token="T", allowed_user_ids=[1, 2, 2], workspace="~/tmp")
+    config = make_config(
+        token="T",
+        allowed_user_ids=[1, 2, 2],
+        allowed_usernames=["Alice", "@BOB", " "],
+        workspace="~/tmp",
+    )
     assert config.token == "T"
     assert config.allowed_user_ids == {1, 2}
+    assert config.allowed_usernames == {"alice", "bob"}
     assert config.default_workspace.name == "tmp"
 
 
@@ -617,6 +629,29 @@ async def test_access_allowed_with_allowlist():
     assert update.message is not None
     assert len(update.message.replies) == 1
     assert "Send a message to start in the default workspace" in update.message.replies[0]
+
+
+async def test_access_allowed_with_username_allowlist():
+    bridge = make_bridge(allowed_usernames={"alice"})
+    update = make_update(user_id=999, username="@Alice")
+    context = make_context()
+
+    await bridge.start(update, context)
+
+    assert update.message is not None
+    assert len(update.message.replies) == 1
+    assert "Send a message to start in the default workspace" in update.message.replies[0]
+
+
+async def test_access_denied_with_non_matching_username_allowlist():
+    bridge = make_bridge(allowed_usernames={"alice"})
+    update = make_update(user_id=999, username="bob")
+    context = make_context()
+
+    await bridge.start(update, context)
+
+    assert update.message is not None
+    assert update.message.replies == ["Access denied for this bot."]
 
 
 async def test_denied_paths_for_other_handlers():

@@ -8,6 +8,15 @@ For ready-to-use command examples per backend, see {doc}`agents`.
 TELEGRAM_BOT_TOKEN
   Telegram bot token (from BotFather). Required unless passed as `--telegram-token`.
 
+TELEGRAM_ALLOWED_USER_IDS
+  Comma-separated allowlist of Telegram numeric user IDs.
+  Example: `123456,987654`.
+
+TELEGRAM_ALLOWED_USERNAMES
+  Comma-separated allowlist of Telegram usernames.
+  Usernames are normalized to lowercase and can include or omit `@`.
+  Example: `alice,@bob`.
+
 ACP_AGENT_COMMAND
   Command line used to launch the ACP agent process.
   Examples: `npx @zed-industries/codex-acp`, `uv run examples/echo_agent.py`.
@@ -47,6 +56,8 @@ ACP_LOG_LEVEL
 
 ```ini
 TELEGRAM_BOT_TOKEN=123456:abc
+TELEGRAM_ALLOWED_USER_IDS=123456789
+# TELEGRAM_ALLOWED_USERNAMES=alice,@bob
 ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
 ACP_RESTART_COMMAND="uv run acp-bot --telegram-token 123456:abc --agent-command \"npx @zed-industries/codex-acp\""
 ACP_PERMISSION_MODE=ask

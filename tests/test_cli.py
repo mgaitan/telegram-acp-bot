@@ -21,6 +21,9 @@ def isolate_token_sources(monkeypatch: pytest.MonkeyPatch, mocker):
     """Prevent tests from loading real token values from environment or .env files."""
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERNAMES", raising=False)
+    # Keep a default allowlist to satisfy secure-by-default startup validation.
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1")
     return mocker.patch("telegram_acp_bot.load_dotenv")
 
 
@@ -42,6 +45,58 @@ def test_main_requires_agent_command():
     """Running the bot without ACP agent command should fail fast."""
     with pytest.raises(SystemExit):
         main(["--telegram-token", "TOKEN"])
+
+
+def test_main_requires_allowlist(mocker, monkeypatch):
+    """Running the bot without explicit allowlist should fail fast."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERNAMES", raising=False)
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN", "--agent-command", "agent"])
+
+
+def test_main_accepts_allowed_usernames_from_env(mocker, monkeypatch):
+    """Username allowlist from env should satisfy startup requirements."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERNAMES", "Alice, @Bob")
+
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
+    mock_run_polling.assert_called_once()
+
+
+def test_main_normalizes_allowed_username_cli(mocker, monkeypatch):
+    """CLI usernames should be normalized (lowercase, no @)."""
+    mocker.patch("telegram_acp_bot.AcpAgentService")
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--allowed-username",
+                "@Alice",
+            ]
+        )
+        == 0
+    )
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.allowed_usernames == {"alice"}
+
+
+def test_main_rejects_invalid_allowed_user_ids_env(mocker, monkeypatch):
+    """Invalid TELEGRAM_ALLOWED_USER_IDS should fail with parser error."""
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "1,abc")
+
+    with pytest.raises(SystemExit):
+        main(["--telegram-token", "TOKEN", "--agent-command", "agent"])
 
 
 def test_main_runs_bot(mocker):

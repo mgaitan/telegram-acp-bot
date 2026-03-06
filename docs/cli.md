@@ -22,7 +22,12 @@ The bot entrypoint is `acp-bot`.
 
 - `--allowed-user-id`
   Repeatable allowlist of Telegram user IDs.
-  If omitted, the bot accepts messages from any user.
+  At least one allowlist entry is required across IDs/usernames.
+
+- `--allowed-username`
+  Repeatable allowlist of Telegram usernames.
+  `@` prefix is optional; values are normalized to lowercase.
+  At least one allowlist entry is required across IDs/usernames.
 
 - `--workspace`
   Default workspace used by `/new` when no workspace path is provided.
@@ -51,5 +56,8 @@ The bot entrypoint is `acp-bot`.
 - `/restart` behavior:
   - If {term}`ACP_RESTART_COMMAND` (or `--restart-command`) is set, that command is executed.
   - Otherwise, the bot re-execs itself using `sys.executable + sys.argv`.
+- Access control behavior:
+  - Configure at least one allowlist entry via `--allowed-user-id`, `--allowed-username`,
+    {term}`TELEGRAM_ALLOWED_USER_IDS`, or {term}`TELEGRAM_ALLOWED_USERNAMES`.
 - MCP behavior:
   - `acp-bot` always advertises an internal MCP stdio server (`telegram-channel`) to the ACP agent.
