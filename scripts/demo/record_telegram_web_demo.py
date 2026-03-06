@@ -130,11 +130,12 @@ def _open_chat(page: Page, *, bot_username: str) -> None:
 
 def _find_composer(page: Page) -> Locator:
     selectors = (
+        "div.input-message-container div[contenteditable='true']",
         "div.composer_rich_textarea[contenteditable='true']",
+        "footer div[contenteditable='true']",
         "div.input-message-input[contenteditable='true']",
-        "div[contenteditable='true'][role='textbox']",
-        "div[contenteditable='true'][data-placeholder*='Message']",
-        "div[contenteditable='true'][aria-label*='Message']",
+        "div.input-message-container [aria-label*='Message'][contenteditable='true']",
+        "div.input-message-container [data-placeholder*='Message'][contenteditable='true']",
     )
     for selector in selectors:
         locator = page.locator(selector).last
