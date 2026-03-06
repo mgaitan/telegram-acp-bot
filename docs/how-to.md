@@ -88,7 +88,21 @@ Clear current session:
 /clear
 ```
 
-## 6. Restart bot process (dev workflow)
+## 6. Busy-state handling
+
+When you send a message while the agent is already processing a previous prompt, the bot:
+
+- Queues your message automatically.
+- Replies to that queued message with the busy notice.
+- Shows a temporary **Send now** inline button.
+
+### Send now
+
+Pressing **Send now** immediately cancels the current in-flight operation and processes your queued message.
+
+If the current task finishes naturally before you press the button, your queued message runs automatically and the button is removed (pressing it after that shows "Already sent." with no side effects).
+
+## 7. Restart bot process (dev workflow)
 
 ```text
 /restart
