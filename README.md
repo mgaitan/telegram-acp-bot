@@ -28,7 +28,7 @@ uvx telegram-acp-bot --help
 Run the latest development version from git:
 
 ```bash
-uvx --from git+https://github.com/mgaitan/telegram-acp-bot telegram-acp-bot --help
+uvx git+https://github.com/mgaitan/telegram-acp-bot --help
 ```
 
 Run the bot with a real ACP agent:
