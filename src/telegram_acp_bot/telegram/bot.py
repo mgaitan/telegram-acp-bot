@@ -8,6 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from time import monotonic
 from typing import Protocol, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -54,6 +55,7 @@ MAX_RESTART_ARGS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
 TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
+PERMISSION_MESSAGE_CACHE_TTL_SECONDS = 600
 logger = logging.getLogger(__name__)
 KIND_LABELS = {
     "think": "💡 Thinking",
@@ -108,6 +110,12 @@ class _PendingPrompt:
     update: Update
     token: str
     notify_msg_id: int | None = field(default=None)
+
+
+@dataclass(slots=True, frozen=True)
+class _PermissionMessageCacheEntry:
+    text: str
+    created_monotonic: float
 
 
 class ChatRequiredError(ValueError):
@@ -184,7 +192,7 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
         self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
-        self._permission_message_text_by_request: dict[tuple[int, str], str] = {}
+        self._permission_message_text_by_request: dict[tuple[int, str], _PermissionMessageCacheEntry] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -397,9 +405,13 @@ class TelegramBridge:
         if self._app is None:
             return
 
+        self._purge_stale_permission_messages()
         keyboard = self._permission_keyboard(request)
         message = TelegramBridge._format_permission_request_text(request.tool_title)
-        self._permission_message_text_by_request[(request.chat_id, request.request_id)] = message
+        self._permission_message_text_by_request[(request.chat_id, request.request_id)] = _PermissionMessageCacheEntry(
+            text=message,
+            created_monotonic=monotonic(),
+        )
         await TelegramBridge._send_markdown_to_chat(
             bot=self._app.bot,
             chat_id=request.chat_id,
@@ -437,6 +449,7 @@ class TelegramBridge:
                 await query.answer("Invalid action.")
                 return
 
+            self._purge_stale_permission_messages()
             chat_id = self._chat_id_from_update_or_query(update=update, query=query)
             if chat_id is None:
                 await query.answer("Missing chat.")
@@ -794,15 +807,33 @@ class TelegramBridge:
         query: CallbackQuery,
         decision_label: str,
     ) -> None:
-        base_text = self._permission_message_text_by_request.pop((chat_id, request_id), None)
+        cache_entry = self._permission_message_text_by_request.pop((chat_id, request_id), None)
+        base_text = cache_entry.text if cache_entry is not None else None
         if base_text is None:
             query_message = getattr(query, "message", None)
             original = getattr(query_message, "text", None) if query_message is not None else None
             base_text = original or "Permission request"
+        candidate = f"{base_text}\n\nDecision: {decision_label}"
+        rendered_candidate, _ = convert(candidate)
+        if TelegramBridge._utf16_length(rendered_candidate) > TELEGRAM_MAX_UTF16_MESSAGE_LENGTH:
+            query_message = getattr(query, "message", None)
+            visible_text = getattr(query_message, "text", None) if query_message is not None else None
+            fallback_base = visible_text or "Permission request"
+            candidate = f"{fallback_base}\n\nDecision: {decision_label}"
         await TelegramBridge._edit_markdown_callback_message(
             query=query,
-            text=f"{base_text}\n\nDecision: {decision_label}",
+            text=candidate,
         )
+
+    def _purge_stale_permission_messages(self) -> None:
+        now = monotonic()
+        stale_keys = [
+            key
+            for key, entry in self._permission_message_text_by_request.items()
+            if now - entry.created_monotonic > PERMISSION_MESSAGE_CACHE_TTL_SECONDS
+        ]
+        for key in stale_keys:
+            self._permission_message_text_by_request.pop(key, None)
 
     async def _clear_busy_button(self, pending: _PendingPrompt | None) -> None:
         """Remove the *Send now* button when the queued prompt is about to be processed."""
@@ -1175,6 +1206,10 @@ class TelegramBridge:
 
         fence = "`" * max(3, max_backtick_run + 1)
         return f"{fence}\n{text}\n{fence}"
+
+    @staticmethod
+    def _utf16_length(text: str) -> int:
+        return len(text.encode("utf-16-le")) // 2
 
     @staticmethod
     async def _reply_markdown_message(message: Message, *, text: str) -> None:
