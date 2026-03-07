@@ -51,6 +51,7 @@ class DemoConfig(argparse.Namespace):
     reply_timeout: float
     manual_open_chat: bool
     open_first_chat: bool
+    reset_visual_chat: bool
 
 
 def parse_args() -> DemoConfig:
@@ -93,6 +94,11 @@ def parse_args() -> DemoConfig:
         default=True,
         help="Open first chat in sidebar instead of resolving bot username (default: true).",
     )
+    parser.add_argument(
+        "--reset-visual-chat",
+        action="store_true",
+        help="Best-effort UI reset: try to delete/clear current chat before recording.",
+    )
     return parser.parse_args(namespace=DemoConfig())
 
 
@@ -118,6 +124,65 @@ def _open_first_chat(page: Page) -> None:
             candidate.click()
             page.wait_for_timeout(800)
             return
+
+
+def _click_first_visible(page: Page, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    for pattern in patterns:
+        for locator in (
+            page.get_by_role("button", name=pattern).first,
+            page.get_by_role("menuitem", name=pattern).first,
+            page.get_by_text(pattern).first,
+        ):
+            if locator.count() and locator.is_visible():
+                locator.click()
+                page.wait_for_timeout(500)
+                return True
+    return False
+
+
+def _reset_visual_chat(page: Page) -> None:
+    menu_selectors = (
+        "button.btn-menu-toggle",
+        "button[aria-label*='More']",
+        "button[aria-label*='Más']",
+        "button[aria-label*='Menu']",
+    )
+    opened = False
+    for selector in menu_selectors:
+        menu_btn = page.locator(selector).first
+        if menu_btn.count() and menu_btn.is_visible():
+            menu_btn.click()
+            page.wait_for_timeout(400)
+            opened = True
+            break
+    if not opened:
+        print("Warning: could not open chat menu for visual reset.")
+        return
+
+    delete_patterns = (
+        re.compile(r"delete chat", re.IGNORECASE),
+        re.compile(r"clear history", re.IGNORECASE),
+        re.compile(r"borrar chat", re.IGNORECASE),
+        re.compile(r"eliminar chat", re.IGNORECASE),
+        re.compile(r"borrar historial", re.IGNORECASE),
+    )
+    if not _click_first_visible(page, delete_patterns):
+        print("Warning: could not find delete/clear action in chat menu.")
+        page.keyboard.press("Escape")
+        return
+
+    confirm_patterns = (
+        re.compile(r"delete", re.IGNORECASE),
+        re.compile(r"clear", re.IGNORECASE),
+        re.compile(r"borrar", re.IGNORECASE),
+        re.compile(r"eliminar", re.IGNORECASE),
+        re.compile(r"ok", re.IGNORECASE),
+    )
+    if not _click_first_visible(page, confirm_patterns):
+        print("Warning: could not confirm visual reset action.")
+        page.keyboard.press("Escape")
+        return
+    page.wait_for_timeout(1000)
 
 
 def _launch_context(playwright: Playwright, config: DemoConfig) -> BrowserContext:
@@ -365,6 +430,9 @@ def run() -> int:
             return 0
 
         _ensure_logged_in(page)
+        if config.reset_visual_chat:
+            print("Attempting visual chat reset...")
+            _reset_visual_chat(page)
         if config.manual_open_chat:
             page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
             print("Open the bot chat manually in the browser, then press Enter here.")
