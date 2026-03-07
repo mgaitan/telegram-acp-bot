@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from time import sleep
 
@@ -307,10 +308,21 @@ def _latest_video_path(video_dir: Path) -> Path | None:
     return None
 
 
+def _prepare_video_dir(config: DemoConfig) -> None:
+    if config.mode != "record":
+        return
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    config.video_dir = config.video_dir / run_id
+    config.video_dir.mkdir(parents=True, exist_ok=True)
+
+
 def run() -> int:
     load_dotenv(override=False)
     config = parse_args()
     bot_username = _resolve_bot_username()
+    _prepare_video_dir(config)
+    if config.mode == "record":
+        print(f"Recording output directory: {config.video_dir}")
 
     with sync_playwright() as playwright:
         context = _launch_context(playwright, config)
