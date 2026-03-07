@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 from telegram import InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application
 
@@ -159,6 +160,7 @@ class DummyCallbackQuery:
         self.reply_markup_cleared = False
         self.edited_text: str | None = None
         self.edited_entities: list[object] | None = None
+        self.edited_parse_mode: object | None = None
 
     async def answer(self, text: str) -> None:
         self.answers.append(text)
@@ -170,6 +172,7 @@ class DummyCallbackQuery:
         self.edited_text = text
         entities = kwargs.get("entities")
         self.edited_entities = cast(list[object] | None, entities)
+        self.edited_parse_mode = kwargs.get("parse_mode")
 
 
 class LiveActivityService:
@@ -1762,8 +1765,11 @@ async def test_on_permission_callback_preserves_code_block_entities():
     assert callback.answers[-1] == "Approved this time."
     assert callback.edited_text is not None
     assert "Decision: Approved this time." in callback.edited_text
-    assert callback.edited_entities is not None
-    assert any(getattr(entity, "type", None) == "pre" for entity in callback.edited_entities)
+    has_pre_entities = callback.edited_entities is not None and any(
+        getattr(entity, "type", None) == "pre" for entity in callback.edited_entities
+    )
+    used_html_pre = callback.edited_parse_mode == ParseMode.HTML and "<pre>" in callback.edited_text
+    assert has_pre_entities or used_html_pre
 
 
 async def test_on_permission_callback_falls_back_to_visible_text_when_cached_message_is_too_long():
@@ -1803,8 +1809,11 @@ async def test_on_permission_callback_falls_back_to_visible_text_when_cached_mes
     assert callback.edited_text is not None
     assert "Permission required" in callback.edited_text
     assert callback.edited_text.endswith("Decision: Approved this time.")
-    assert callback.edited_entities is not None
-    assert any(getattr(entity, "type", None) == "pre" for entity in callback.edited_entities)
+    has_pre_entities = callback.edited_entities is not None and any(
+        getattr(entity, "type", None) == "pre" for entity in callback.edited_entities
+    )
+    used_html_pre = callback.edited_parse_mode == ParseMode.HTML and "<pre>" in callback.edited_text
+    assert has_pre_entities or used_html_pre
 
 
 async def test_on_permission_request_purges_stale_cached_permission_messages():

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -1335,6 +1337,8 @@ class TelegramBridge:
 
     @staticmethod
     async def _edit_markdown_callback_message(*, query: CallbackQuery, text: str) -> None:
+        if await TelegramBridge._try_edit_permission_html(query=query, text=text):
+            return
         try:
             rendered_text, rendered_entities = convert(text)
             chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
@@ -1352,6 +1356,33 @@ class TelegramBridge:
                 await query.edit_message_text(text=chunk_text)
         except (RuntimeError, ValueError, TypeError):
             await query.edit_message_text(text=text)
+
+    @staticmethod
+    def _extract_fenced_command(text: str) -> str | None:
+        match = re.search(r"```(?:bash)?\n(?P<command>[\s\S]*?)\n```", text)
+        if match is None:
+            return None
+        command = match.group("command").strip()
+        return command or None
+
+    @staticmethod
+    async def _try_edit_permission_html(*, query: CallbackQuery, text: str) -> bool:
+        if "Permission required" not in text:
+            return False
+        command = TelegramBridge._extract_fenced_command(text)
+        decision = ""
+        if "\n\nDecision:" in text:
+            decision = text.split("\n\nDecision:", maxsplit=1)[1].strip()
+        html_parts = ["⚠️ <b>Permission required</b>"]
+        if command:
+            html_parts.append(f"<pre>{html.escape(command)}</pre>")
+        if decision:
+            html_parts.append(f"Decision: {html.escape(decision)}")
+        try:
+            await query.edit_message_text(text="\n\n".join(html_parts), parse_mode=ParseMode.HTML)
+        except TelegramError:
+            return False
+        return True
 
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
