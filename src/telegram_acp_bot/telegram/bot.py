@@ -59,10 +59,12 @@ KIND_LABELS = {
     "think": "💡 Thinking",
     "execute": "⚙️ Running",
     "read": "📖 Reading",
-    "search": "🔎 Searching",
     "edit": "✏️ Editing",
     "write": "✍️ Writing",
 }
+SEARCH_LABEL_WEB = "🌐 Searching web"
+SEARCH_LABEL_LOCAL = "🔎 Querying project"
+SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 
 
 @dataclass(slots=True, frozen=True)
@@ -1019,7 +1021,7 @@ class TelegramBridge:
 
     @staticmethod
     def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
-        label = KIND_LABELS.get(block.kind, "⚙️ Tool call")
+        label = TelegramBridge._activity_label(block)
         text_parts = [f"*{label}*"]
         normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
         normalized_text = TelegramBridge._normalize_activity_text(block, workspace=workspace)
@@ -1032,6 +1034,37 @@ class TelegramBridge:
         if block.status == "failed":
             text_parts.append("_Failed_")
         return "\n\n".join(text_parts)
+
+    @staticmethod
+    def _activity_label(block: AgentActivityBlock) -> str:
+        if block.kind != "search":
+            return KIND_LABELS.get(block.kind, "⚙️ Tool call")
+        source = TelegramBridge._search_source(block)
+        if source == "web":
+            return SEARCH_LABEL_WEB
+        if source == "local":
+            return SEARCH_LABEL_LOCAL
+        return SEARCH_LABEL_NEUTRAL
+
+    @staticmethod
+    def _search_source(block: AgentActivityBlock) -> str | None:
+        content = f"{block.title}\n{block.text}".lower()
+        if any(token in content for token in ("http://", "https://", "url:", "web search", "internet")):
+            return "web"
+        local_markers = (
+            "file://",
+            "workspace",
+            "repository",
+            "repo",
+            "project",
+            "ripgrep",
+            "rg ",
+            "grep ",
+            "glob ",
+        )
+        if any(token in content for token in local_markers):
+            return "local"
+        return None
 
     @staticmethod
     def _normalize_activity_title(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
