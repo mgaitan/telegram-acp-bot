@@ -1801,8 +1801,10 @@ async def test_on_permission_callback_falls_back_to_visible_text_when_cached_mes
 
     await bridge.on_permission_callback(update, make_context())
     assert callback.edited_text is not None
-    assert callback.edited_text.startswith("Permission required")
+    assert "Permission required" in callback.edited_text
     assert callback.edited_text.endswith("Decision: Approved this time.")
+    assert callback.edited_entities is not None
+    assert any(getattr(entity, "type", None) == "pre" for entity in callback.edited_entities)
 
 
 async def test_on_permission_request_purges_stale_cached_permission_messages():

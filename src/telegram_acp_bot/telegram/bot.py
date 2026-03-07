@@ -813,17 +813,43 @@ class TelegramBridge:
             query_message = getattr(query, "message", None)
             original = getattr(query_message, "text", None) if query_message is not None else None
             base_text = original or "Permission request"
+        base_text = TelegramBridge._normalize_permission_message_base(base_text)
         candidate = f"{base_text}\n\nDecision: {decision_label}"
         rendered_candidate, _ = convert(candidate)
         if TelegramBridge._utf16_length(rendered_candidate) > TELEGRAM_MAX_UTF16_MESSAGE_LENGTH:
             query_message = getattr(query, "message", None)
             visible_text = getattr(query_message, "text", None) if query_message is not None else None
             fallback_base = visible_text or "Permission request"
-            candidate = f"{fallback_base}\n\nDecision: {decision_label}"
+            normalized_fallback = TelegramBridge._normalize_permission_message_base(fallback_base)
+            candidate = f"{normalized_fallback}\n\nDecision: {decision_label}"
         await TelegramBridge._edit_markdown_callback_message(
             query=query,
             text=candidate,
         )
+
+    @staticmethod
+    def _normalize_permission_message_base(base_text: str) -> str:
+        markdown_header = "*⚠️ Permission required*"
+        headers = (markdown_header, "⚠️ Permission required", "Permission required")
+        text = base_text.strip()
+        normalized: str | None = None
+        for header in headers:
+            if not text.startswith(header):
+                continue
+            remainder = text[len(header) :].strip()
+            if not remainder:
+                normalized = markdown_header
+                break
+            if remainder.startswith("```"):
+                normalized = f"{markdown_header}\n\n{remainder}"
+                break
+            if TelegramBridge._looks_like_shell_command(remainder):
+                fenced = TelegramBridge._format_fenced_code(remainder)
+                normalized = f"{markdown_header}\n\n{fenced}"
+                break
+            normalized = f"{markdown_header}\n\n{remainder}"
+            break
+        return normalized or text
 
     def _purge_stale_permission_messages(self) -> None:
         now = monotonic()
