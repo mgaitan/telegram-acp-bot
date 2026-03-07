@@ -541,7 +541,9 @@ class TelegramBridge:
             pending.notify_msg_id = None
             await query.answer("Cancel failed.")
             return
-        await query.answer("Sending now…")
+        await query.answer("✅ Sent now.")
+        with suppress(TelegramError):
+            await query.edit_message_text("✅ Sent now.")
         with suppress(TelegramError):
             await query.edit_message_reply_markup(reply_markup=None)
         pending.notify_msg_id = None
@@ -657,9 +659,17 @@ class TelegramBridge:
             workspace = self._activity_workspace(chat_id=chat_id)
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
-        if reply.text.strip():
-            await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
+        cleaned_text = self._sanitize_agent_reply_text(reply.text)
+        if cleaned_text.strip():
+            await self._reply_agent(update, cleaned_text)
+
+    @staticmethod
+    def _sanitize_agent_reply_text(text: str) -> str:
+        cleaned = text
+        for token in ("<image>", "<resource>", "<audio>"):
+            cleaned = cleaned.replace(token, "")
+        return cleaned.strip()
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace

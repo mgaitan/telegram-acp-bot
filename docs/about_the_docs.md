@@ -101,13 +101,20 @@ Reuse your local `.env`:
 uv run playwright install chromium
 ```
 
-### 3. Optional: run deterministic bot backend (scripted fake agent)
+### 3. Optional: run deterministic bot backend (fake ACP agent)
 
-Use the helper script that runs `TelegramBridge` with a scripted fake agent service:
+Use the helper script that runs `TelegramBridge` with `AcpAgentService` against a fake ACP agent process:
 
 ```bash
 uv run python scripts/demo/run_demo_bot.py
 ```
+
+This helper is deterministic by default and always uses `scripts/demo/fake_acp_agent.py` unless you override
+`--agent-command` explicitly.
+
+Both the fake agent and recorder consume the same declarative story file:
+
+- `scripts/demo/demo_story.json`
 
 ### 4. Login once via QR and persist session
 
@@ -120,10 +127,16 @@ This stores Telegram Web session data under `.cache/telegram-web-profile`.
 ### 5. Record scripted interaction (vertical format)
 
 ```bash
-uv run python scripts/demo/record_telegram_web_demo.py --mode record
+uv run python scripts/demo/telegram_web_demo.py --mode record
 ```
 
-The recorder uses an iPhone-like viewport (`390x780`) and records video at `780x1560` for better visual quality.
+The recorder uses an iPhone-like viewport (`390x780`) and records video at the same size (`390x780`).
 It stores `.webm` files under `artifacts/demo-videos`.
-The dialogue is hardcoded in English to exercise key UX moments (`/new`, busy queue + `Send now`, natural image request, PDF attachment request, `/resume`).
+The dialogue timing and payloads come from `scripts/demo/demo_story.json` (including the synthetic image/PDF assets).
 The script declares its own runtime dependencies via PEP 723 metadata.
+
+To pass recorder-specific flags through the wrapper, append them after `--`:
+
+```bash
+uv run python scripts/demo/telegram_web_demo.py --mode record -- --device-scale-factor 1.0
+```

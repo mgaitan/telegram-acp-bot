@@ -185,40 +185,46 @@ class ScriptedDemoAgentService:
                     "think",
                     "",
                     "Checking unresolved comments, required reviews, and status checks before merging.",
+                    (3.8, 5.4),
                 ),
                 (
-                    "search",
+                    "execute",
                     "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
                     "No blocking review comments found. Required checks look healthy.",
+                    (2.2, 3.6),
                 ),
                 (
                     "execute",
                     "Run gh pr merge 92 --merge --delete-branch, Run git checkout main, Run git pull --ff-only",
                     "",
+                    (2.6, 4.1),
                 ),
                 (
                     "edit",
                     "Edit pyproject.toml",
                     "Bumped patch version and aligned CLI/docs notes for the release.",
+                    (1.8, 3.0),
                 ),
                 (
                     "execute",
                     "Run uv run pytest tests/test_acp_service.py",
                     "Test suite for ACP service passed.",
+                    (1.7, 2.9),
                 ),
                 (
                     "execute",
                     "Run gh release create v0.1.2 --target main --generate-notes",
                     "Draft release created with auto-generated notes.",
+                    (1.6, 2.8),
                 ),
             )
-            for kind, title, text_body in steps:
+            for kind, title, text_body, delay_range in steps:
                 canceled = await self._emit(
                     chat_id,
                     kind,
                     title,
                     text=text_body,
-                    delay=uniform(1.1, 3.1) * DEMO_DELAY_FACTOR,
+                    delay=uniform(*delay_range) * DEMO_DELAY_FACTOR,
                 )
                 if canceled:
                     return AgentReply(text="Canceled current workflow. Ready to process queued request.")

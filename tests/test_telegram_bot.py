@@ -1539,6 +1539,11 @@ async def test_format_permission_tool_title_non_run_keeps_title():
     assert TelegramBridge._format_permission_tool_title("Read README.md") == "Read README.md"
 
 
+async def test_sanitize_agent_reply_text_removes_non_text_tokens():
+    cleaned = TelegramBridge._sanitize_agent_reply_text("<image><resource>Done.<audio>")
+    assert cleaned == "Done."
+
+
 async def test_format_activity_block_execute_multiple_run_segments_use_consecutive_fenced_blocks():
     block = AgentActivityBlock(
         kind="execute",
@@ -2564,7 +2569,8 @@ async def test_on_busy_callback_send_now_cancels_and_queued_runs():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert "Sending now" in callback.answers[-1]
+    assert callback.answers[-1] == "✅ Sent now."
+    assert callback.edited_text == "✅ Sent now."
     assert service.cancelled
 
     await task_one
@@ -2771,7 +2777,7 @@ async def test_on_busy_callback_edit_failure_is_handled_gracefully():
 
 
 async def test_on_busy_callback_send_now_edit_failure_is_handled():
-    """TelegramError on edit after 'Sending now' must not propagate."""
+    """TelegramError on edit after 'Sent now' must not propagate."""
     service = BlockingService()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
@@ -2790,6 +2796,11 @@ async def test_on_busy_callback_send_now_edit_failure_is_handled():
     token = cast(str, markup.inline_keyboard[0][0].callback_data).split("|", 1)[1]
 
     class FailingEditAfterAnswer(DummyCallbackQuery):
+        async def edit_message_text(self, text: str) -> None:
+            if self.answers:
+                raise MarkdownFailureError
+            await super().edit_message_text(text)
+
         async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
             if self.answers:
                 raise MarkdownFailureError
@@ -2807,7 +2818,7 @@ async def test_on_busy_callback_send_now_edit_failure_is_handled():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert "Sending now" in callback.answers[-1]
+    assert callback.answers[-1] == "✅ Sent now."
     service.release()
     await task_one
 
