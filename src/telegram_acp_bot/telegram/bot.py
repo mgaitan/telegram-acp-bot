@@ -1205,7 +1205,7 @@ class TelegramBridge:
             current_run = 0
 
         fence = "`" * max(3, max_backtick_run + 1)
-        return f"{fence}\n{text}\n{fence}"
+        return f"{fence}bash\n{text}\n{fence}"
 
     @staticmethod
     def _utf16_length(text: str) -> int:

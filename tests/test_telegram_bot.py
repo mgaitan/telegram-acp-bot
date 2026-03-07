@@ -1480,7 +1480,7 @@ async def test_format_activity_block_execute_wraps_command_as_fenced_code_block(
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
     assert "⚙️ Running" in rendered
-    assert "```\ngit diff -- README.md docs/index.md\n```" in rendered
+    assert "```bash\ngit diff -- README.md docs/index.md\n```" in rendered
 
 
 async def test_format_activity_block_execute_multiline_command_uses_fenced_code_block():
@@ -1490,7 +1490,7 @@ async def test_format_activity_block_execute_multiline_command_uses_fenced_code_
         status="in_progress",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    assert "```\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
+    assert "```bash\ngit diff -- README.md \\\n  docs/index.md\n```" in rendered
 
 
 async def test_format_activity_block_execute_long_command_uses_fenced_code_block():
@@ -1502,7 +1502,7 @@ async def test_format_activity_block_execute_long_command_uses_fenced_code_block
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"```\n{command}\n```" in rendered
+    assert f"```bash\n{command}\n```" in rendered
 
 
 async def test_format_activity_block_execute_command_with_backticks_uses_fenced_code_block():
@@ -1511,7 +1511,7 @@ async def test_format_activity_block_execute_command_with_backticks_uses_fenced_
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"```\n{command}\n```" in rendered
+    assert f"```bash\n{command}\n```" in rendered
     assert "\\_" not in rendered
 
 
@@ -1521,7 +1521,7 @@ async def test_format_activity_block_execute_command_with_triple_backticks_uses_
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"````\n{command}\n````" in rendered
+    assert f"````bash\n{command}\n````" in rendered
 
 
 async def test_format_activity_block_execute_preserves_escaped_backticks_and_underscores():
@@ -1530,7 +1530,7 @@ async def test_format_activity_block_execute_preserves_escaped_backticks_and_und
 
     rendered = TelegramBridge._format_activity_block(block)
 
-    assert f"```\n{command}\n```" in rendered
+    assert f"```bash\n{command}\n```" in rendered
     assert r"\`path\`" in rendered
     assert r"\\`path\\`" not in rendered
     assert "ACP_TELEGRAM_CHANNEL_ALLOW_PATH" in rendered
@@ -1551,7 +1551,9 @@ async def test_format_activity_block_execute_multiple_run_segments_use_consecuti
         status="in_progress",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    expected = "```\nwhich ffmpeg\n```\n```\nffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png\n```"
+    expected = (
+        "```bash\nwhich ffmpeg\n```\n```bash\nffmpeg -y -f x11grab -i :0.0 -frames:v 1 /tmp/screenshot-ffmpeg.png\n```"
+    )
     assert expected in rendered
 
 
@@ -1560,9 +1562,9 @@ async def test_split_execute_commands_keeps_original_on_empty_segments():
     assert TelegramBridge._split_execute_commands(command) == [command]
 
 
-async def test_format_fenced_code_without_language_uses_plain_fence():
+async def test_format_fenced_code_uses_bash_language_fence():
     rendered = TelegramBridge._format_fenced_code("echo ok")
-    assert rendered == "```\necho ok\n```"
+    assert rendered == "```bash\necho ok\n```"
 
 
 async def test_send_helpers_with_no_message():
