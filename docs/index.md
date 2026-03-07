@@ -81,6 +81,7 @@ Permission behavior:
 :caption: Documentation
 
 how-to.md
+explanation.md
 agents.md
 cli.md
 mcp.md
