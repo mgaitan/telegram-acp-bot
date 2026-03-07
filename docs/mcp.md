@@ -14,7 +14,7 @@ the bot advertises an MCP stdio server named `telegram-channel` when ACP session
 
 The internal MCP server is enabled automatically, but attachment behavior depends on specific environment variables.
 
-- For a full reference, see {doc}`configuration` and the section [](#mcp-channel-environment-variables).
+- For a full reference, see {doc}`configuration` and the section {ref}`mcp-channel-environment-variables`.
 - {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` enables trusted `path` inputs for `telegram_send_attachment`.
 - {term}`ACP_TELEGRAM_CHANNEL_STATE_FILE` and {term}`ACP_TELEGRAM_BOT_TOKEN` are typically injected by the bot runtime for the internal MCP server.
 
