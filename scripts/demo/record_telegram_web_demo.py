@@ -264,7 +264,10 @@ def _run_story(page: Page, *, timeout_seconds: float) -> None:
 
 def _latest_video_path(video_dir: Path) -> Path | None:
     candidates = sorted(video_dir.rglob("*.webm"), key=lambda item: item.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
+    for candidate in candidates:
+        if candidate.stat().st_size > 0:
+            return candidate
+    return None
 
 
 def run() -> int:
@@ -298,6 +301,11 @@ def run() -> int:
         _run_story(page, timeout_seconds=config.reply_timeout)
 
         sleep(1.0)
+        if page.video is not None:
+            try:
+                print(f"Current run video path: {page.video.path()}")
+            except PlaywrightTimeoutError:
+                print("Warning: could not resolve current run video path before closing context.")
         context.close()
 
     video = _latest_video_path(config.video_dir)
