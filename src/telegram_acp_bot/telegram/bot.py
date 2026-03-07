@@ -1337,14 +1337,19 @@ class TelegramBridge:
     async def _edit_markdown_callback_message(*, query: CallbackQuery, text: str) -> None:
         try:
             rendered_text, rendered_entities = convert(text)
-            if rendered_entities:
-                entities = [TelegramBridge._to_telegram_entity(entity) for entity in rendered_entities]
-                try:
-                    await query.edit_message_text(text=rendered_text, entities=entities)
-                except TelegramError:
-                    await query.edit_message_text(text=rendered_text)
-            else:
+            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+            if not chunks:
                 await query.edit_message_text(text=rendered_text)
+                return
+            chunk_text, chunk_entities = chunks[0]
+            if chunk_entities:
+                entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                try:
+                    await query.edit_message_text(text=chunk_text, entities=entities)
+                except TelegramError:
+                    await query.edit_message_text(text=chunk_text)
+            else:
+                await query.edit_message_text(text=chunk_text)
         except (RuntimeError, ValueError, TypeError):
             await query.edit_message_text(text=text)
 
