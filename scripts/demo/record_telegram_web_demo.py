@@ -48,6 +48,7 @@ class DemoConfig(argparse.Namespace):
     video_dir: Path
     headless: bool
     reply_timeout: float
+    manual_open_chat: bool
 
 
 def parse_args() -> DemoConfig:
@@ -78,6 +79,11 @@ def parse_args() -> DemoConfig:
         "--headless",
         action="store_true",
         help="Run browser headless. For demo recording this should usually stay disabled.",
+    )
+    parser.add_argument(
+        "--manual-open-chat",
+        action="store_true",
+        help="Wait for manual chat opening before running the scripted story.",
     )
     return parser.parse_args(namespace=DemoConfig())
 
@@ -134,6 +140,21 @@ def _find_composer(page: Page) -> Locator:
         if locator.count() and locator.is_visible():
             return locator
     raise RuntimeError(MISSING_COMPOSER_MESSAGE)
+
+
+def _debug_composer_candidates(page: Page) -> None:
+    selectors = (
+        "div.input-message-container div.input-message-input[contenteditable='true']",
+        "div.input-message-input[contenteditable='true']",
+        "div.input-message-container div[contenteditable='true'][dir='auto']",
+        "footer div.input-message-input[contenteditable='true']",
+    )
+    print("Composer selector debug:")
+    for selector in selectors:
+        locator = page.locator(selector)
+        count = locator.count()
+        visible = locator.first.is_visible() if count else False
+        print(f"  - {selector}: count={count} visible_first={visible}")
 
 
 def _composer_is_visible(page: Page) -> bool:
@@ -265,7 +286,14 @@ def run() -> int:
             return 0
 
         _ensure_logged_in(page)
-        _open_chat(page, bot_username=bot_username)
+        if config.manual_open_chat:
+            page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
+            print("Open the bot chat manually in the browser, then press Enter here.")
+            input("Press Enter to continue... ")
+            _debug_composer_candidates(page)
+            _wait_for_composer(page, timeout_seconds=30.0)
+        else:
+            _open_chat(page, bot_username=bot_username)
         _try_click_start(page)
         _run_story(page, timeout_seconds=config.reply_timeout)
 
