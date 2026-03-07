@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -1051,18 +1052,19 @@ class TelegramBridge:
         content = f"{block.title}\n{block.text}".lower()
         if any(token in content for token in ("http://", "https://", "url:", "web search", "internet")):
             return "web"
-        local_markers = (
-            "file://",
-            "workspace",
-            "repository",
-            "repo",
-            "project",
-            "ripgrep",
-            "rg ",
-            "grep ",
-            "glob ",
+        if "file://" in content:
+            return "local"
+        local_patterns = (
+            r"\bworkspace\b",
+            r"\brepository\b",
+            r"\brepo\b",
+            r"\bproject\b",
+            r"\bripgrep\b",
+            r"\brg\b",
+            r"\bgrep\b",
+            r"\bglob\b",
         )
-        if any(token in content for token in local_markers):
+        if any(re.search(pattern, content) for pattern in local_patterns):
             return "local"
         return None
 

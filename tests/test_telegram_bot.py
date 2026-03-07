@@ -1564,6 +1564,17 @@ async def test_format_activity_block_search_defaults_to_neutral_querying_label()
     assert "*🔎 Querying*" in rendered
 
 
+async def test_format_activity_block_search_report_word_is_not_misclassified_as_repo():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "annual report"',
+        status="completed",
+        text="",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying*" in rendered
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 
