@@ -42,10 +42,10 @@ PRIMARY_TASK_PROMPT = (
 QUEUE_PROMPT = (
     "Quick one: when you get a chance, take a webcam photo and send it to me, but keep the release work running."
 )
-IMAGE_PROMPT = "Can you send me the image now?"
 ATTACHMENT_PROMPT = "Also generate a short diagnostics report as a PDF and attach it here."
 HUMAN_TYPING_DELAY_MS = 40
 HUMAN_PAUSE_BETWEEN_MESSAGES_SECONDS = (1.1, 3.1)
+IMAGE_REPLY_PATTERN = re.compile(r"captured\\s+`?/tmp/webcam-small\\.jpg`?", re.IGNORECASE)
 
 
 class DemoConfig(argparse.Namespace):
@@ -303,6 +303,15 @@ def _wait_for_activity_labels(page: Page, *, timeout_seconds: float) -> None:
     print("Warning: activity labels were not detected in time.")
 
 
+def _wait_for_text(page: Page, pattern: re.Pattern[str], *, timeout_seconds: float) -> bool:
+    locator = page.get_by_text(pattern).last
+    try:
+        locator.wait_for(timeout=int(timeout_seconds * 1000))
+    except PlaywrightTimeoutError:
+        return False
+    return True
+
+
 def _click_send_now(page: Page, *, timeout_seconds: float) -> None:
     busy_notice = page.get_by_text(re.compile(r"Agent is busy", re.IGNORECASE))
     send_now_button = page.get_by_role("button", name=re.compile(r"send now", re.IGNORECASE)).first
@@ -334,9 +343,9 @@ def _run_story(page: Page, *, timeout_seconds: float) -> None:
     _click_send_now(page, timeout_seconds=timeout_seconds)
 
     _wait_for_activity_labels(page, timeout_seconds=timeout_seconds)
-
-    _send_message(page, IMAGE_PROMPT)
-    _human_pause()
+    image_seen = _wait_for_text(page, IMAGE_REPLY_PATTERN, timeout_seconds=timeout_seconds * 1.4)
+    if not image_seen:
+        print("Warning: image delivery confirmation not detected in time.")
 
     _send_message(page, ATTACHMENT_PROMPT)
     _human_pause()
