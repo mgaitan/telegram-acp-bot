@@ -1471,6 +1471,18 @@ async def test_format_activity_block_preserves_thinking_inline_code():
     assert "`docs/index.md`" in rendered
 
 
+async def test_format_activity_block_think_allows_basic_markdown_markers():
+    block = AgentActivityBlock(
+        kind="think",
+        title="",
+        status="completed",
+        text="Working on **#90** before final patch.",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "**#90**" in rendered
+    assert r"\*\*#90\*\*" not in rendered
+
+
 async def test_format_activity_block_execute_wraps_command_as_fenced_code_block():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
