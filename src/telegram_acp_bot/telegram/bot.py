@@ -1026,9 +1026,13 @@ class TelegramBridge:
         if normalized_title and normalized_text and normalized_title == normalized_text:
             normalized_title = ""
         if normalized_title:
-            text_parts.append(TelegramBridge._render_activity_part(normalized_title))
+            text_parts.append(
+                TelegramBridge._render_activity_part(normalized_title, allow_basic_markdown=block.kind == "think")
+            )
         if normalized_text:
-            text_parts.append(TelegramBridge._render_activity_part(normalized_text))
+            text_parts.append(
+                TelegramBridge._render_activity_part(normalized_text, allow_basic_markdown=block.kind == "think")
+            )
         if block.status == "failed":
             text_parts.append("_Failed_")
         return "\n\n".join(text_parts)
@@ -1057,7 +1061,7 @@ class TelegramBridge:
         return text
 
     @staticmethod
-    def _escape_markdown_preserving_code(text: str) -> str:
+    def _escape_markdown_preserving_code(text: str, *, allow_basic_markdown: bool = False) -> str:
         escaped: list[str] = []
         in_code = False
         for char in text:
@@ -1068,17 +1072,20 @@ class TelegramBridge:
             if in_code:
                 escaped.append(char)
                 continue
-            if char in {"\\", "_", "*", "["}:
+            if char in {"\\", "["}:
+                escaped.append(f"\\{char}")
+                continue
+            if not allow_basic_markdown and char in {"_", "*"}:
                 escaped.append(f"\\{char}")
                 continue
             escaped.append(char)
         return "".join(escaped)
 
     @staticmethod
-    def _render_activity_part(text: str) -> str:
+    def _render_activity_part(text: str, *, allow_basic_markdown: bool = False) -> str:
         if "```" in text:
             return text
-        return TelegramBridge._escape_markdown_preserving_code(text)
+        return TelegramBridge._escape_markdown_preserving_code(text, allow_basic_markdown=allow_basic_markdown)
 
     @staticmethod
     def _format_read_path(raw_path: str, *, workspace: Path | None) -> str:
