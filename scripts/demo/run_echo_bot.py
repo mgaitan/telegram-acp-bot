@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from scripted_demo_service import ScriptedDemoAgentService
 
-from telegram_acp_bot.acp_app.echo_service import EchoAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.telegram.bot import TelegramBridge, make_config, run_polling
 
@@ -34,7 +34,7 @@ def _normalize_usernames(values: list[str]) -> list[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="run-echo-bot",
-        description="Run telegram-acp-bot backed by EchoAgentService for demo recording.",
+        description="Run telegram-acp-bot backed by ScriptedDemoAgentService for demo recording.",
     )
     parser.add_argument(
         "--telegram-token",
@@ -87,7 +87,7 @@ def main() -> int:
         allowed_usernames=allowed_usernames,
         workspace=args.workspace,
     )
-    bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+    bridge = TelegramBridge(config=config, agent_service=ScriptedDemoAgentService(SessionRegistry()))
     return run_polling(config, bridge)
 
 

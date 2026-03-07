@@ -101,9 +101,9 @@ Reuse your local `.env`:
 uv run playwright install chromium
 ```
 
-### 3. Optional: run deterministic bot backend (echo)
+### 3. Optional: run deterministic bot backend (scripted fake agent)
 
-Use the helper script that runs `TelegramBridge` with `EchoAgentService`:
+Use the helper script that runs `TelegramBridge` with a scripted fake agent service:
 
 ```bash
 uv run python scripts/demo/run_echo_bot.py
