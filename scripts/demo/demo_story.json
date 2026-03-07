@@ -1,0 +1,174 @@
+{
+  "runtime": {
+    "typing_delay_ms": 40,
+    "pause_min_seconds": 1.4,
+    "pause_max_seconds": 3.8,
+    "final_pause_seconds": 3.2,
+    "image_reply_pattern": "captured\\\\s+`?/tmp/webcam-small\\\\.jpg`?"
+  },
+  "assets": {
+    "webcam_image": {
+      "kind": "image",
+      "path": "demo.png",
+      "mime_type": "image/png",
+      "name": "webcam-small.jpg"
+    },
+    "diagnostics_pdf": {
+      "kind": "file",
+      "path": "release-diagnostics.pdf",
+      "mime_type": "application/pdf",
+      "name": "release-diagnostics.pdf"
+    }
+  },
+  "user_steps": [
+    {
+      "id": "new",
+      "text": "/new"
+    },
+    {
+      "id": "primary",
+      "text": "Can you quickly check whether there are unresolved review comments? If all clear, merge the latest PR and ship a patch release.",
+      "wait_for_text": {
+        "pattern": "Session started:",
+        "timeout_seconds": 12,
+        "after_ms": 250
+      }
+    },
+    {
+      "id": "queue",
+      "text": "Quick one: when you get a chance, take a webcam photo and send it to me, but keep the release work running.",
+      "wait_for_text": {
+        "pattern": "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
+        "timeout_seconds": 20,
+        "after_ms": 350
+      },
+      "actions": [
+        {
+          "type": "click_send_now",
+          "tap_marker": true
+        }
+      ]
+    },
+    {
+      "id": "attachment",
+      "text": "Also generate a short diagnostics report as a PDF and attach it here.",
+      "wait_for_text": {
+        "pattern": "captured\\\\s+`?/tmp/webcam-small\\\\.jpg`?",
+        "timeout_seconds": 30,
+        "after_ms": 350
+      }
+    },
+    {
+      "id": "resume",
+      "text": "/resume",
+      "wait_for_text": {
+        "pattern": "Pick a session to resume:",
+        "timeout_seconds": 30,
+        "after_ms": 350
+      },
+      "actions": [
+        {
+          "type": "click_resume_choice",
+          "index": 1
+        }
+      ]
+    }
+  ],
+  "agent_routes": [
+    {
+      "id": "release_flow",
+      "match_any": ["merge", "release"],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Checking unresolved comments, required reviews, and status checks before merging.",
+          "delay_ms": 900
+        },
+        {
+          "kind": "execute",
+          "title": "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
+          "text": "No blocking review comments found. Required checks look healthy.",
+          "delay_ms": 2200
+        },
+        {
+          "kind": "execute",
+          "title": "Run gh pr merge 92 --merge --delete-branch, Run git checkout main, Run git pull --ff-only",
+          "text": "",
+          "delay_ms": 2800
+        },
+        {
+          "kind": "edit",
+          "title": "Edit pyproject.toml",
+          "text": "Bumped patch version and aligned CLI/docs notes for the release.",
+          "delay_ms": 1450
+        },
+        {
+          "kind": "execute",
+          "title": "Run uv run pytest tests/test_acp_service.py",
+          "text": "Test suite for ACP service passed.",
+          "delay_ms": 5200
+        },
+        {
+          "kind": "execute",
+          "title": "Run gh release create v0.1.2 --target main --generate-notes",
+          "text": "Draft release created with auto-generated notes.",
+          "delay_ms": 2600
+        }
+      ],
+      "final_text": "Looks good: no unresolved blockers. I merged the PR, synced `main`, ran the ACP service tests, and prepared the patch release notes."
+    },
+    {
+      "id": "webcam_flow",
+      "match_any": ["webcam", "photo", "image", "picture"],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "I can do that now. I will capture one frame from `/dev/video0` and send it right away.",
+          "delay_ms": 900
+        },
+        {
+          "kind": "execute",
+          "title": "Run ffmpeg -f video4linux2 -i /dev/video0 -frames:v 1 /tmp/webcam-small.jpg",
+          "text": "",
+          "delay_ms": 2300
+        },
+        {
+          "kind": "other",
+          "title": "Run telegram-channel/telegram_send_attachment",
+          "text": "Uploaded `/tmp/webcam-small.jpg` as a photo via the Telegram MCP channel.",
+          "delay_ms": 1500
+        }
+      ],
+      "final_text": "Done. You are cute :heart:. I will continue working on the release task now.",
+      "final_images": ["webcam_image"]
+    },
+    {
+      "id": "pdf_flow",
+      "match_any": ["attachment", "diagnostics", "report", "pdf"],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Generating a compact diagnostics report in PDF format and attaching it here.",
+          "delay_ms": 650
+        },
+        {
+          "kind": "execute",
+          "title": "Run python tools/collect_release_diagnostics.py --format pdf --output /tmp/release-diagnostics.pdf",
+          "text": "CI checks: green. Docs preview: green. Pending: final reviewer ack.",
+          "delay_ms": 1000
+        },
+        {
+          "kind": "other",
+          "title": "Run telegram-channel/telegram_send_attachment",
+          "text": "Attached `/tmp/release-diagnostics.pdf` to this conversation.",
+          "delay_ms": 820
+        }
+      ],
+      "final_text": "Diagnostics PDF is ready and attached.",
+      "final_files": ["diagnostics_pdf"]
+    }
+  ]
+}

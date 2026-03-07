@@ -82,3 +82,62 @@ Also you can build the documentation in `epub` with `make docs-epub`
   - On releases (PyPI publish + docs deploy).
   - Manual via `workflow_dispatch` (used for the initial docs build and any ad-hoc redeploy).
 - To trigger manually from your repo: `gh workflow run cd.yml --ref main` (requires `gh` CLI auth) or use the Actions UI.
+
+## Demo capture workflow (maintainers)
+
+For landing-page demo assets we keep a reproducible Telegram Web recording flow.
+
+### 1. Configure `.env`
+
+Reuse your local `.env`:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_ALLOWED_USER_IDS` (or `TELEGRAM_ALLOWED_USERNAMES`)
+- `TELEGRAM_DEMO_BOT_USERNAME` (or `TELEGRAM_BOT_USERNAME`)
+
+### 2. Install browser runtime (one-time)
+
+```bash
+uv run playwright install chromium
+```
+
+### 3. Optional: run scripted bot backend (fake ACP agent)
+
+Use the helper script that runs `TelegramBridge` with `AcpAgentService` against a fake ACP agent process:
+
+```bash
+uv run python scripts/demo/run_demo_bot.py
+```
+
+This helper uses scripted responses with slight randomized timing and always uses `scripts/demo/fake_acp_agent.py` unless you override
+`--agent-command` explicitly.
+
+Both the fake agent and recorder consume the same declarative story file:
+
+- `scripts/demo/demo_story.json`
+
+### 4. Login once via QR and persist session
+
+```bash
+uv run python scripts/demo/record_telegram_web_demo.py --mode login
+```
+
+This stores Telegram Web session data under `.cache/telegram-web-profile`.
+
+### 5. Record scripted interaction (vertical format)
+
+```bash
+uv run python scripts/demo/telegram_web_demo.py --mode record
+```
+
+The recorder uses an iPhone-like viewport (`390x780`) and records video at the same size (`390x780`).
+It stores `.webm` files under `artifacts/demo-videos`.
+The dialogue timing and payloads come from `scripts/demo/demo_story.json` (including the synthetic image/PDF assets,
+with `scripts/demo/demo.png` used as the demo image payload).
+The script declares its own runtime dependencies via PEP 723 metadata.
+
+To pass recorder-specific flags through the wrapper, append them after `--`:
+
+```bash
+uv run python scripts/demo/telegram_web_demo.py --mode record -- --device-scale-factor 1.0
+```

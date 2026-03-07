@@ -15,6 +15,7 @@
 /.pdm-build/
 /htmlcov/
 /site/
+artifacts/
 docs/_build/
 uv.lock
 
