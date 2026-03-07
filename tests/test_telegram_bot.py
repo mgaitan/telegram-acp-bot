@@ -1544,6 +1544,12 @@ async def test_format_permission_tool_title_non_run_keeps_title():
     assert TelegramBridge._format_permission_tool_title("Read README.md") == "Read README.md"
 
 
+async def test_format_permission_tool_title_non_run_shell_command_uses_fenced_code_block():
+    title = "uv run pytest tests/test_telegram_bot.py -k format_fenced_code --no-cov"
+    rendered = TelegramBridge._format_permission_tool_title(title)
+    assert rendered == f"```bash\n{title}\n```"
+
+
 async def test_format_activity_block_execute_multiple_run_segments_use_consecutive_fenced_blocks():
     block = AgentActivityBlock(
         kind="execute",

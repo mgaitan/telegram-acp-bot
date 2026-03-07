@@ -1174,6 +1174,8 @@ class TelegramBridge:
             return TelegramBridge._normalize_activity_title(
                 AgentActivityBlock(kind="execute", title=title, status="in_progress")
             )
+        if TelegramBridge._looks_like_shell_command(title):
+            return TelegramBridge._format_fenced_code(title)
         return title
 
     @staticmethod
@@ -1192,6 +1194,46 @@ class TelegramBridge:
         if commands and all(commands):
             return commands
         return [command]
+
+    @staticmethod
+    def _looks_like_shell_command(text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return False
+        lowered = stripped.lower()
+        if lowered.startswith(("read ", "edit ", "write ", "query:", "thinking")):
+            return False
+        first_token = stripped.split(maxsplit=1)[0].lower()
+        common_commands = {
+            "uv",
+            "git",
+            "gh",
+            "python",
+            "python3",
+            "pytest",
+            "bash",
+            "sh",
+            "npm",
+            "pnpm",
+            "yarn",
+            "make",
+            "curl",
+            "wget",
+            "docker",
+            "kubectl",
+            "ls",
+            "cat",
+            "cp",
+            "mv",
+            "rm",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+        }
+        if first_token in common_commands:
+            return True
+        return any(marker in stripped for marker in (" && ", " || ", " | ", "; ", " --", " -"))
 
     @staticmethod
     def _format_fenced_code(text: str) -> str:
