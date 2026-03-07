@@ -50,6 +50,7 @@ class DemoConfig(argparse.Namespace):
     headless: bool
     reply_timeout: float
     manual_open_chat: bool
+    open_first_chat: bool
 
 
 def parse_args() -> DemoConfig:
@@ -86,6 +87,12 @@ def parse_args() -> DemoConfig:
         action="store_true",
         help="Wait for manual chat opening before running the scripted story.",
     )
+    parser.add_argument(
+        "--open-first-chat",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Open first chat in sidebar instead of resolving bot username (default: true).",
+    )
     return parser.parse_args(namespace=DemoConfig())
 
 
@@ -94,6 +101,23 @@ def _resolve_bot_username() -> str:
     if value is None or not value.strip():
         raise SystemExit(MISSING_BOT_USERNAME_MESSAGE)
     return value.lstrip("@").strip()
+
+
+def _open_first_chat(page: Page) -> None:
+    page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
+    page.wait_for_timeout(1200)
+    selectors = (
+        "div.chatlist div.chatlist-chat",
+        "div.chatlist [data-peer-id]",
+        "ul.chatlist li",
+        "a[href*='/k/#']",
+    )
+    for selector in selectors:
+        candidate = page.locator(selector).first
+        if candidate.count() and candidate.is_visible():
+            candidate.click()
+            page.wait_for_timeout(800)
+            return
 
 
 def _launch_context(playwright: Playwright, config: DemoConfig) -> BrowserContext:
@@ -279,6 +303,9 @@ def _click_send_now(page: Page, *, timeout_seconds: float) -> None:
 
 
 def _run_story(page: Page, *, timeout_seconds: float) -> None:
+    _send_message(page, "/clear")
+    sleep(0.8)
+
     _send_message(page, "/new")
     sleep(1.0)
 
@@ -319,7 +346,7 @@ def _prepare_video_dir(config: DemoConfig) -> None:
 def run() -> int:
     load_dotenv(override=False)
     config = parse_args()
-    bot_username = _resolve_bot_username()
+    bot_username = _resolve_bot_username() if not config.open_first_chat else ""
     _prepare_video_dir(config)
     if config.mode == "record":
         print(f"Recording output directory: {config.video_dir}")
@@ -344,6 +371,9 @@ def run() -> int:
             input("Press Enter to continue... ")
             _debug_composer_candidates(page)
             _wait_for_composer(page, timeout_seconds=30.0)
+        elif config.open_first_chat:
+            _open_first_chat(page)
+            _wait_for_composer(page, timeout_seconds=15.0)
         else:
             _open_chat(page, bot_username=bot_username)
         _try_click_start(page)
