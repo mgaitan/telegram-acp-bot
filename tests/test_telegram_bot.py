@@ -156,6 +156,7 @@ class DummyCallbackQuery:
         self.answers: list[str] = []
         self.reply_markup_cleared = False
         self.edited_text: str | None = None
+        self.edited_entities: list[object] | None = None
 
     async def answer(self, text: str) -> None:
         self.answers.append(text)
@@ -163,8 +164,10 @@ class DummyCallbackQuery:
     async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
         self.reply_markup_cleared = reply_markup is None
 
-    async def edit_message_text(self, text: str) -> None:
+    async def edit_message_text(self, text: str, **kwargs: object) -> None:
         self.edited_text = text
+        entities = kwargs.get("entities")
+        self.edited_entities = cast(list[object] | None, entities)
 
 
 class LiveActivityService:
@@ -1702,6 +1705,57 @@ async def test_on_permission_callback_accepts_action():
     assert "Decision: Approved this time." in callback.edited_text
 
 
+async def test_on_permission_callback_preserves_code_block_entities():
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            assert chat_id == TEST_CHAT_ID
+            assert request_id == "req-code"
+            assert action == "once"
+            return True
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    dummy_bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=dummy_bot))
+
+    request = PermissionRequest(
+        chat_id=TEST_CHAT_ID,
+        request_id="req-code",
+        tool_title="Run git switch main \\\n  && git pull --ff-only",
+        tool_call_id="call-code",
+        available_actions=("always", "once", "deny"),
+    )
+    await bridge.on_permission_request(request)
+
+    callback = DummyCallbackQuery("perm|req-code|once")
+    callback.message = SimpleNamespace(
+        text="Permission required\n\ngit switch main \\\n  && git pull --ff-only",
+        chat=SimpleNamespace(id=TEST_CHAT_ID),
+    )
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    await bridge.on_permission_callback(update, make_context())
+
+    assert callback.answers[-1] == "Approved this time."
+    assert callback.edited_text is not None
+    assert "Decision: Approved this time." in callback.edited_text
+    assert callback.edited_entities is not None
+    assert any(getattr(entity, "type", None) == "pre" for entity in callback.edited_entities)
+
+
 async def test_on_permission_callback_invalid_cases():
     bridge = make_bridge()
     update_no_query = cast(
@@ -1810,8 +1864,8 @@ async def test_on_permission_callback_fallback_to_clear_markup_on_edit_error():
             return True
 
     class FailingEditCallbackQuery(DummyCallbackQuery):
-        async def edit_message_text(self, text: str) -> None:
-            del text
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
             raise MarkdownFailureError
 
     bridge = TelegramBridge(
@@ -2049,8 +2103,8 @@ async def test_on_resume_callback_success_and_failure_paths():
 
 async def test_on_resume_callback_fallback_to_clear_markup_on_edit_error():
     class FailingEditCallbackQuery(DummyCallbackQuery):
-        async def edit_message_text(self, text: str) -> None:
-            del text
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
             raise MarkdownFailureError
 
     service = ResumeService()

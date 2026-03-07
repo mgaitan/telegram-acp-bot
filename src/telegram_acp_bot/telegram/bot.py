@@ -63,6 +63,11 @@ KIND_LABELS = {
     "edit": "✏️ Editing",
     "write": "✍️ Writing",
 }
+PERMISSION_DECISION_LABELS = {
+    "once": "Approved this time.",
+    "always": "Approved for this session.",
+    "deny": "Denied.",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -179,6 +184,7 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
         self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
+        self._permission_message_text_by_request: dict[tuple[int, str], str] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -393,6 +399,7 @@ class TelegramBridge:
 
         keyboard = self._permission_keyboard(request)
         message = TelegramBridge._format_permission_request_text(request.tool_title)
+        self._permission_message_text_by_request[(request.chat_id, request.request_id)] = message
         await TelegramBridge._send_markdown_to_chat(
             bot=self._app.bot,
             chat_id=request.chat_id,
@@ -430,11 +437,7 @@ class TelegramBridge:
                 await query.answer("Invalid action.")
                 return
 
-            chat = update.effective_chat
-            chat_id = chat.id if chat is not None else None
-            query_message = getattr(query, "message", None)
-            if chat_id is None and query_message is not None:
-                chat_id = query_message.chat.id
+            chat_id = self._chat_id_from_update_or_query(update=update, query=query)
             if chat_id is None:
                 await query.answer("Missing chat.")
                 return
@@ -446,17 +449,20 @@ class TelegramBridge:
             )
             if not accepted:
                 logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)
+                self._permission_message_text_by_request.pop((chat_id, request_id), None)
                 await query.answer("Request expired.")
                 return
 
-            labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
             logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
-            await query.answer(labels[raw_action])
+            label = PERMISSION_DECISION_LABELS[raw_action]
+            await query.answer(label)
             try:
-                query_message = getattr(query, "message", None)
-                original = getattr(query_message, "text", None) if query_message is not None else None
-                base_text = original or "Permission request"
-                await query.edit_message_text(f"{base_text}\nDecision: {labels[raw_action]}")
+                await self._update_permission_decision_message(
+                    chat_id=chat_id,
+                    request_id=request_id,
+                    query=query,
+                    decision_label=label,
+                )
             except TelegramError:
                 await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -779,6 +785,24 @@ class TelegramBridge:
                 pending.notify_msg_id = getattr(notify_msg, "message_id", None)
             except TelegramError:
                 logger.exception("Failed to send busy notification for chat_id=%s", chat_id)
+
+    async def _update_permission_decision_message(
+        self,
+        *,
+        chat_id: int,
+        request_id: str,
+        query: CallbackQuery,
+        decision_label: str,
+    ) -> None:
+        base_text = self._permission_message_text_by_request.pop((chat_id, request_id), None)
+        if base_text is None:
+            query_message = getattr(query, "message", None)
+            original = getattr(query_message, "text", None) if query_message is not None else None
+            base_text = original or "Permission request"
+        await TelegramBridge._edit_markdown_callback_message(
+            query=query,
+            text=f"{base_text}\n\nDecision: {decision_label}",
+        )
 
     async def _clear_busy_button(self, pending: _PendingPrompt | None) -> None:
         """Remove the *Send now* button when the queued prompt is about to be processed."""
@@ -1205,6 +1229,21 @@ class TelegramBridge:
                     )
         except (RuntimeError, ValueError, TypeError):
             await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+    @staticmethod
+    async def _edit_markdown_callback_message(*, query: CallbackQuery, text: str) -> None:
+        try:
+            rendered_text, rendered_entities = convert(text)
+            if rendered_entities:
+                entities = [TelegramBridge._to_telegram_entity(entity) for entity in rendered_entities]
+                try:
+                    await query.edit_message_text(text=rendered_text, entities=entities)
+                except TelegramError:
+                    await query.edit_message_text(text=rendered_text)
+            else:
+                await query.edit_message_text(text=rendered_text)
+        except (RuntimeError, ValueError, TypeError):
+            await query.edit_message_text(text=text)
 
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
