@@ -123,6 +123,7 @@ This stores Telegram Web session data under `.cache/telegram-web-profile`.
 uv run python scripts/demo/record_telegram_web_demo.py --mode record
 ```
 
-The recorder uses an iPhone-like viewport (`390x844`) and stores `.webm` files under `artifacts/demo-videos`.
-The dialogue is hardcoded in English to exercise key UX moments (`/new`, busy queue + `Send now`, MCP image request, MCP attachment request, `/resume`).
+The recorder uses an iPhone-like viewport (`390x780`) and records video at `780x1560` for better visual quality.
+It stores `.webm` files under `artifacts/demo-videos`.
+The dialogue is hardcoded in English to exercise key UX moments (`/new`, busy queue + `Send now`, natural image request, PDF attachment request, `/resume`).
 The script declares its own runtime dependencies via PEP 723 metadata.

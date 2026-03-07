@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from random import uniform
 
 from telegram_acp_bot.acp_app.models import (
     AgentActivityBlock,
@@ -19,12 +21,26 @@ from telegram_acp_bot.acp_app.models import (
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
-SAMPLE_IMAGE_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAHgAAABQCAIAAACoyA+qAAAAA3NCSVQICAjb4U/gAAABQElEQVR4nO3QQQ3AIBDAsIP9d26X"
-    "IEJC9gR5ZM18A6ft2wG8M2JmxMwImREzI2ZGzIyYGTEzYmbEzIiZETMjZkbMjJgZMTNiZsTMiJkRMyNmRsyMmBkxM2JmxMyImREz"
-    "I2ZGzIyYGTEzYmbEzIiZETMjZkbMjJgZMTNiZsTMiJkRMyNmRsyMmBkxM2JmxMyImREzI2ZGzIyYGTEzYmbEzIiZETMjZkbMjJgZ"
-    "MTNiZsTMiJkRMyNmRsyMmBkxM2JmxMyImREzI2ZGzIyYGTEzYmbEzIiZETMjZkbMjJgZMTNiZsTMiJkRMyNmRsyMmBkxM2JmxMyI"
-    "mREzI2ZGzIyYGTEzYmbEzIiZETMjZkbMjJgZMTNiZsTMiJkRMyNmRsyMmBkxM2JmxMwIux8F+Yv2xjQAAAAASUVORK5CYII="
+DEMO_DELAY_FACTOR = 1.10
+
+
+def _load_demo_image_base64() -> str:
+    demo_image_path = Path(__file__).with_name("demo.png")
+    raw = demo_image_path.read_bytes()
+    return base64.b64encode(raw).decode("ascii")
+
+
+SAMPLE_IMAGE_BASE64 = _load_demo_image_base64()
+SAMPLE_PDF_BASE64 = (
+    "JVBERi0xLjQKMSAwIG9iajw8Pj5lbmRvYmoKMiAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAzIDAgUiA+PmVuZG9iagoz"
+    "IDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFs0IDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKNCAwIG9iajw8IC9UeXBlIC9QYWdl"
+    "IC9QYXJlbnQgMyAwIFIgL01lZGlhQm94IFswIDAgMzAwIDE0NF0gL0NvbnRlbnRzIDUgMCBSIC9SZXNvdXJjZXMgPDwgL0ZvbnQg"
+    "PDwgL0YxIDYgMCBSID4+ID4+ID4+ZW5kb2JqCjUgMCBvYmo8PCAvTGVuZ3RoIDQ0ID4+c3RyZWFtCkJUIC9GMSAxOCBUZiA3MiA5"
+    "NiBUZCAoUmVsZWFzZSBkaWFnbm9zdGljcykgVGogRVQKZW5kc3RyZWFtIGVuZG9iago2IDAgb2JqPDwgL1R5cGUgL0ZvbnQgL1N1"
+    "YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ZW5kb2JqCnhyZWYKMCA3CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAw"
+    "MDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDMwIDAwMDAwIG4gCjAwMDAwMDAwODcgMDAwMDAgbiAKMDAwMDAwMDE0NCAwMDAwMCBu"
+    "IAowMDAwMDAwMjcwIDAwMDAwIG4gCjAwMDAwMDAzNjQgMDAwMDAgbiAKdHJhaWxlcjw8IC9Sb290IDIgMCBSIC9TaXplIDcgPj4K"
+    "c3RhcnR4cmVmCjQ0NAolJUVPRgo="
 )
 
 
@@ -62,19 +78,19 @@ class ScriptedDemoAgentService:
         del chat_id
         demo_sessions = (
             ResumableSession(
-                session_id="demo-release-main",
+                session_id="f548c412-8f9f-4f36-a9d2-6f3e1f9fd3f4",
                 workspace=Path.cwd(),
                 title="Release prep on main",
                 updated_at="2026-03-06T21:12:00Z",
             ),
             ResumableSession(
-                session_id="demo-hotfix-urgent",
+                session_id="9a6e0f55-7cb6-4e66-a4ae-3f0f9fd5c8bc",
                 workspace=Path.cwd() / "hotfix",
                 title="Hotfix regression triage",
                 updated_at="2026-03-06T20:48:00Z",
             ),
             ResumableSession(
-                session_id="demo-docs-preview",
+                session_id="3d3f9b2e-97e6-4659-b52c-9e3f0f2fbf73",
                 workspace=Path.cwd() / "docs",
                 title="Docs preview deploy",
                 updated_at="2026-03-06T20:05:00Z",
@@ -103,73 +119,132 @@ class ScriptedDemoAgentService:
         lowered = text.lower()
         media_hint = f" [images={len(images)} files={len(files)}]" if images or files else ""
 
-        if "webcam" in lowered and "image" in lowered:
-            await self._emit(chat_id, "think", "Planning webcam capture")
+        if any(keyword in lowered for keyword in ("webcam", "photo", "image", "picture")):
+            await self._emit(
+                chat_id,
+                "think",
+                "",
+                text="I can do that now. I will capture one frame from `/dev/video0` and send it right away.",
+                delay=uniform(1.2, 2.6) * DEMO_DELAY_FACTOR,
+            )
             await self._emit(
                 chat_id,
                 "execute",
-                "ffmpeg -f video4linux2 -i /dev/video0 -frames:v 1 /tmp/webcam-small.jpg",
+                "Run ffmpeg -f video4linux2 -i /dev/video0 -frames:v 1 /tmp/webcam-small.jpg",
+                text="",
+                delay=uniform(1.6, 3.4) * DEMO_DELAY_FACTOR,
             )
-            await self._emit(chat_id, "execute", "telegram-channel/telegram_send_attachment")
+            await self._emit(
+                chat_id,
+                "execute",
+                "Run telegram-channel/telegram_send_attachment",
+                text="Uploaded `/tmp/webcam-small.jpg` as a photo via the Telegram MCP channel.",
+                delay=uniform(1.0, 2.2) * DEMO_DELAY_FACTOR,
+            )
             return AgentReply(
-                text=(
-                    "Captured `/tmp/webcam-small.jpg` and delivered it over Telegram through the MCP channel."
-                    + media_hint
-                ),
+                text=("Done. I captured `/tmp/webcam-small.jpg` and sent it to this chat." + media_hint),
                 images=(ImagePayload(data_base64=SAMPLE_IMAGE_BASE64, mime_type="image/png"),),
             )
 
-        if "attachment" in lowered or "diagnostics" in lowered:
-            await self._emit(chat_id, "think", "Preparing diagnostics artifact")
+        if any(keyword in lowered for keyword in ("attachment", "diagnostics", "report", "pdf")):
+            await self._emit(
+                chat_id,
+                "think",
+                "",
+                text="Generating a compact diagnostics report in PDF format and attaching it here.",
+                delay=uniform(1.0, 2.4) * DEMO_DELAY_FACTOR,
+            )
             await self._emit(
                 chat_id,
                 "execute",
-                "python tools/collect_release_diagnostics.py --output /tmp/release-diagnostics.md",
+                "Run python tools/collect_release_diagnostics.py --format pdf --output /tmp/release-diagnostics.pdf",
+                text="CI checks: green. Docs preview: green. Pending: final reviewer ack.",
+                delay=uniform(1.4, 3.0) * DEMO_DELAY_FACTOR,
             )
-            await self._emit(chat_id, "execute", "telegram-channel/telegram_send_attachment")
+            await self._emit(
+                chat_id,
+                "execute",
+                "Run telegram-channel/telegram_send_attachment",
+                text="Attached `/tmp/release-diagnostics.pdf` to this conversation.",
+                delay=uniform(1.0, 2.1) * DEMO_DELAY_FACTOR,
+            )
             return AgentReply(
-                text="Generated diagnostics report and sent it as attachment.",
+                text="Diagnostics PDF is ready and attached.",
                 files=(
                     FilePayload(
-                        name="release-diagnostics.md",
-                        mime_type="text/markdown",
-                        text_content=(
-                            "# Release diagnostics\n\n"
-                            "- CI: green\n"
-                            "- Docs preview: green\n"
-                            "- Pending: final reviewer ack\n"
-                        ),
+                        name="release-diagnostics.pdf",
+                        mime_type="application/pdf",
+                        data_base64=SAMPLE_PDF_BASE64,
                     ),
                 ),
             )
 
         if "merge" in lowered and "release" in lowered:
             steps = (
-                ("think", "Evaluating review status"),
-                ("search", "gh pr view 115 --json reviewDecision,statusCheckRollup"),
-                ("execute", "gh pr merge 115 --merge --delete-branch"),
-                ("execute", "git checkout main && git pull --ff-only"),
-                ("edit", "Bump version to 0.1.2 and update changelog"),
-                ("execute", "gh release create v0.1.2 --target main --generate-notes"),
+                (
+                    "think",
+                    "",
+                    "Checking unresolved comments, required reviews, and status checks before merging.",
+                ),
+                (
+                    "search",
+                    "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
+                    "No blocking review comments found. Required checks look healthy.",
+                ),
+                (
+                    "execute",
+                    "Run gh pr merge 92 --merge --delete-branch, Run git checkout main, Run git pull --ff-only",
+                    "",
+                ),
+                (
+                    "edit",
+                    "Edit pyproject.toml",
+                    "Bumped patch version and aligned CLI/docs notes for the release.",
+                ),
+                (
+                    "execute",
+                    "Run uv run pytest tests/test_acp_service.py",
+                    "Test suite for ACP service passed.",
+                ),
+                (
+                    "execute",
+                    "Run gh release create v0.1.2 --target main --generate-notes",
+                    "Draft release created with auto-generated notes.",
+                ),
             )
-            for kind, title in steps:
-                canceled = await self._emit(chat_id, kind, title, delay=0.9)
+            for kind, title, text_body in steps:
+                canceled = await self._emit(
+                    chat_id,
+                    kind,
+                    title,
+                    text=text_body,
+                    delay=uniform(1.1, 3.1) * DEMO_DELAY_FACTOR,
+                )
                 if canceled:
                     return AgentReply(text="Canceled current workflow. Ready to process queued request.")
+            await asyncio.sleep(uniform(0.8, 1.8) * DEMO_DELAY_FACTOR)
             return AgentReply(
                 text=(
-                    "No review objections found. Merged the PR, fast-forwarded `main`, "
-                    "prepared the patch release flow, and drafted release notes." + media_hint
+                    "Looks good: no unresolved blockers. I merged the PR, synced `main`, "
+                    "ran the ACP service tests, and prepared the patch release notes." + media_hint
                 )
             )
 
         short_id = session.session_id.split("-", maxsplit=1)[0]
         return AgentReply(text=f"[{short_id}] Acknowledged: {text}{media_hint}".strip())
 
-    async def _emit(self, chat_id: int, kind: str, title: str, *, delay: float = 0.4) -> bool:
+    async def _emit(
+        self,
+        chat_id: int,
+        kind: str,
+        title: str,
+        *,
+        text: str = "",
+        delay: float = 1.0,
+    ) -> bool:
         handler = self._activity_event_handler
         if handler is not None:
-            await handler(chat_id, AgentActivityBlock(kind=kind, title=title, status="in_progress"))
+            await handler(chat_id, AgentActivityBlock(kind=kind, title=title, status="completed", text=text))
         await asyncio.sleep(delay)
         return self._cancel_flags.setdefault(chat_id, asyncio.Event()).is_set()
 

@@ -13,6 +13,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from random import uniform
 from time import sleep
 
 from dotenv import load_dotenv
@@ -30,17 +31,21 @@ from playwright.sync_api import (
 MISSING_BOT_USERNAME_MESSAGE = "Missing bot username. Set TELEGRAM_DEMO_BOT_USERNAME (or TELEGRAM_BOT_USERNAME) in .env"
 MISSING_COMPOSER_MESSAGE = "Could not find Telegram message composer. Is the bot chat open?"
 CHAT_URL_TEMPLATE = "https://web.telegram.org/k/#@{bot_username}"
+MOBILE_VIEWPORT_WIDTH = 390
+MOBILE_VIEWPORT_HEIGHT = 780
+VIDEO_SCALE_FACTOR = 2
 
 PRIMARY_TASK_PROMPT = (
-    "If there are no objections on the review, merge the latest PR and prepare a new patch release. "
-    "Please do the full flow (gh + git + tests + release notes), and keep me posted."
+    "Can you quickly check whether there are unresolved review comments? "
+    "If all clear, merge the latest PR and ship a patch release."
 )
 QUEUE_PROMPT = (
-    "When you have a moment take a webcam photo and send it to me over MCP, "
-    "but keep working on the release in parallel."
+    "Quick one: when you get a chance, take a webcam photo and send it to me, but keep the release work running."
 )
-IMAGE_PROMPT = "Now take the webcam photo with ffmpeg and send it via MCP as an image."
-ATTACHMENT_PROMPT = "Also generate a short diagnostics report file and send it via MCP as an attachment."
+IMAGE_PROMPT = "Can you send me the image now?"
+ATTACHMENT_PROMPT = "Also generate a short diagnostics report as a PDF and attach it here."
+HUMAN_TYPING_DELAY_MS = 40
+HUMAN_PAUSE_BETWEEN_MESSAGES_SECONDS = (1.1, 3.1)
 
 
 class DemoConfig(argparse.Namespace):
@@ -51,7 +56,6 @@ class DemoConfig(argparse.Namespace):
     reply_timeout: float
     manual_open_chat: bool
     open_first_chat: bool
-    reset_visual_chat: bool
 
 
 def parse_args() -> DemoConfig:
@@ -94,11 +98,6 @@ def parse_args() -> DemoConfig:
         default=True,
         help="Open first chat in sidebar instead of resolving bot username (default: true).",
     )
-    parser.add_argument(
-        "--reset-visual-chat",
-        action="store_true",
-        help="Best-effort UI reset: try to delete/clear current chat before recording.",
-    )
     return parser.parse_args(namespace=DemoConfig())
 
 
@@ -126,65 +125,6 @@ def _open_first_chat(page: Page) -> None:
             return
 
 
-def _click_first_visible(page: Page, patterns: tuple[re.Pattern[str], ...]) -> bool:
-    for pattern in patterns:
-        for locator in (
-            page.get_by_role("button", name=pattern).first,
-            page.get_by_role("menuitem", name=pattern).first,
-            page.get_by_text(pattern).first,
-        ):
-            if locator.count() and locator.is_visible():
-                locator.click()
-                page.wait_for_timeout(500)
-                return True
-    return False
-
-
-def _reset_visual_chat(page: Page) -> None:
-    menu_selectors = (
-        "button.btn-menu-toggle",
-        "button[aria-label*='More']",
-        "button[aria-label*='Más']",
-        "button[aria-label*='Menu']",
-    )
-    opened = False
-    for selector in menu_selectors:
-        menu_btn = page.locator(selector).first
-        if menu_btn.count() and menu_btn.is_visible():
-            menu_btn.click()
-            page.wait_for_timeout(400)
-            opened = True
-            break
-    if not opened:
-        print("Warning: could not open chat menu for visual reset.")
-        return
-
-    delete_patterns = (
-        re.compile(r"delete chat", re.IGNORECASE),
-        re.compile(r"clear history", re.IGNORECASE),
-        re.compile(r"borrar chat", re.IGNORECASE),
-        re.compile(r"eliminar chat", re.IGNORECASE),
-        re.compile(r"borrar historial", re.IGNORECASE),
-    )
-    if not _click_first_visible(page, delete_patterns):
-        print("Warning: could not find delete/clear action in chat menu.")
-        page.keyboard.press("Escape")
-        return
-
-    confirm_patterns = (
-        re.compile(r"delete", re.IGNORECASE),
-        re.compile(r"clear", re.IGNORECASE),
-        re.compile(r"borrar", re.IGNORECASE),
-        re.compile(r"eliminar", re.IGNORECASE),
-        re.compile(r"ok", re.IGNORECASE),
-    )
-    if not _click_first_visible(page, confirm_patterns):
-        print("Warning: could not confirm visual reset action.")
-        page.keyboard.press("Escape")
-        return
-    page.wait_for_timeout(1000)
-
-
 def _launch_context(playwright: Playwright, config: DemoConfig) -> BrowserContext:
     config.profile_dir.mkdir(parents=True, exist_ok=True)
     config.video_dir.mkdir(parents=True, exist_ok=True)
@@ -193,17 +133,26 @@ def _launch_context(playwright: Playwright, config: DemoConfig) -> BrowserContex
         return playwright.chromium.launch_persistent_context(
             user_data_dir=str(config.profile_dir),
             headless=config.headless,
-            viewport={"width": 390, "height": 844},
-            screen={"width": 390, "height": 844},
+            viewport={"width": MOBILE_VIEWPORT_WIDTH, "height": MOBILE_VIEWPORT_HEIGHT},
+            screen={"width": MOBILE_VIEWPORT_WIDTH, "height": MOBILE_VIEWPORT_HEIGHT},
+            is_mobile=True,
+            has_touch=True,
+            device_scale_factor=3,
             record_video_dir=str(config.video_dir),
-            record_video_size={"width": 390, "height": 844},
+            record_video_size={
+                "width": MOBILE_VIEWPORT_WIDTH * VIDEO_SCALE_FACTOR,
+                "height": MOBILE_VIEWPORT_HEIGHT * VIDEO_SCALE_FACTOR,
+            },
         )
 
     return playwright.chromium.launch_persistent_context(
         user_data_dir=str(config.profile_dir),
         headless=config.headless,
-        viewport={"width": 390, "height": 844},
-        screen={"width": 390, "height": 844},
+        viewport={"width": MOBILE_VIEWPORT_WIDTH, "height": MOBILE_VIEWPORT_HEIGHT},
+        screen={"width": MOBILE_VIEWPORT_WIDTH, "height": MOBILE_VIEWPORT_HEIGHT},
+        is_mobile=True,
+        has_touch=True,
+        device_scale_factor=3,
     )
 
 
@@ -326,8 +275,12 @@ def _send_message(page: Page, text: str) -> None:
     composer.click()
     page.keyboard.press("ControlOrMeta+A")
     page.keyboard.press("Backspace")
-    page.keyboard.type(text)
+    page.keyboard.type(text, delay=HUMAN_TYPING_DELAY_MS)
     page.keyboard.press("Enter")
+
+
+def _human_pause() -> None:
+    sleep(uniform(*HUMAN_PAUSE_BETWEEN_MESSAGES_SECONDS))
 
 
 def _wait_for_activity_labels(page: Page, *, timeout_seconds: float) -> None:
@@ -369,13 +322,13 @@ def _click_send_now(page: Page, *, timeout_seconds: float) -> None:
 
 def _run_story(page: Page, *, timeout_seconds: float) -> None:
     _send_message(page, "/clear")
-    sleep(0.8)
+    _human_pause()
 
     _send_message(page, "/new")
-    sleep(1.0)
+    _human_pause()
 
     _send_message(page, PRIMARY_TASK_PROMPT)
-    sleep(1.0)
+    _human_pause()
 
     _send_message(page, QUEUE_PROMPT)
     _click_send_now(page, timeout_seconds=timeout_seconds)
@@ -383,13 +336,13 @@ def _run_story(page: Page, *, timeout_seconds: float) -> None:
     _wait_for_activity_labels(page, timeout_seconds=timeout_seconds)
 
     _send_message(page, IMAGE_PROMPT)
-    sleep(1.0)
+    _human_pause()
 
     _send_message(page, ATTACHMENT_PROMPT)
-    sleep(1.0)
+    _human_pause()
 
     _send_message(page, "/resume")
-    sleep(2.0)
+    _human_pause()
 
 
 def _latest_video_path(video_dir: Path) -> Path | None:
@@ -430,9 +383,6 @@ def run() -> int:
             return 0
 
         _ensure_logged_in(page)
-        if config.reset_visual_chat:
-            print("Attempting visual chat reset...")
-            _reset_visual_chat(page)
         if config.manual_open_chat:
             page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
             print("Open the bot chat manually in the browser, then press Enter here.")
@@ -448,11 +398,6 @@ def run() -> int:
         _run_story(page, timeout_seconds=config.reply_timeout)
 
         sleep(1.0)
-        if page.video is not None:
-            try:
-                print(f"Current run video path: {page.video.path()}")
-            except PlaywrightTimeoutError:
-                print("Warning: could not resolve current run video path before closing context.")
         context.close()
 
     video = _latest_video_path(config.video_dir)
