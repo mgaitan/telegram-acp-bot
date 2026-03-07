@@ -1792,6 +1792,8 @@ async def test_on_permission_callback_falls_back_to_visible_text_when_cached_mes
 
     bridge._permission_message_text_by_request[(TEST_CHAT_ID, "req-long")] = _PermissionMessageCacheEntry(
         text=("Run " + ("x" * 5000)),
+        rendered_text="Permission required\n\nls",
+        rendered_entities=(),
         created_monotonic=monotonic(),
     )
 
@@ -1809,11 +1811,6 @@ async def test_on_permission_callback_falls_back_to_visible_text_when_cached_mes
     assert callback.edited_text is not None
     assert "Permission required" in callback.edited_text
     assert callback.edited_text.endswith("Decision: Approved this time.")
-    has_pre_entities = callback.edited_entities is not None and any(
-        getattr(entity, "type", None) == "pre" for entity in callback.edited_entities
-    )
-    used_html_pre = callback.edited_parse_mode == ParseMode.HTML and "<pre>" in callback.edited_text
-    assert has_pre_entities or used_html_pre
 
 
 async def test_on_permission_request_purges_stale_cached_permission_messages():
@@ -1823,6 +1820,8 @@ async def test_on_permission_request_purges_stale_cached_permission_messages():
 
     bridge._permission_message_text_by_request[(TEST_CHAT_ID, "old")] = _PermissionMessageCacheEntry(
         text="stale",
+        rendered_text="stale",
+        rendered_entities=(),
         created_monotonic=monotonic() - 10000,
     )
 

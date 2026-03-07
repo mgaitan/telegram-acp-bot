@@ -117,6 +117,8 @@ class _PendingPrompt:
 @dataclass(slots=True, frozen=True)
 class _PermissionMessageCacheEntry:
     text: str
+    rendered_text: str
+    rendered_entities: tuple[MessageEntity, ...]
     created_monotonic: float
 
 
@@ -410,15 +412,49 @@ class TelegramBridge:
         self._purge_stale_permission_messages()
         keyboard = self._permission_keyboard(request)
         message = TelegramBridge._format_permission_request_text(request.tool_title)
+        rendered_text = message
+        rendered_entities: tuple[MessageEntity, ...] = ()
+        try:
+            converted_text, converted_entities = convert(message)
+            chunks = split_entities(
+                converted_text,
+                converted_entities,
+                max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH,
+            )
+            if chunks:
+                first_chunk_text, first_chunk_entities = chunks[0]
+                rendered_text = first_chunk_text
+                rendered_entities = tuple(TelegramBridge._to_telegram_entity(entity) for entity in first_chunk_entities)
+            for index, (chunk_text, chunk_entities) in enumerate(chunks):
+                current_reply_markup = keyboard if index == 0 else None
+                if chunk_entities:
+                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+                    try:
+                        await self._app.bot.send_message(
+                            chat_id=request.chat_id,
+                            text=chunk_text,
+                            entities=entities,
+                            reply_markup=current_reply_markup,
+                        )
+                    except TelegramError:
+                        await self._app.bot.send_message(
+                            chat_id=request.chat_id,
+                            text=chunk_text,
+                            reply_markup=current_reply_markup,
+                        )
+                else:
+                    await self._app.bot.send_message(
+                        chat_id=request.chat_id,
+                        text=chunk_text,
+                        reply_markup=current_reply_markup,
+                    )
+        except (RuntimeError, ValueError, TypeError):
+            await self._app.bot.send_message(chat_id=request.chat_id, text=message, reply_markup=keyboard)
         self._permission_message_text_by_request[(request.chat_id, request.request_id)] = _PermissionMessageCacheEntry(
             text=message,
+            rendered_text=rendered_text,
+            rendered_entities=rendered_entities,
             created_monotonic=monotonic(),
-        )
-        await TelegramBridge._send_markdown_to_chat(
-            bot=self._app.bot,
-            chat_id=request.chat_id,
-            text=message,
-            reply_markup=keyboard,
         )
 
     async def on_activity_event(self, chat_id: int, block: AgentActivityBlock) -> None:
@@ -811,6 +847,25 @@ class TelegramBridge:
     ) -> None:
         cache_entry = self._permission_message_text_by_request.pop((chat_id, request_id), None)
         base_text = cache_entry.text if cache_entry is not None else None
+        if cache_entry is not None:
+            rendered_with_decision = f"{cache_entry.rendered_text}\n\nDecision: {decision_label}"
+            if cache_entry.rendered_entities:
+                try:
+                    await query.edit_message_text(
+                        text=rendered_with_decision,
+                        entities=list(cache_entry.rendered_entities),
+                    )
+                except TelegramError:
+                    pass
+                else:
+                    return
+            else:
+                try:
+                    await query.edit_message_text(text=rendered_with_decision)
+                except TelegramError:
+                    pass
+                else:
+                    return
         if base_text is None:
             query_message = getattr(query, "message", None)
             original = getattr(query_message, "text", None) if query_message is not None else None
