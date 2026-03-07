@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from random import uniform
 
@@ -26,11 +27,12 @@ DEMO_DELAY_FACTOR = 1.10
 
 def _load_demo_image_base64() -> str:
     demo_image_path = Path(__file__).with_name("demo.png")
+    if not demo_image_path.is_file():
+        raise FileNotFoundError(demo_image_path)
     raw = demo_image_path.read_bytes()
     return base64.b64encode(raw).decode("ascii")
 
 
-SAMPLE_IMAGE_BASE64 = _load_demo_image_base64()
 SAMPLE_PDF_BASE64 = (
     "JVBERi0xLjQKMSAwIG9iajw8Pj5lbmRvYmoKMiAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAzIDAgUiA+PmVuZG9iagoz"
     "IDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFs0IDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKNCAwIG9iajw8IC9UeXBlIC9QYWdl"
@@ -45,7 +47,7 @@ SAMPLE_PDF_BASE64 = (
 
 
 class ScriptedDemoAgentService:
-    """Deterministic fake agent backend for landing/demo recordings."""
+    """Scripted fake agent backend for landing/demo recordings with randomized delays for realism."""
 
     def __init__(self, registry: SessionRegistry) -> None:
         self._registry = registry
@@ -66,6 +68,8 @@ class ScriptedDemoAgentService:
     async def load_session(self, *, chat_id: int, session_id: str, workspace: Path) -> str:
         workspace = self._prepare_workspace(workspace)
         session = self._registry.create_or_replace(chat_id=chat_id, workspace=workspace, session_id=session_id)
+        self._session_permission_mode.setdefault(chat_id, "ask")
+        self._next_prompt_auto_approve.setdefault(chat_id, False)
         self._cancel_flags[chat_id] = asyncio.Event()
         return session.session_id
 
@@ -143,7 +147,7 @@ class ScriptedDemoAgentService:
             )
             return AgentReply(
                 text=("Done. I captured `/tmp/webcam-small.jpg` and sent it to this chat." + media_hint),
-                images=(ImagePayload(data_base64=SAMPLE_IMAGE_BASE64, mime_type="image/png"),),
+                images=(ImagePayload(data_base64=_load_demo_image_base64(), mime_type="image/png"),),
             )
 
         if any(keyword in lowered for keyword in ("attachment", "diagnostics", "report", "pdf")):
@@ -248,11 +252,15 @@ class ScriptedDemoAgentService:
         text: str = "",
         delay: float = 1.0,
     ) -> bool:
+        cancel_event = self._cancel_flags.setdefault(chat_id, asyncio.Event())
+        if cancel_event.is_set():
+            return True
         handler = self._activity_event_handler
         if handler is not None:
             await handler(chat_id, AgentActivityBlock(kind=kind, title=title, status="completed", text=text))
-        await asyncio.sleep(delay)
-        return self._cancel_flags.setdefault(chat_id, asyncio.Event()).is_set()
+        with suppress(TimeoutError):
+            await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+        return cancel_event.is_set()
 
     def get_workspace(self, *, chat_id: int) -> Path | None:
         session = self._registry.get(chat_id)
