@@ -49,6 +49,7 @@ BUSY_CALLBACK_PREFIX = "busy"
 PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
 BUSY_CALLBACK_PARTS = 2
+BUSY_SEND_NOW_TEXT = "✅ Sent now."
 MAX_RESUME_ARGS = 1
 MAX_RESTART_ARGS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
@@ -541,7 +542,9 @@ class TelegramBridge:
             pending.notify_msg_id = None
             await query.answer("Cancel failed.")
             return
-        await query.answer("Sending now…")
+        await query.answer(BUSY_SEND_NOW_TEXT)
+        with suppress(TelegramError):
+            await query.edit_message_text(BUSY_SEND_NOW_TEXT)
         with suppress(TelegramError):
             await query.edit_message_reply_markup(reply_markup=None)
         pending.notify_msg_id = None
