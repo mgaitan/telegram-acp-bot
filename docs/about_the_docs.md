@@ -106,7 +106,7 @@ uv run playwright install chromium
 Use the helper script that runs `TelegramBridge` with a scripted fake agent service:
 
 ```bash
-uv run python scripts/demo/run_echo_bot.py
+uv run python scripts/demo/run_demo_bot.py
 ```
 
 ### 4. Login once via QR and persist session

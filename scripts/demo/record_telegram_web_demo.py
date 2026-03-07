@@ -125,7 +125,21 @@ def _get_page(context: BrowserContext) -> Page:
 
 def _open_chat(page: Page, *, bot_username: str) -> None:
     page.goto(CHAT_URL_TEMPLATE.format(bot_username=bot_username), wait_until="domcontentloaded")
-    _wait_for_composer(page, timeout_seconds=12.0)
+    page.wait_for_timeout(1200)
+    if _composer_is_visible(page) and _is_target_chat_selected(page, bot_username=bot_username):
+        return
+
+    _open_chat_via_search(page, bot_username=bot_username)
+    _wait_for_composer(page, timeout_seconds=15.0)
+
+
+def _is_target_chat_selected(page: Page, *, bot_username: str) -> bool:
+    header = page.locator("header, div.chat-info-wrapper, div.chat-info-container").first
+    if not header.count() or not header.is_visible():
+        return False
+    text = header.inner_text().strip().lower()
+    needle = bot_username.lower()
+    return needle in text or f"@{needle}" in text
 
 
 def _find_composer(page: Page) -> Locator:
@@ -175,6 +189,29 @@ def _wait_for_composer(page: Page, *, timeout_seconds: float) -> None:
         page.wait_for_timeout(slice_ms)
         elapsed += slice_ms
     raise RuntimeError(MISSING_COMPOSER_MESSAGE)
+
+
+def _open_chat_via_search(page: Page, *, bot_username: str) -> None:
+    page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
+    page.wait_for_timeout(700)
+
+    # Telegram Web global search shortcut.
+    page.keyboard.press("ControlOrMeta+K")
+    page.wait_for_timeout(300)
+    page.keyboard.type(f"@{bot_username}")
+    page.wait_for_timeout(800)
+
+    patterns = (
+        re.compile(rf"@{re.escape(bot_username)}", re.IGNORECASE),
+        re.compile(rf"\b{re.escape(bot_username)}\b", re.IGNORECASE),
+    )
+    for pattern in patterns:
+        candidate = page.get_by_text(pattern).first
+        if candidate.count() and candidate.is_visible():
+            candidate.click()
+            page.wait_for_timeout(800)
+            if _is_target_chat_selected(page, bot_username=bot_username):
+                return
 
 
 def _ensure_logged_in(page: Page) -> None:

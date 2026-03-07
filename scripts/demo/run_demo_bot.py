@@ -33,7 +33,7 @@ def _normalize_usernames(values: list[str]) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="run-echo-bot",
+        prog="run-demo-bot",
         description="Run telegram-acp-bot backed by ScriptedDemoAgentService for demo recording.",
     )
     parser.add_argument(
