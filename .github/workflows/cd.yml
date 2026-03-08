@@ -12,6 +12,19 @@ on:
       - "CONTRIBUTING.md"
       - ".github/workflows/cd.yml"
   workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "Deployment target"
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - preview
+      pr_number:
+        description: "PR number (required when deploy_target=preview)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,7 +48,7 @@ jobs:
   docs-build:
     name: Build documentation
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,10 +60,9 @@ jobs:
   docs-publish:
     name: Publish documentation to GitHub Pages
     runs-on: ubuntu-latest
-    needs: docs-build
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     environment:
-      name: ${{ github.event_name == 'pull_request' && 'github-pages-preview' || 'github-pages' }}
+      name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_target == 'preview' && 'github-pages-preview' || 'github-pages' }}
       url: ${{ steps.preview_url.outputs.url }}
     steps:
       - uses: actions/checkout@v4
@@ -64,9 +76,16 @@ jobs:
           out_dir="site"
           rm -rf "$out_dir"
           mkdir -p "$out_dir"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            pr_number="${{ github.event.pull_request.number }}"
-            latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.deploy_target }}" = "preview" ]; then
+            pr_number="${{ github.event.inputs.pr_number }}"
+            if [ -z "$pr_number" ]; then
+              echo "pr_number is required when deploy_target=preview" >&2
+              exit 1
+            fi
+            latest_tag="$(git tag --sort=-version:refname | head -n1 || true)"
+            if [ -z "$latest_tag" ]; then
+              latest_tag="$(git tag --sort=-creatordate | head -n1 || true)"
+            fi
             if [ -n "$latest_tag" ]; then
               stable_dir="$(mktemp -d)"
               git worktree add "$stable_dir" "$latest_tag"
@@ -80,9 +99,17 @@ jobs:
               make docs
               cp -a docs/_build/html/. "$out_dir/"
             fi
-            make docs
-            mkdir -p "$out_dir/_preview/pr-$pr_number"
-            cp -a docs/_build/html/. "$out_dir/_preview/pr-$pr_number/"
+            preview_ref="refs/remotes/origin/pr-preview-$pr_number"
+            git fetch origin "pull/$pr_number/head:pr-preview-$pr_number"
+            preview_dir="$(mktemp -d)"
+            git worktree add "$preview_dir" "$preview_ref"
+            (
+              cd "$preview_dir"
+              make docs
+            )
+            mkdir -p "$out_dir/_preview"
+            cp -a "$preview_dir/docs/_build/html/." "$out_dir/_preview/"
+            git worktree remove "$preview_dir" --force
           else
             make docs
             cp -a docs/_build/html/. "$out_dir/"
@@ -96,8 +123,8 @@ jobs:
         id: preview_url
         run: |
           url="${{ steps.deployment.outputs.page_url }}"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            url="${url%/}/_preview/pr-${{ github.event.pull_request.number }}/"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.deploy_target }}" = "preview" ]; then
+            url="${url%/}/_preview/"
           fi
           echo "url=${url}" >> "$GITHUB_OUTPUT"
       - name: Summarize documentation URL
