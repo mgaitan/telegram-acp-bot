@@ -215,12 +215,13 @@ def _send_message(page: Page, text: str, *, delay_ms: int, rng: Random) -> None:
 
 
 def _wait_for_new_text(page: Page, pattern: str, *, timeout_seconds: float) -> None:
-    """Wait for a *new* occurrence of *pattern* to become visible (ignores pre-existing ones)."""
+    """Wait until *pattern* is visible anywhere on the page; return immediately if already present."""
     compiled = re.compile(pattern, re.IGNORECASE)
     locator = page.get_by_text(compiled)
-    count_before = locator.count()
+    if locator.count() > 0 and locator.last.is_visible():
+        return  # already on screen — proceed without waiting
     try:
-        locator.nth(count_before).wait_for(state="visible", timeout=int(timeout_seconds * 1000))
+        locator.first.wait_for(state="visible", timeout=int(timeout_seconds * 1000))
     except PlaywrightError:
         print(f"Warning: '{pattern}' not detected within {timeout_seconds:.0f}s — continuing.")
 
@@ -271,25 +272,26 @@ def _try_start_button(page: Page) -> None:
 
 
 def _open_chat(page: Page, *, username: str) -> None:
-    page.goto(CHAT_URL_TEMPLATE.format(username=username), wait_until="domcontentloaded")
-    page.wait_for_timeout(2_000)
     composer = page.locator("div.input-message-input[contenteditable='true']").first
-    if not composer.is_visible():
-        # The bot profile panel may show a Start/Open button before the composer appears.
-        _try_start_button(page)
-        page.wait_for_timeout(800)
-    if not composer.is_visible():
-        # Fallback: use global search shortcut to navigate to the chat.
-        page.keyboard.press("ControlOrMeta+K")
-        page.wait_for_timeout(400)
-        page.keyboard.type(f"@{username}")
-        page.wait_for_timeout(900)
-        result = page.get_by_text(re.compile(re.escape(username), re.IGNORECASE)).first
-        if result.count() and result.is_visible():
-            result.click()
-            page.wait_for_timeout(1_200)
-        _try_start_button(page)
-    # Block until the composer is ready — everything else depends on it.
+    # Primary: Ctrl+K global search — most reliable navigation inside the Telegram Web K SPA.
+    page.keyboard.press("ControlOrMeta+K")
+    page.wait_for_timeout(500)
+    page.keyboard.type(f"@{username}")
+    page.wait_for_timeout(1_000)
+    result = page.get_by_text(re.compile(re.escape(username), re.IGNORECASE)).first
+    if result.count() and result.is_visible():
+        result.click()
+        page.wait_for_timeout(600)
+    _try_start_button(page)
+    try:
+        composer.wait_for(state="visible", timeout=10_000)
+    except PlaywrightError:
+        pass
+    else:
+        return  # chat ready
+    # Fallback: direct URL navigation.
+    page.goto(CHAT_URL_TEMPLATE.format(username=username), wait_until="domcontentloaded")
+    _try_start_button(page)
     try:
         composer.wait_for(state="visible", timeout=20_000)
     except PlaywrightError as exc:

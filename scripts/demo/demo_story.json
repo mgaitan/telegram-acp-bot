@@ -3,7 +3,7 @@
     "typing_delay_ms": 26,
     "pause_min_seconds": 1.4,
     "pause_max_seconds": 3.8,
-    "final_pause_seconds": 9.0,
+    "final_pause_seconds": 16.0,
     "image_reply_pattern": "webcam-small\\\\.jpg|you are cute"
   },
   "assets": {
@@ -53,9 +53,9 @@
       "id": "attachment",
       "text": "Also generate a short diagnostics report as a PDF and attach it here.",
       "wait_for_text": {
-        "pattern": "webcam-small\\\\.jpg|you are cute",
-        "timeout_seconds": 30,
-        "after_ms": 120
+        "pattern": "I merged the PR|patch release notes",
+        "timeout_seconds": 60,
+        "after_ms": 800
       }
     },
     {

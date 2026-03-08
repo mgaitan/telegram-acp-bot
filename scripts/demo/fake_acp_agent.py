@@ -53,7 +53,7 @@ from acp.schema import (
     TextContentBlock,
     ToolKind,
 )
-from demo_scenario import DemoScenario, ScenarioAsset, load_demo_scenario
+from demo_scenario import AgentRoute, DemoScenario, ScenarioAsset, load_demo_scenario
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -206,12 +206,7 @@ class FakeDemoAcpAgent(Agent):
                 reply_text = "" if route.id == "release_flow" else route.cancel_reply_text
                 return await self._cancelled_response(session_id, reply_text)
 
-        for asset_id in route.final_images:
-            await self._notify_image_asset(session_id, self._scenario.assets[asset_id])
-        for asset_id in route.final_files:
-            await self._notify_file_asset(session_id, self._scenario.assets[asset_id])
-        if route.final_text.strip():
-            await self._notify_agent_text(session_id, route.final_text)
+        await self._send_final_assets(session_id, route)
         if route.id == "webcam_flow" and session.pending_route_id is not None:
             self._schedule_resume_interrupted_route(session_id=session_id, session=session)
 
@@ -285,6 +280,18 @@ class FakeDemoAcpAgent(Agent):
             session_id=session_id,
             update=update_tool_call(tool_call_id=tool_call_id, status="completed"),
         )
+
+    async def _send_final_assets(self, session_id: str, route: AgentRoute) -> None:
+        """Send images, files, then final text — with a delay after media so ordering is correct."""
+        for asset_id in route.final_images:
+            await self._notify_image_asset(session_id, self._scenario.assets[asset_id])
+        for asset_id in route.final_files:
+            await self._notify_file_asset(session_id, self._scenario.assets[asset_id])
+        if (route.final_images or route.final_files) and route.final_text.strip():
+            # Give Telegram time to upload the media so the photo/file appears before the text.
+            await asyncio.sleep(2.0)
+        if route.final_text.strip():
+            await self._notify_agent_text(session_id, route.final_text)
 
     async def _notify_agent_text(self, session_id: str, text: str) -> None:
         conn = self._require_conn()
