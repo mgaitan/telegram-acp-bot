@@ -124,6 +124,7 @@ docs = [
     "sphinxcontrib-mermaid>=1.0.0",
     "richterm[sphinx]>=0.1.0",
 ]
+playwright = ["playwright>=1.55.0"]
 dev = [
     { include-group = "test" },
     { include-group = "qa" },

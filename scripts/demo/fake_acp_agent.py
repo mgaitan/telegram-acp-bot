@@ -205,6 +205,7 @@ class FakeDemoAcpAgent(Agent):
             await self._notify_file_asset(session_id, self._scenario.assets[asset_id])
         if route.final_text.strip():
             await self._notify_agent_text(session_id, route.final_text)
+
         await self._flush_notifications()
         return PromptResponse(stop_reason=STOP_REASON_END_TURN)
 
@@ -236,7 +237,21 @@ class FakeDemoAcpAgent(Agent):
         session.cancel_event.set()
 
     async def ext_method(self, method: str, params: dict[str, object]) -> dict[str, object]:
-        del method, params
+        if method == "session/list":
+            cursor = params.get("cursor")
+            cwd = params.get("cwd")
+            response = await self.list_sessions(
+                cursor=None if cursor is None else str(cursor),
+                cwd=None if cwd is None else str(cwd),
+            )
+            return response.model_dump()
+        if method == "session/load":
+            session_id = str(params.get("session_id", ""))
+            cwd = str(params.get("cwd", Path.cwd()))
+            if not session_id:
+                raise RequestError.invalid_params({"session_id": session_id})
+            response = await self.load_session(cwd=cwd, session_id=session_id)
+            return response.model_dump()
         raise RequestError.method_not_found("ext/method")
 
     async def ext_notification(self, method: str, params: dict[str, object]) -> None:
@@ -332,7 +347,7 @@ async def _main() -> int:
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
     scenario = load_demo_scenario(args.scenario)
     agent = FakeDemoAcpAgent(scenario)
-    await run_agent(agent)
+    await run_agent(agent, use_unstable_protocol=True)
     return 0
 
 

@@ -92,10 +92,14 @@ class DemoScenario:
 
     def route_for_prompt(self, text: str) -> AgentRoute | None:
         lowered = text.lower()
+        best_route: AgentRoute | None = None
+        best_score = 0
         for route in self.agent_routes:
-            if any(keyword.lower() in lowered for keyword in route.match_any):
-                return route
-        return None
+            score = sum(1 for keyword in route.match_any if keyword.lower() in lowered)
+            if score > best_score:
+                best_score = score
+                best_route = route
+        return best_route
 
 
 DEFAULT_SCENARIO_PATH = Path(__file__).with_name("demo_story.json")

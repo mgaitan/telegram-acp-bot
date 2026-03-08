@@ -506,7 +506,7 @@ async def test_acp_client_emits_live_activity_blocks():
     )
 
     assert events[0] == AgentActivityBlock(kind="think", title="step think", status="in_progress", text="plan first")
-    assert events[1] == AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="")
+    assert len(events) == 1
 
 
 async def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
@@ -547,7 +547,7 @@ async def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
 
     reply = await client.finish_capture(session_id)
     assert events[0] == AgentActivityBlock(kind="think", title="", status="completed", text="first thought")
-    assert events[1] == AgentActivityBlock(kind="execute", title="Run git log", status="in_progress", text="")
+    assert events[1] == AgentActivityBlock(kind="execute", title="Run git log", status="completed", text="")
     assert reply.text == "final output"
 
 
@@ -571,7 +571,7 @@ async def test_acp_client_drops_empty_non_tool_text_when_flushing():
         update=ToolCallStart(title="Run cmd", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
     )
 
-    assert events == [AgentActivityBlock(kind="execute", title="Run cmd", status="in_progress", text="")]
+    assert events == []
 
 
 async def test_acp_client_groups_tool_output_into_activity_blocks():

@@ -232,7 +232,9 @@ class ScriptedDemoAgentService:
                 )
                 if canceled:
                     return AgentReply(text="Canceled current workflow. Ready to process queued request.")
-            await asyncio.sleep(uniform(0.8, 1.8) * DEMO_DELAY_FACTOR)
+            canceled = await self._wait_or_cancel(chat_id=chat_id, delay=uniform(0.8, 1.8) * DEMO_DELAY_FACTOR)
+            if canceled:
+                return AgentReply(text="Canceled current workflow. Ready to process queued request.")
             return AgentReply(
                 text=(
                     "Looks good: no unresolved blockers. I merged the PR, synced `main`, "
@@ -258,6 +260,12 @@ class ScriptedDemoAgentService:
         handler = self._activity_event_handler
         if handler is not None:
             await handler(chat_id, AgentActivityBlock(kind=kind, title=title, status="completed", text=text))
+        with suppress(TimeoutError):
+            await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+        return cancel_event.is_set()
+
+    async def _wait_or_cancel(self, *, chat_id: int, delay: float) -> bool:
+        cancel_event = self._cancel_flags.setdefault(chat_id, asyncio.Event())
         with suppress(TimeoutError):
             await asyncio.wait_for(cancel_event.wait(), timeout=delay)
         return cancel_event.is_set()

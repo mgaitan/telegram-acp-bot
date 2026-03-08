@@ -98,7 +98,7 @@ Reuse your local `.env`:
 ### 2. Install browser runtime (one-time)
 
 ```bash
-uv run playwright install chromium
+uv run --group playwright playwright install chromium
 ```
 
 ### 3. Optional: run scripted bot backend (fake ACP agent)
@@ -106,20 +106,20 @@ uv run playwright install chromium
 Use the helper script that runs `TelegramBridge` with `AcpAgentService` against a fake ACP agent process:
 
 ```bash
-uv run python scripts/demo/run_demo_bot.py
+uv run scripts/demo/run_demo_bot.py
 ```
 
 This helper uses scripted responses with slight randomized timing and always uses `scripts/demo/fake_acp_agent.py` unless you override
 `--agent-command` explicitly.
 
-Both the fake agent and recorder consume the same declarative story file:
+Both the fake agent and Telegram Web demo script consume the same declarative story file:
 
 - `scripts/demo/demo_story.json`
 
 ### 4. Login once via QR and persist session
 
 ```bash
-uv run python scripts/demo/record_telegram_web_demo.py --mode login
+uv run --group playwright python scripts/demo/telegram_web_demo.py --mode login
 ```
 
 This stores Telegram Web session data under `.cache/telegram-web-profile`.
@@ -127,17 +127,15 @@ This stores Telegram Web session data under `.cache/telegram-web-profile`.
 ### 5. Record scripted interaction (vertical format)
 
 ```bash
-uv run python scripts/demo/telegram_web_demo.py --mode record
+uv run --group playwright python scripts/demo/telegram_web_demo.py --mode record
 ```
 
 The recorder uses an iPhone-like viewport (`390x780`) and records video at the same size (`390x780`).
 It stores `.webm` files under `artifacts/demo-videos`.
 The dialogue timing and payloads come from `scripts/demo/demo_story.json` (including the synthetic image/PDF assets,
 with `scripts/demo/demo.png` used as the demo image payload).
-The script declares its own runtime dependencies via PEP 723 metadata.
-
-To pass recorder-specific flags through the wrapper, append them after `--`:
+To pass recorder-specific flags, pass them directly:
 
 ```bash
-uv run python scripts/demo/telegram_web_demo.py --mode record -- --device-scale-factor 1.0
+uv run --group playwright python scripts/demo/telegram_web_demo.py --mode record --device-scale-factor 1.0
 ```

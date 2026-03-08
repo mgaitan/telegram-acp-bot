@@ -38,8 +38,8 @@
       "id": "queue",
       "text": "Quick one: when you get a chance, take a webcam photo and send it to me, but keep the release work running.",
       "wait_for_text": {
-        "pattern": "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
-        "timeout_seconds": 20,
+        "pattern": "No blocking review comments found",
+        "timeout_seconds": 45,
         "after_ms": 350
       },
       "actions": [
@@ -83,39 +83,40 @@
           "kind": "think",
           "title": "",
           "text": "Checking unresolved comments, required reviews, and status checks before merging.",
-          "delay_ms": 900
+          "delay_ms": 1700
         },
         {
           "kind": "execute",
           "title": "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
           "text": "No blocking review comments found. Required checks look healthy.",
-          "delay_ms": 2200
+          "delay_ms": 3600
         },
         {
           "kind": "execute",
           "title": "Run gh pr merge 92 --merge --delete-branch, Run git checkout main, Run git pull --ff-only",
           "text": "",
-          "delay_ms": 2800
+          "delay_ms": 4300
         },
         {
           "kind": "edit",
           "title": "Edit pyproject.toml",
           "text": "Bumped patch version and aligned CLI/docs notes for the release.",
-          "delay_ms": 1450
+          "delay_ms": 2500
         },
         {
           "kind": "execute",
           "title": "Run uv run pytest tests/test_acp_service.py",
           "text": "Test suite for ACP service passed.",
-          "delay_ms": 5200
+          "delay_ms": 6400
         },
         {
           "kind": "execute",
           "title": "Run gh release create v0.1.2 --target main --generate-notes",
           "text": "Draft release created with auto-generated notes.",
-          "delay_ms": 2600
+          "delay_ms": 3900
         }
       ],
+      "cancel_reply_text": "Release flow interrupted to process your queued request. I can resume it after the quick task.",
       "final_text": "Looks good: no unresolved blockers. I merged the PR, synced `main`, ran the ACP service tests, and prepared the patch release notes."
     },
     {
@@ -141,7 +142,7 @@
           "delay_ms": 1500
         }
       ],
-      "final_text": "Done. You are cute :heart:. I will continue working on the release task now.",
+      "final_text": "Done. You are cute ❤️. I will continue working on the release task now.",
       "final_images": ["webcam_image"]
     },
     {

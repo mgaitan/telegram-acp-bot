@@ -216,11 +216,6 @@ class _AcpClient:
                 kind=label,
                 title=update.title,
             )
-            if label != "think":
-                await self._emit_activity_block(
-                    session_id=session_id,
-                    block=AgentActivityBlock(kind=label, title=update.title, status="in_progress"),
-                )
             return
         if isinstance(update, ToolCallProgress):
             status = update.status or "in_progress"
@@ -353,7 +348,7 @@ class _AcpClient:
         )
         self._completed_tool_blocks.setdefault(session_id, []).append(block)
         self._active_tool_blocks[session_id] = None
-        if block.kind == "think" or block.text:
+        if block.kind == "think" or block.text or block.title:
             await self._emit_activity_block(session_id=session_id, block=block)
 
     def _report_event(self, event: str) -> None:
