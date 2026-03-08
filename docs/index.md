@@ -86,6 +86,7 @@ agents.md
 cli.md
 mcp.md
 configuration.md
+demo.md
 about_the_docs.md
 ../CONTRIBUTING.md
 ../CODE_OF_CONDUCT.md
