@@ -773,12 +773,10 @@ def _run_story(  # noqa: C901, PLR0912, PLR0915
         if step.id == "recap":
             if not resumed_confirmed:
                 resumed_seen_before = page.get_by_text(resumed_pattern).count()
-                print("Warning: resume confirmation missing before recap; sending '/resume 0' fallback.")
-                _send_message(page, "/resume 0", typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
                 resumed_confirmed = _wait_for_text(
                     page,
                     resumed_pattern,
-                    timeout_seconds=min(timeout_seconds, 12.0),
+                    timeout_seconds=min(timeout_seconds, 8.0),
                     min_count=resumed_seen_before + 1,
                 )
             if not resumed_confirmed:
@@ -848,6 +846,16 @@ def _run_story(  # noqa: C901, PLR0912, PLR0915
             )
             if step.id == "resume" and isinstance(action, ResumeChoiceAction):
                 resumed_confirmed = resumed_confirmed or action_ok
+        if step.id == "resume" and not resumed_confirmed:
+            resumed_seen_before = page.get_by_text(resumed_pattern).count()
+            print("Warning: resume option did not confirm; sending '/resume 0' fallback.")
+            _send_message(page, "/resume 0", typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
+            resumed_confirmed = _wait_for_text(
+                page,
+                resumed_pattern,
+                timeout_seconds=min(timeout_seconds, 12.0),
+                min_count=resumed_seen_before + 1,
+            )
         if step.id == "new":
             started = _wait_for_text(
                 page,

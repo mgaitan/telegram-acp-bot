@@ -109,8 +109,8 @@ Use the helper script that runs `TelegramBridge` with `AcpAgentService` against 
 uv run scripts/demo/run_demo_bot.py
 ```
 
-This helper uses scripted responses with slight randomized timing and always uses `scripts/demo/fake_acp_agent.py` unless you override
-`--agent-command` explicitly.
+This helper always uses `scripts/demo/fake_acp_agent.py` (unless you override `--agent-command`) and replays
+the declarative flow from `scripts/demo/demo_story.json`.
 
 Both the fake agent and Telegram Web demo script consume the same declarative story file:
 
