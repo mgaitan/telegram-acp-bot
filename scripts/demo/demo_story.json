@@ -3,7 +3,7 @@
     "typing_delay_ms": 26,
     "pause_min_seconds": 1.4,
     "pause_max_seconds": 3.8,
-    "final_pause_seconds": 6.0,
+    "final_pause_seconds": 9.0,
     "image_reply_pattern": "webcam-small\\\\.jpg|you are cute"
   },
   "assets": {
