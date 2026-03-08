@@ -282,14 +282,11 @@ class FakeDemoAcpAgent(Agent):
         )
 
     async def _send_final_assets(self, session_id: str, route: AgentRoute) -> None:
-        """Send images, files, then final text — with a delay after media so ordering is correct."""
+        """Send images and files, then the final text caption."""
         for asset_id in route.final_images:
             await self._notify_image_asset(session_id, self._scenario.assets[asset_id])
         for asset_id in route.final_files:
             await self._notify_file_asset(session_id, self._scenario.assets[asset_id])
-        if (route.final_images or route.final_files) and route.final_text.strip():
-            # Give Telegram time to upload the media so the photo/file appears before the text.
-            await asyncio.sleep(2.0)
         if route.final_text.strip():
             await self._notify_agent_text(session_id, route.final_text)
 
