@@ -43,9 +43,9 @@ jobs:
   docs-publish:
     name: Publish documentation to GitHub Pages
     runs-on: ubuntu-latest
-    if: github.event_name != 'release' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     environment:
-      name: ${{ github.event_name == 'pull_request' && 'github-pages-preview' || 'github-pages' }}
+      name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'github-pages-preview' || 'github-pages' }}
       url: ${{ steps.preview_url.outputs.url }}
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +54,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "docs_subdir=_preview/pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "docs_subdir=_preview/main" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "docs_subdir=_preview/manual" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/configure-pages@v5
       - uses: astral-sh/setup-uv@v7
