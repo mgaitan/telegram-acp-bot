@@ -104,10 +104,7 @@
   "agent_routes": [
     {
       "id": "release_flow",
-      "match_any": [
-        "merge",
-        "release"
-      ],
+      "match_any": ["merge", "release"],
       "events": [
         {
           "kind": "think",
@@ -144,19 +141,20 @@
           "title": "Run gh release create v0.1.2 --target main --generate-notes",
           "text": "Draft release created with auto-generated notes.",
           "delay_ms": 3900
+        },
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Looks good: no unresolved blockers.",
+          "delay_ms": 300
         }
       ],
       "cancel_reply_text": "Release flow interrupted to process your queued request. I can resume it after the quick task.",
-      "final_text": "Looks good: no unresolved blockers. I merged the PR, synced `main`, ran the ACP service tests, and prepared the patch release notes."
+      "final_text": "I merged the PR, synced `main`, ran the ACP service tests, and prepared the patch release notes."
     },
     {
       "id": "webcam_flow",
-      "match_any": [
-        "webcam",
-        "photo",
-        "image",
-        "picture"
-      ],
+      "match_any": ["webcam", "photo", "image", "picture"],
       "events": [
         {
           "kind": "think",
@@ -178,18 +176,11 @@
         }
       ],
       "final_text": "Done. You are cute ❤️. I will continue working on the release task now.",
-      "final_images": [
-        "webcam_image"
-      ]
+      "final_images": ["webcam_image"]
     },
     {
       "id": "pdf_flow",
-      "match_any": [
-        "attachment",
-        "diagnostics",
-        "report",
-        "pdf"
-      ],
+      "match_any": ["attachment", "diagnostics", "report", "pdf"],
       "events": [
         {
           "kind": "think",
@@ -211,17 +202,11 @@
         }
       ],
       "final_text": "Diagnostics PDF is ready and attached.",
-      "final_files": [
-        "diagnostics_pdf"
-      ]
+      "final_files": ["diagnostics_pdf"]
     },
     {
       "id": "recap_flow",
-      "match_any": [
-        "where were we",
-        "where were we?",
-        "what were we doing"
-      ],
+      "match_any": ["where were we", "where were we?", "what were we doing"],
       "events": [],
       "final_text": "We already shipped, you can stop praying now 😄"
     },
@@ -240,7 +225,7 @@
           "delay_ms": 320
         }
       ],
-      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\\n\\n🤖 It uses the **Agent Client Protocol (ACP)**, the most widely adopted standard to connect with agents like **Codex**, **Claude**, **Gemini**, and many others.\\n\\nNo need to stay in front of the computer just monitoring: now you can ask **your agent** to ship that release to production while you water your garden in the sun. 🌱\\n\\nCheck the docs 📚 to get started.\\n\\n> \"The goal of the future is full unemployment, so we can play.\"\\n>\\n> — Arthur C. Clarke"
+      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\n\n🤖 It uses the **Agent Client Protocol (ACP)**, the most widely adopted standard to connect with agents like **Codex**, **Claude**, **Gemini**, and many others.\n\nNo need to stay in front of the computer just monitoring: now you can ask **your agent** to ship that release to production 😉 while you water your garden in the sun. 🌱\n\nCheck the docs 📚 to get started.\n\n> \"The goal of the future is full unemployment, so we can play.\"\n>\n> — Arthur C. Clarke"
     }
   ]
 }

@@ -665,7 +665,7 @@ def _wait_for_manual_send_now_click(page: Page, *, timeout_seconds: float) -> bo
 
 
 def _wait_for_manual_resume_click(page: Page, *, timeout_seconds: float) -> bool:
-    resumed_text = page.get_by_text(re.compile(r"Session resumed", re.IGNORECASE)).last
+    resumed_text = page.get_by_text(re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)).last
     try:
         resumed_text.wait_for(timeout=int(timeout_seconds * 1000))
     except PlaywrightTimeoutError:
@@ -714,11 +714,16 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
         if step.wait_for_text is not None:
             wait_pattern = re.compile(step.wait_for_text.pattern, re.IGNORECASE)
             seen_before = page.get_by_text(wait_pattern).count()
+            min_count = seen_before + 1
+            # After /resume selection, the confirmation may already be visible.
+            # In that case we should not wait for a second identical message.
+            if "resumed session:" in step.wait_for_text.pattern.lower():
+                min_count = 1
             waited = _wait_for_text(
                 page,
                 wait_pattern,
                 timeout_seconds=step.wait_for_text.timeout_seconds,
-                min_count=seen_before + 1,
+                min_count=min_count,
             )
             if not waited:
                 print(f"Warning: did not detect `{step.wait_for_text.pattern}` before step `{step.id}`.")

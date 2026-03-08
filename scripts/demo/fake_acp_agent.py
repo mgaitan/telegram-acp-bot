@@ -348,13 +348,7 @@ class FakeDemoAcpAgent(Agent):
                 text=event.text,
             )
         if route.final_text.strip():
-            await self._emit_tool_event(
-                session_id=session_id,
-                tool_call_id=f"{route.id}-resume-final",
-                kind="think",
-                title="",
-                text=route.final_text,
-            )
+            await self._notify_agent_text(session_id, route.final_text)
 
     @staticmethod
     async def _sleep_with_cancel(cancel_event: asyncio.Event, delay_ms: int) -> bool:
