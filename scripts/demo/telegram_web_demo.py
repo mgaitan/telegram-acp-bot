@@ -17,10 +17,9 @@ from dotenv import load_dotenv
 from playwright.sync_api import BrowserContext, Locator, Page, Playwright, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
 
-# Mobile viewport — iPhone 12 Pro dimensions
+# Mobile viewport dimensions (matches Telegram Web mobile layout)
 MOBILE_WIDTH = 390
-MOBILE_HEIGHT = 844
-MOBILE_SCALE = 2.0
+MOBILE_HEIGHT = 780
 
 DETERMINISTIC_SEED = 20260308
 CHAT_URL_TEMPLATE = "https://web.telegram.org/k/#@{username}"
@@ -122,10 +121,6 @@ def _launch_context(
         user_data_dir=str(profile_dir),
         headless=headless,
         viewport={"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
-        screen={"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
-        is_mobile=True,
-        has_touch=True,
-        device_scale_factor=MOBILE_SCALE,
         **video_kwargs,  # type: ignore[arg-type]
     )
 

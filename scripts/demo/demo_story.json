@@ -78,8 +78,8 @@
       "text": "Where were we?",
       "wait_for_text": {
         "pattern": "Resumed session:",
-        "timeout_seconds": 12,
-        "after_ms": 180
+        "timeout_seconds": 20,
+        "after_ms": 1500
       }
     },
     {
@@ -87,7 +87,7 @@
       "text": "/new ../another-project",
       "wait_for_text": {
         "pattern": "we already shipped",
-        "timeout_seconds": 15,
+        "timeout_seconds": 25,
         "after_ms": 160
       }
     },
