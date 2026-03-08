@@ -7,75 +7,93 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mgaitan/telegram-acp-bot/blob/main/LICENSE)
 
-A Telegram bot that implements Agent Client Protocol to interact with AI agents
+```{raw} html
+<style>
+.hero {
+  display: grid;
+  gap: 2rem;
+  align-items: center;
+  margin: 2rem 0 1.5rem;
+}
 
-## Quick Start
+.hero-copy h2 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.7rem, 2.8vw, 2.5rem);
+  line-height: 1.15;
+}
 
-Run directly without installing via `uvx`
+.hero-copy p {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.phone {
+  width: min(100%, 380px);
+  margin: 0 auto;
+  padding: 12px;
+  border-radius: 36px;
+  background: linear-gradient(145deg, #141b26, #2b3748);
+  box-shadow: 0 20px 40px rgb(0 0 0 / 20%);
+}
+
+.phone iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  border: 0;
+  border-radius: 24px;
+}
+
+@media (min-width: 860px) {
+  .hero {
+    grid-template-columns: 1.2fr 0.8fr;
+  }
+
+  .phone {
+    margin: 0 0 0 auto;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .phone {
+    background: linear-gradient(145deg, #0f1520, #263445);
+  }
+}
+</style>
+
+<section class="hero">
+  <div class="hero-copy">
+    <h2>The agent works on your computer. You control it from Telegram.</h2>
+    <p>
+      A Telegram bot that brings the <a href="https://agentclientprotocol.com/" target="_blank" rel="noreferrer noopener">Agent Client Protocol (ACP)</a>
+      to your pocket.
+    </p>
+  </div>
+  <div class="phone" aria-label="Demo video in a phone frame">
+    <iframe
+      src="https://www.youtube.com/embed/QvLoZkhAbqA"
+      title="Telegram ACP bot demo"
+      loading="lazy"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+      allowfullscreen
+    ></iframe>
+  </div>
+</section>
+```
+
+Software is changing incredibly fast, and we no longer need to write every line of code by hand. To interact with an agent, a simple and friendly chat interface is enough, and you already carry one on your phone.
+
+ACP is the open protocol adopted by the industry to connect user interfaces to AI agents such as Codex, Claude Code, Gemini CLI, and [many others](https://agentclientprotocol.com/registry/index) that work on your machine.
+
+Telegram ACP bot is a full-featured, open-source ACP client that allows you to control your agent wherever you are. The good part? You can start an agent session on your computer from your preferred editor/CLI/IDE and continue it later on Telegram, or do it the other way around.
+
+**Don't watch the computer. Watch the sky.**
+
+Start with:
 
 ```bash
-uvx telegram-acp-bot --help
+TELEGRAM_BOT_TOKEN=123456:abc ACP_AGENT_COMMAND="your acp capable agent" uvx telegram-acp-bot
 ```
-
-Run the latest development version from git:
-
-```bash
-uvx git+https://github.com/mgaitan/telegram-acp-bot --help
-```
-
-```{richterm} env PYTHONPATH=../src uv run -m telegram_acp_bot --help
-:hide-command: true
-```
-
-To install the tool permanently:
-
-```bash
-uv tool install telegram-acp-bot
-```
-
-Run the bot with a real ACP agent:
-
-```bash
-TELEGRAM_BOT_TOKEN=123456:abc \
-ACP_AGENT_COMMAND="codex-acp" \
-uvx telegram-acp-bot
-```
-
-You can also set `TELEGRAM_BOT_TOKEN` and `ACP_AGENT_COMMAND` in a local `.env` file.
-
-Supported bot commands:
-- `/new [workspace]`
-- `/resume [N|workspace]`
-- `/session`
-- `/cancel`
-- `/stop`
-- `/clear`
-- `/restart [N [workspace]]`
-
-Session behavior:
-- The first user prompt in a chat starts a session implicitly in the default workspace.
-- Use `/new [workspace]` when you want to explicitly switch to another session/workspace.
-
-Attachment behavior:
-- Telegram inbound photos/documents are forwarded to ACP prompts.
-- ACP `file://` resources are delivered back as Telegram attachments when the file is inside the active workspace.
-
-Tool activity behavior:
-- ACP tool updates are emitted as separate Telegram messages grouped by tool kind (`think`, `execute`, `read`, etc.).
-- Labels currently used in chat are: `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, and `🔎 Querying` (or Spanish equivalents when `ACP_UI_LANGUAGE` is set to `es`).
-- `Thinking` blocks preserve basic markdown emphasis (for example, `**issue refs**`) while command/code views remain code-formatted.
-- Search activity blocks render compact details when available (`Query: "..."` and `URL: ...`) extracted from block title/text.
-- Permission prompts for risky actions are sent as independent messages with inline buttons.
-- The final assistant answer is sent as a separate message after those activity blocks.
-- If the final text payload is empty, no dummy "(no text response)" message is emitted.
-
-Permission behavior:
-- By default (`ACP_PERMISSION_MODE=ask`), permission requests are shown in Telegram with inline buttons.
-- You can set startup defaults with:
-  - `ACP_PERMISSION_MODE=ask|approve|deny`
-  - `ACP_PERMISSION_EVENT_OUTPUT=stdout|off`
-  - `ACP_STDIO_LIMIT=8388608` (increase for very large ACP stdout JSON lines)
-
 
 ```{toctree}
 :maxdepth: 2

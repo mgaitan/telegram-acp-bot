@@ -71,7 +71,7 @@ If you want to check everything looks ok, open the generated html in the browser
 
 ```bash
 $ make docs-open
-````
+```
 
 Also you can build the documentation in `epub` with `make docs-epub`
 
