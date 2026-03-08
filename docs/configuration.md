@@ -50,6 +50,18 @@ ACP_CONNECT_TIMEOUT
 ACP_LOG_LEVEL
   Application log level.
   Common values: `DEBUG`, `INFO`, `WARNING`, `ERROR`.
+
+ACP_TELEGRAM_CHANNEL_ALLOW_PATH
+  Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
+  Disabled by default. Set to `1` (or `true`/`yes`/`on`) only when file-path inputs are trusted.
+
+ACP_TELEGRAM_CHANNEL_STATE_FILE
+  Path to the MCP channel shared state file (`session_id -> chat_id`, plus last active session).
+  Usually injected by the bot runtime for the internal MCP server.
+
+ACP_TELEGRAM_BOT_TOKEN
+  Telegram bot token used by the internal MCP server when sending attachments.
+  Usually injected by the bot runtime for the internal MCP server.
 ```
 
 ## Example `.env`
@@ -71,3 +83,16 @@ ACP_LOG_LEVEL=INFO
 
 The bot always advertises an internal MCP stdio server named `telegram-channel`
 to the ACP agent. No extra configuration is required.
+
+(mcp-channel-environment-variables)=
+## MCP channel environment variables
+
+- {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` controls whether MCP attachment delivery accepts `path` input.
+  Default behavior is disabled, so agents must use `data_base64`.
+- {term}`ACP_TELEGRAM_CHANNEL_STATE_FILE` points to runtime state used to resolve session routing for MCP calls.
+- {term}`ACP_TELEGRAM_BOT_TOKEN` is the token consumed by the MCP server when calling Telegram Bot API.
+
+Security notes:
+
+- Keep {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` disabled unless your agent is trusted to read local files.
+- {term}`ACP_TELEGRAM_CHANNEL_STATE_FILE` and {term}`ACP_TELEGRAM_BOT_TOKEN` are typically managed by the bot process and should not be shared across unrelated runtimes.

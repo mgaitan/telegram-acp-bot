@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ BUSY_CALLBACK_PREFIX = "busy"
 PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
 BUSY_CALLBACK_PARTS = 2
+BUSY_SEND_NOW_TEXT = "✅ Sent."
 MAX_RESUME_ARGS = 1
 MAX_RESTART_ARGS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
@@ -59,10 +61,12 @@ KIND_LABELS = {
     "think": "💡 Thinking",
     "execute": "⚙️ Running",
     "read": "📖 Reading",
-    "search": "🔎 Searching",
     "edit": "✏️ Editing",
     "write": "✍️ Writing",
 }
+SEARCH_LABEL_WEB = "🌐 Searching web"
+SEARCH_LABEL_LOCAL = "🔎 Querying project"
+SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 
 
 @dataclass(slots=True, frozen=True)
@@ -541,9 +545,9 @@ class TelegramBridge:
             pending.notify_msg_id = None
             await query.answer("Cancel failed.")
             return
-        await query.answer("✅ Sent now.")
+        await query.answer(BUSY_SEND_NOW_TEXT)
         with suppress(TelegramError):
-            await query.edit_message_text("✅ Sent now.")
+            await query.edit_message_text(BUSY_SEND_NOW_TEXT)
         with suppress(TelegramError):
             await query.edit_message_reply_markup(reply_markup=None)
         pending.notify_msg_id = None
@@ -659,17 +663,9 @@ class TelegramBridge:
             workspace = self._activity_workspace(chat_id=chat_id)
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
+        if reply.text.strip():
+            await self._reply_agent(update, reply.text)
         await self._send_attachments(update, reply)
-        cleaned_text = self._sanitize_agent_reply_text(reply.text)
-        if cleaned_text.strip():
-            await self._reply_agent(update, cleaned_text)
-
-    @staticmethod
-    def _sanitize_agent_reply_text(text: str) -> str:
-        cleaned = text
-        for token in ("<image>", "<resource>", "<audio>"):
-            cleaned = cleaned.replace(token, "")
-        return cleaned.strip()
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
@@ -1029,19 +1025,55 @@ class TelegramBridge:
 
     @staticmethod
     def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
-        label = KIND_LABELS.get(block.kind, "⚙️ Tool call")
+        label = TelegramBridge._activity_label(block)
         text_parts = [f"*{label}*"]
         normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
         normalized_text = TelegramBridge._normalize_activity_text(block, workspace=workspace)
         if normalized_title and normalized_text and normalized_title == normalized_text:
             normalized_title = ""
         if normalized_title:
-            text_parts.append(TelegramBridge._render_activity_part(normalized_title))
+            text_parts.append(
+                TelegramBridge._render_activity_part(normalized_title, allow_basic_markdown=block.kind == "think")
+            )
         if normalized_text:
-            text_parts.append(TelegramBridge._render_activity_part(normalized_text))
+            text_parts.append(
+                TelegramBridge._render_activity_part(normalized_text, allow_basic_markdown=block.kind == "think")
+            )
         if block.status == "failed":
             text_parts.append("_Failed_")
         return "\n\n".join(text_parts)
+
+    @staticmethod
+    def _activity_label(block: AgentActivityBlock) -> str:
+        if block.kind != "search":
+            return KIND_LABELS.get(block.kind, "⚙️ Tool call")
+        source = TelegramBridge._search_source(block)
+        if source == "web":
+            return SEARCH_LABEL_WEB
+        if source == "local":
+            return SEARCH_LABEL_LOCAL
+        return SEARCH_LABEL_NEUTRAL
+
+    @staticmethod
+    def _search_source(block: AgentActivityBlock) -> str | None:
+        content = f"{block.title}\n{block.text}".lower()
+        if any(token in content for token in ("http://", "https://", "url:", "web search", "internet")):
+            return "web"
+        if "file://" in content:
+            return "local"
+        local_patterns = (
+            r"\bworkspace\b",
+            r"\brepository\b",
+            r"\brepo\b",
+            r"\bproject\b",
+            r"\bripgrep\b",
+            r"\brg\b",
+            r"\bgrep\b",
+            r"\bglob\b",
+        )
+        if any(re.search(pattern, content) for pattern in local_patterns):
+            return "local"
+        return None
 
     @staticmethod
     def _normalize_activity_title(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
@@ -1067,7 +1099,7 @@ class TelegramBridge:
         return text
 
     @staticmethod
-    def _escape_markdown_preserving_code(text: str) -> str:
+    def _escape_markdown_preserving_code(text: str, *, allow_basic_markdown: bool = False) -> str:
         escaped: list[str] = []
         in_code = False
         for char in text:
@@ -1078,17 +1110,20 @@ class TelegramBridge:
             if in_code:
                 escaped.append(char)
                 continue
-            if char in {"\\", "_", "*", "["}:
+            if char in {"\\", "["}:
+                escaped.append(f"\\{char}")
+                continue
+            if not allow_basic_markdown and char in {"_", "*"}:
                 escaped.append(f"\\{char}")
                 continue
             escaped.append(char)
         return "".join(escaped)
 
     @staticmethod
-    def _render_activity_part(text: str) -> str:
+    def _render_activity_part(text: str, *, allow_basic_markdown: bool = False) -> str:
         if "```" in text:
             return text
-        return TelegramBridge._escape_markdown_preserving_code(text)
+        return TelegramBridge._escape_markdown_preserving_code(text, allow_basic_markdown=allow_basic_markdown)
 
     @staticmethod
     def _format_read_path(raw_path: str, *, workspace: Path | None) -> str:

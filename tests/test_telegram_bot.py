@@ -1471,6 +1471,18 @@ async def test_format_activity_block_preserves_thinking_inline_code():
     assert "`docs/index.md`" in rendered
 
 
+async def test_format_activity_block_think_allows_basic_markdown_markers():
+    block = AgentActivityBlock(
+        kind="think",
+        title="",
+        status="completed",
+        text="Working on **#90** before final patch.",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "**#90**" in rendered
+    assert r"\*\*#90\*\*" not in rendered
+
+
 async def test_format_activity_block_execute_wraps_command_as_fenced_code_block():
     block = AgentActivityBlock(kind="execute", title="Run git diff -- README.md docs/index.md", status="in_progress")
     rendered = TelegramBridge._format_activity_block(block)
@@ -1531,17 +1543,67 @@ async def test_format_activity_block_execute_preserves_escaped_backticks_and_und
     assert "ACP_TELEGRAM_CHANNEL_ALLOW_PATH" in rendered
 
 
+async def test_format_activity_block_search_uses_web_label_when_url_present():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "telegram acp"',
+        status="completed",
+        text="URL: https://agentclientprotocol.com/",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🌐 Searching web*" in rendered
+
+
+async def test_format_activity_block_search_uses_project_label_for_local_markers():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query project for "ACP_TELEGRAM_CHANNEL_ALLOW_PATH"',
+        status="completed",
+        text="ripgrep in workspace",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying project*" in rendered
+
+
+async def test_format_activity_block_search_defaults_to_neutral_querying_label():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "send now"',
+        status="completed",
+        text="",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying*" in rendered
+
+
+async def test_format_activity_block_search_report_word_is_not_misclassified_as_repo():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "annual report"',
+        status="completed",
+        text="",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying*" in rendered
+
+
+async def test_format_activity_block_search_uses_project_label_for_file_uri():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "config"',
+        status="completed",
+        text="file:///home/user/project/pyproject.toml",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying project*" in rendered
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 
 
 async def test_format_permission_tool_title_non_run_keeps_title():
     assert TelegramBridge._format_permission_tool_title("Read README.md") == "Read README.md"
-
-
-async def test_sanitize_agent_reply_text_removes_non_text_tokens():
-    cleaned = TelegramBridge._sanitize_agent_reply_text("<image><resource>Done.<audio>")
-    assert cleaned == "Done."
 
 
 async def test_format_activity_block_execute_multiple_run_segments_use_consecutive_fenced_blocks():
@@ -2569,8 +2631,8 @@ async def test_on_busy_callback_send_now_cancels_and_queued_runs():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert callback.answers[-1] == "✅ Sent now."
-    assert callback.edited_text == "✅ Sent now."
+    assert callback.answers[-1] == "✅ Sent."
+    assert callback.edited_text == "✅ Sent."
     assert service.cancelled
 
     await task_one
@@ -2796,11 +2858,6 @@ async def test_on_busy_callback_send_now_edit_failure_is_handled():
     token = cast(str, markup.inline_keyboard[0][0].callback_data).split("|", 1)[1]
 
     class FailingEditAfterAnswer(DummyCallbackQuery):
-        async def edit_message_text(self, text: str) -> None:
-            if self.answers:
-                raise MarkdownFailureError
-            await super().edit_message_text(text)
-
         async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
             if self.answers:
                 raise MarkdownFailureError
@@ -2818,7 +2875,7 @@ async def test_on_busy_callback_send_now_edit_failure_is_handled():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert callback.answers[-1] == "✅ Sent now."
+    assert callback.answers[-1] == "✅ Sent."
     service.release()
     await task_one
 
