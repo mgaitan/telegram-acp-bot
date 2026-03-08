@@ -1575,6 +1575,17 @@ async def test_format_activity_block_search_report_word_is_not_misclassified_as_
     assert "*🔎 Querying*" in rendered
 
 
+async def test_format_activity_block_search_uses_project_label_for_file_uri():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "config"',
+        status="completed",
+        text="file:///home/user/project/pyproject.toml",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying project*" in rendered
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 
