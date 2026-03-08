@@ -50,7 +50,7 @@ Current interaction capabilities:
 
 Message flow:
 - The bot sends activity blocks while the prompt is running.
-- Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, `🔎 Querying project`, and fallback `🔎 Querying`.
+- Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, and `🔎 Querying`.
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
 - The final answer is sent as a separate message after activity blocks.
 - If the final text is empty, no dummy "(no text response)" message is sent.

@@ -65,7 +65,6 @@ KIND_LABELS = {
     "write": "✍️ Writing",
 }
 SEARCH_LABEL_WEB = "🌐 Searching web"
-SEARCH_LABEL_LOCAL = "🔎 Querying project"
 SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 
 
@@ -1046,8 +1045,6 @@ class TelegramBridge:
         source = TelegramBridge._search_source(block)
         if source == "web":
             return SEARCH_LABEL_WEB
-        if source == "local":
-            return SEARCH_LABEL_LOCAL
         return SEARCH_LABEL_NEUTRAL
 
     @staticmethod
