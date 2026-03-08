@@ -2564,8 +2564,8 @@ async def test_on_busy_callback_send_now_cancels_and_queued_runs():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert callback.answers[-1] == "✅ Sent now."
-    assert callback.edited_text == "✅ Sent now."
+    assert callback.answers[-1] == "✅ Sent."
+    assert callback.edited_text == "✅ Sent."
     assert service.cancelled
 
     await task_one
@@ -2808,7 +2808,7 @@ async def test_on_busy_callback_send_now_edit_failure_is_handled():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert callback.answers[-1] == "✅ Sent now."
+    assert callback.answers[-1] == "✅ Sent."
     service.release()
     await task_one
 
