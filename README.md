@@ -13,9 +13,7 @@ Project documentation: <https://mgaitan.github.io/telegram-acp-bot/>
 
 ## Status
 
-This project is in **alpha** and under heavy active development.
-
-Development has included extensive use of `gpt-5.3-codex`.
+This project is in **alpha** and under active development. Development has included extensive use of AI agents. Human and agents contributions are welcome.
 
 ## Quick Start
 
