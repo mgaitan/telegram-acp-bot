@@ -105,7 +105,7 @@ class ScriptedDemoAgentService:
             return demo_sessions
         return tuple(item for item in demo_sessions if self._normalize_workspace(item.workspace) == normalized)
 
-    async def prompt(
+    async def prompt(  # noqa: PLR0911
         self,
         *,
         chat_id: int,

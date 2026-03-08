@@ -48,6 +48,10 @@ DEFAULT_SERVER_WAIT_SECONDS = 2.5
 SERVER_START_FAILED_MESSAGE = "Demo bot server exited before recording started."
 INVALID_WAIT_SECONDS_MESSAGE = "--server-wait-seconds must be a positive number"
 DETERMINISTIC_TYPING_SEED = 20260308
+MIN_TYPO_TEXT_LENGTH = 24
+TYPO_INJECTION_SKIP_PROBABILITY = 0.45
+START_STEP_INDEX_OUT_OF_RANGE_TEMPLATE = "--start-step index out of range: {value}"
+START_STEP_ID_NOT_FOUND_TEMPLATE = "--start-step id not found: {value}"
 
 
 class DemoConfig(argparse.Namespace):
@@ -470,9 +474,9 @@ def _typo_replacement(char: str) -> str:
 
 
 def _pick_typo_index(text: str, *, rng: Random) -> int | None:
-    if len(text) < 24 or " " not in text:
+    if len(text) < MIN_TYPO_TEXT_LENGTH or " " not in text:
         return None
-    if rng.random() >= 0.45:
+    if rng.random() >= TYPO_INJECTION_SKIP_PROBABILITY:
         return None
     candidates = [index for index, char in enumerate(text[:-1]) if char.isalnum()]
     if not candidates:
@@ -626,7 +630,7 @@ def _show_tap_marker(page: Page, *, x: float, y: float) -> None:
     )
 
 
-def _click_resume_choice(page: Page, *, choice_index: int, timeout_seconds: float) -> bool:
+def _click_resume_choice(page: Page, *, choice_index: int, timeout_seconds: float) -> bool:  # noqa: C901, PLR0912
     pattern = re.compile(rf"{choice_index}\.", re.IGNORECASE)
     resumed_pattern = re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)
     resumed_min_count = page.get_by_text(resumed_pattern).count() + 1
@@ -756,7 +760,9 @@ def _run_story_action(
     )
 
 
-def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, manual_story_actions: bool) -> None:
+def _run_story(  # noqa: C901, PLR0912, PLR0915
+    page: Page, *, timeout_seconds: float, scenario: DemoScenario, manual_story_actions: bool
+) -> None:
     pause_seconds = (scenario.runtime.pause_min_seconds + scenario.runtime.pause_max_seconds) / 2
     pdf_followup_pause_seconds = 0.75
     typing_rng = Random(DETERMINISTIC_TYPING_SEED)
@@ -878,11 +884,13 @@ def _resolve_start_index(scenario: DemoScenario, start_step: str | None) -> int:
         index = int(value) - 1
         if 0 <= index < len(scenario.user_steps):
             return index
-        raise SystemExit(f"--start-step index out of range: {value}")
+        message = START_STEP_INDEX_OUT_OF_RANGE_TEMPLATE.format(value=value)
+        raise SystemExit(message)
     for index, step in enumerate(scenario.user_steps):
         if step.id == value:
             return index
-    raise SystemExit(f"--start-step id not found: {value}")
+    message = START_STEP_ID_NOT_FOUND_TEMPLATE.format(value=value)
+    raise SystemExit(message)
 
 
 def _latest_video_path(video_dir: Path) -> Path | None:
@@ -901,7 +909,7 @@ def _prepare_video_dir(config: DemoConfig) -> None:
     config.video_dir.mkdir(parents=True, exist_ok=True)
 
 
-def run() -> int:
+def run() -> int:  # noqa: C901, PLR0912, PLR0915
     load_dotenv(override=False)
     config = parse_args()
     if config.server_wait_seconds <= 0:
