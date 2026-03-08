@@ -266,17 +266,21 @@ def _open_chat(page: Page, *, username: str) -> None:
     page.goto(CHAT_URL_TEMPLATE.format(username=username), wait_until="domcontentloaded")
     page.wait_for_timeout(1_500)
     composer = page.locator("div.input-message-input[contenteditable='true']").first
-    if composer.is_visible():
-        return
-    # Fallback: use global search shortcut
-    page.keyboard.press("ControlOrMeta+K")
-    page.wait_for_timeout(400)
-    page.keyboard.type(f"@{username}")
-    page.wait_for_timeout(900)
-    result = page.get_by_text(re.compile(re.escape(username), re.IGNORECASE)).first
-    if result.count() and result.is_visible():
-        result.click()
-        page.wait_for_timeout(1_000)
+    if not composer.is_visible():
+        # Fallback: use global search shortcut
+        page.keyboard.press("ControlOrMeta+K")
+        page.wait_for_timeout(400)
+        page.keyboard.type(f"@{username}")
+        page.wait_for_timeout(900)
+        result = page.get_by_text(re.compile(re.escape(username), re.IGNORECASE)).first
+        if result.count() and result.is_visible():
+            result.click()
+            page.wait_for_timeout(1_000)
+    # Wait until composer is ready before returning — gives the page enough time to finish loading.
+    try:
+        composer.wait_for(state="visible", timeout=20_000)
+    except PlaywrightError as exc:
+        raise SystemExit(MISSING_COMPOSER) from exc
 
 
 def _try_start_button(page: Page) -> None:
