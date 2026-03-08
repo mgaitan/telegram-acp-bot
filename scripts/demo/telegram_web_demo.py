@@ -795,18 +795,20 @@ def _run_story(  # noqa: C901, PLR0912, PLR0915
             _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
             recap_reply_seen = True
             if followup_pattern is not None:
+                # If release flow is still busy, proactively trigger queued recap delivery.
+                _click_send_now(page, timeout_seconds=min(timeout_seconds, 2.0), show_tap_marker=False)
                 recap_reply_seen = _wait_for_text(
                     page,
                     followup_pattern,
-                    timeout_seconds=followup_timeout_seconds,
+                    timeout_seconds=min(followup_timeout_seconds, 6.0),
                     min_count=followup_min_count,
                 )
                 if not recap_reply_seen:
-                    _click_send_now(page, timeout_seconds=min(timeout_seconds, 3.0), show_tap_marker=False)
+                    _click_send_now(page, timeout_seconds=min(timeout_seconds, 2.0), show_tap_marker=False)
                     recap_reply_seen = _wait_for_text(
                         page,
                         followup_pattern,
-                        timeout_seconds=min(followup_timeout_seconds, 6.0),
+                        timeout_seconds=min(followup_timeout_seconds, 4.0),
                         min_count=followup_min_count,
                     )
                 if not recap_reply_seen:
@@ -960,7 +962,8 @@ def run() -> int:  # noqa: C901, PLR0912, PLR0915
 
             _ensure_logged_in(page)
             if config.manual_open_chat:
-                page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
+                if not _chat_list_visible(page) and not _composer_is_visible(page):
+                    page.goto("https://web.telegram.org/k/", wait_until="domcontentloaded")
                 if config.capture_click_coords:
                     _install_click_coordinates_logger(page)
                     print("Click target chat in browser to print coordinates as: DEMO_CLICK X,Y")
