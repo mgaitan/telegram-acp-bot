@@ -1,6 +1,6 @@
 {
   "runtime": {
-    "typing_delay_ms": 40,
+    "typing_delay_ms": 26,
     "pause_min_seconds": 1.4,
     "pause_max_seconds": 3.8,
     "final_pause_seconds": 3.2,
@@ -31,7 +31,7 @@
       "wait_for_text": {
         "pattern": "Session started:",
         "timeout_seconds": 12,
-        "after_ms": 250
+        "after_ms": 80
       }
     },
     {
@@ -69,30 +69,51 @@
       "actions": [
         {
           "type": "click_resume_choice",
-          "index": 1
+          "index": 2
         }
       ]
+    },
+    {
+      "id": "recap",
+      "text": "Where were we?",
+      "wait_for_text": {
+        "pattern": "Resumed session:",
+        "timeout_seconds": 12,
+        "after_ms": 180
+      }
+    },
+    {
+      "id": "new_project",
+      "text": "/new ../another-project",
+      "wait_for_text": {
+        "pattern": "we already shipped",
+        "timeout_seconds": 15,
+        "after_ms": 160
+      }
     },
     {
       "id": "closing",
       "text": "This UX for AI agents is really good.",
       "wait_for_text": {
-        "pattern": "Resumed session:",
+        "pattern": "Session started:",
         "timeout_seconds": 12,
-        "after_ms": 300
+        "after_ms": 150
       }
     }
   ],
   "agent_routes": [
     {
       "id": "release_flow",
-      "match_any": ["merge", "release"],
+      "match_any": [
+        "merge",
+        "release"
+      ],
       "events": [
         {
           "kind": "think",
           "title": "",
           "text": "Checking unresolved comments, required reviews, and status checks before merging.",
-          "delay_ms": 1700
+          "delay_ms": 850
         },
         {
           "kind": "execute",
@@ -130,7 +151,12 @@
     },
     {
       "id": "webcam_flow",
-      "match_any": ["webcam", "photo", "image", "picture"],
+      "match_any": [
+        "webcam",
+        "photo",
+        "image",
+        "picture"
+      ],
       "events": [
         {
           "kind": "think",
@@ -152,11 +178,18 @@
         }
       ],
       "final_text": "Done. You are cute ❤️. I will continue working on the release task now.",
-      "final_images": ["webcam_image"]
+      "final_images": [
+        "webcam_image"
+      ]
     },
     {
       "id": "pdf_flow",
-      "match_any": ["attachment", "diagnostics", "report", "pdf"],
+      "match_any": [
+        "attachment",
+        "diagnostics",
+        "report",
+        "pdf"
+      ],
       "events": [
         {
           "kind": "think",
@@ -178,7 +211,19 @@
         }
       ],
       "final_text": "Diagnostics PDF is ready and attached.",
-      "final_files": ["diagnostics_pdf"]
+      "final_files": [
+        "diagnostics_pdf"
+      ]
+    },
+    {
+      "id": "recap_flow",
+      "match_any": [
+        "where were we",
+        "where were we?",
+        "what were we doing"
+      ],
+      "events": [],
+      "final_text": "We already shipped, you can stop praying now 😄"
     },
     {
       "id": "closing_flow",
@@ -192,10 +237,10 @@
           "kind": "think",
           "title": "",
           "text": "Yes! We put a lot of love into it ❤️",
-          "delay_ms": 900
+          "delay_ms": 320
         }
       ],
-      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\n\n🤖 It uses the **Agent Client Protocol (ACP)** to connect with agents like **Codex**, **Claude**, **Gemini**, and many others.\n\n🛠️ And you can use it with **your own agent** too!\n\n📚 Check the docs to get started."
+      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\\n\\n🤖 It uses the **Agent Client Protocol (ACP)**, the most widely adopted standard to connect with agents like **Codex**, **Claude**, **Gemini**, and many others.\\n\\nNo need to stay in front of the computer just monitoring: now you can ask **your agent** to ship that release to production while you water your garden in the sun. 🌱\\n\\nCheck the docs 📚 to get started.\\n\\n> \"The goal of the future is full unemployment, so we can play.\"\\n>\\n> — Arthur C. Clarke"
     }
   ]
 }
