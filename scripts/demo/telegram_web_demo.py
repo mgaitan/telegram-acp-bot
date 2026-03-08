@@ -262,12 +262,24 @@ def _run_story(page: Page, scenario: DemoScenario, *, pause_seconds: float) -> N
         sleep(pause_seconds)
 
 
+def _try_start_button(page: Page) -> None:
+    """Click the bot Start/Open button if it is present (new chat or cleared history)."""
+    btn = page.get_by_role("button", name=re.compile(r"^(start|open|iniciar|abrir)$", re.IGNORECASE)).first
+    if btn.count() and btn.is_visible():
+        btn.click()
+        page.wait_for_timeout(600)
+
+
 def _open_chat(page: Page, *, username: str) -> None:
     page.goto(CHAT_URL_TEMPLATE.format(username=username), wait_until="domcontentloaded")
-    page.wait_for_timeout(1_500)
+    page.wait_for_timeout(2_000)
     composer = page.locator("div.input-message-input[contenteditable='true']").first
     if not composer.is_visible():
-        # Fallback: use global search shortcut
+        # The bot profile panel may show a Start/Open button before the composer appears.
+        _try_start_button(page)
+        page.wait_for_timeout(800)
+    if not composer.is_visible():
+        # Fallback: use global search shortcut to navigate to the chat.
         page.keyboard.press("ControlOrMeta+K")
         page.wait_for_timeout(400)
         page.keyboard.type(f"@{username}")
@@ -275,19 +287,13 @@ def _open_chat(page: Page, *, username: str) -> None:
         result = page.get_by_text(re.compile(re.escape(username), re.IGNORECASE)).first
         if result.count() and result.is_visible():
             result.click()
-            page.wait_for_timeout(1_000)
-    # Wait until composer is ready before returning — gives the page enough time to finish loading.
+            page.wait_for_timeout(1_200)
+        _try_start_button(page)
+    # Block until the composer is ready — everything else depends on it.
     try:
         composer.wait_for(state="visible", timeout=20_000)
     except PlaywrightError as exc:
         raise SystemExit(MISSING_COMPOSER) from exc
-
-
-def _try_start_button(page: Page) -> None:
-    btn = page.get_by_role("button", name=re.compile(r"^(start|iniciar)$", re.IGNORECASE)).first
-    if btn.count() and btn.is_visible():
-        btn.click()
-        page.wait_for_timeout(400)
 
 
 def _ensure_logged_in(page: Page) -> None:
@@ -356,7 +362,6 @@ def run() -> int:
                 return 0
 
             _open_chat(page, username=username)
-            _try_start_button(page)
             _run_story(page, scenario, pause_seconds=args.pause)
             sleep(max(3.0, scenario.runtime.final_pause_seconds))
             ctx.close()
