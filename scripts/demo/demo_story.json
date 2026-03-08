@@ -1,0 +1,231 @@
+{
+  "runtime": {
+    "typing_delay_ms": 26,
+    "pause_min_seconds": 1.4,
+    "pause_max_seconds": 3.8,
+    "final_pause_seconds": 9.0,
+    "image_reply_pattern": "webcam-small\\\\.jpg|you are cute"
+  },
+  "assets": {
+    "webcam_image": {
+      "kind": "image",
+      "path": "demo.png",
+      "mime_type": "image/png",
+      "name": "webcam-small.jpg"
+    },
+    "diagnostics_pdf": {
+      "kind": "file",
+      "path": "release-diagnostics.pdf",
+      "mime_type": "application/pdf",
+      "name": "release-diagnostics.pdf"
+    }
+  },
+  "user_steps": [
+    {
+      "id": "new",
+      "text": "/new"
+    },
+    {
+      "id": "primary",
+      "text": "Can you quickly check whether there are unresolved review comments? If all clear, merge the latest PR and ship a patch release.",
+      "wait_for_text": {
+        "pattern": "Session started:",
+        "timeout_seconds": 12,
+        "after_ms": 80
+      }
+    },
+    {
+      "id": "queue",
+      "text": "Wait, first send me a webcam photo, then continue with the release work.",
+      "wait_for_text": {
+        "pattern": "Checking unresolved comments",
+        "timeout_seconds": 45,
+        "after_ms": 1300
+      },
+      "actions": [
+        {
+          "type": "click_send_now",
+          "tap_marker": true
+        }
+      ]
+    },
+    {
+      "id": "attachment",
+      "text": "Also generate a short diagnostics report as a PDF and attach it here.",
+      "wait_for_text": {
+        "pattern": "webcam-small\\\\.jpg|you are cute",
+        "timeout_seconds": 30,
+        "after_ms": 120
+      }
+    },
+    {
+      "id": "resume",
+      "text": "/resume",
+      "wait_for_text": {
+        "pattern": "Diagnostics PDF is ready and attached\\.",
+        "timeout_seconds": 40,
+        "after_ms": 450
+      },
+      "actions": [
+        {
+          "type": "click_resume_choice",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "id": "recap",
+      "text": "Where were we?",
+      "wait_for_text": {
+        "pattern": "Resumed session:",
+        "timeout_seconds": 12,
+        "after_ms": 180
+      }
+    },
+    {
+      "id": "new_project",
+      "text": "/new ../another-project",
+      "wait_for_text": {
+        "pattern": "we already shipped",
+        "timeout_seconds": 15,
+        "after_ms": 160
+      }
+    },
+    {
+      "id": "closing",
+      "text": "This UX for AI agents is really good.",
+      "wait_for_text": {
+        "pattern": "Session started:",
+        "timeout_seconds": 12,
+        "after_ms": 150
+      }
+    }
+  ],
+  "agent_routes": [
+    {
+      "id": "release_flow",
+      "match_any": ["merge", "release"],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Checking unresolved comments, required reviews, and status checks before merging.",
+          "delay_ms": 850
+        },
+        {
+          "kind": "execute",
+          "title": "Run gh pr view 92 --json reviewDecision,reviews,statusCheckRollup",
+          "text": "No blocking review comments found. Required checks look healthy.",
+          "delay_ms": 3600
+        },
+        {
+          "kind": "execute",
+          "title": "Run gh pr merge 92 --merge --delete-branch, Run git checkout main, Run git pull --ff-only",
+          "text": "",
+          "delay_ms": 4300
+        },
+        {
+          "kind": "edit",
+          "title": "Edit pyproject.toml",
+          "text": "Bumped patch version and aligned CLI/docs notes for the release.",
+          "delay_ms": 2500
+        },
+        {
+          "kind": "execute",
+          "title": "Run uv run pytest tests/test_acp_service.py",
+          "text": "Test suite for ACP service passed.",
+          "delay_ms": 6400
+        },
+        {
+          "kind": "execute",
+          "title": "Run gh release create v0.1.2 --target main --generate-notes",
+          "text": "Draft release created with auto-generated notes.",
+          "delay_ms": 3900
+        },
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Looks good: no unresolved blockers.",
+          "delay_ms": 300
+        }
+      ],
+      "cancel_reply_text": "Release flow interrupted to process your queued request. I can resume it after the quick task.",
+      "final_text": "I merged the PR, synced `main`, ran the ACP service tests, and prepared the patch release notes."
+    },
+    {
+      "id": "webcam_flow",
+      "match_any": ["webcam", "photo", "image", "picture"],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "I can do that now. I will capture one frame from `/dev/video0` and send it right away.",
+          "delay_ms": 900
+        },
+        {
+          "kind": "execute",
+          "title": "Run ffmpeg -f video4linux2 -i /dev/video0 -frames:v 1 /tmp/webcam-small.jpg",
+          "text": "",
+          "delay_ms": 2300
+        },
+        {
+          "kind": "other",
+          "title": "Run telegram-channel/telegram_send_attachment",
+          "text": "Uploaded `/tmp/webcam-small.jpg` as a photo via the Telegram MCP channel.",
+          "delay_ms": 1500
+        }
+      ],
+      "final_text": "Done. You are cute ❤️. I will continue working on the release task now.",
+      "final_images": ["webcam_image"]
+    },
+    {
+      "id": "pdf_flow",
+      "match_any": ["attachment", "diagnostics", "report", "pdf"],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Generating a compact diagnostics report in PDF format and attaching it here.",
+          "delay_ms": 650
+        },
+        {
+          "kind": "execute",
+          "title": "Run python tools/collect_release_diagnostics.py --format pdf --output /tmp/release-diagnostics.pdf",
+          "text": "CI checks: green. Docs preview: green. Pending: final reviewer ack.",
+          "delay_ms": 1000
+        },
+        {
+          "kind": "other",
+          "title": "Run telegram-channel/telegram_send_attachment",
+          "text": "Attached `/tmp/release-diagnostics.pdf` to this conversation.",
+          "delay_ms": 820
+        }
+      ],
+      "final_text": "Diagnostics PDF is ready and attached.",
+      "final_files": ["diagnostics_pdf"]
+    },
+    {
+      "id": "recap_flow",
+      "match_any": ["where were we", "where were we?", "what were we doing"],
+      "events": [],
+      "final_text": "We already shipped, you can stop praying now 😄"
+    },
+    {
+      "id": "closing_flow",
+      "match_any": [
+        "ux for ai agents is really good",
+        "ux for ai agents",
+        "really good"
+      ],
+      "events": [
+        {
+          "kind": "think",
+          "title": "",
+          "text": "Yes! We put a lot of love into it ❤️",
+          "delay_ms": 320
+        }
+      ],
+      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\n\n🤖 It uses the **Agent Client Protocol (ACP)**, the most widely adopted standard to connect a User Interface with agents like **Codex**, **Claude**, **Gemini**, and many others.\n\nNo need to stay in front of the computer just monitoring: now you can ask **your agent** to ship that release to production 😉 while you water your garden in the sun. 🌱\n\nCheck the docs 📚 to get started.\n\n> \"The goal of the future is full unemployment, so we can play.\"\n>\n> — Arthur C. Clarke"
+    }
+  ]
+}
