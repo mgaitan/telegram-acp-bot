@@ -663,9 +663,9 @@ class TelegramBridge:
             workspace = self._activity_workspace(chat_id=chat_id)
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
+        await self._send_attachments(update, reply)
         if reply.text.strip():
             await self._reply_agent(update, reply.text)
-        await self._send_attachments(update, reply)
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace

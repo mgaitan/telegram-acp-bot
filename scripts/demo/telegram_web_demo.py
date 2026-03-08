@@ -8,7 +8,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from random import uniform
+from random import Random
 from time import sleep
 
 from demo_scenario import (
@@ -46,6 +46,7 @@ EXPECTED_COORD_PARTS = 2
 DEFAULT_SERVER_WAIT_SECONDS = 2.5
 SERVER_START_FAILED_MESSAGE = "Demo bot server exited before recording started."
 INVALID_WAIT_SECONDS_MESSAGE = "--server-wait-seconds must be a positive number"
+DETERMINISTIC_TYPING_SEED = 20260308
 
 
 class DemoConfig(argparse.Namespace):
@@ -443,17 +444,52 @@ def _try_click_start(page: Page) -> None:
         page.wait_for_timeout(500)
 
 
-def _send_message(page: Page, text: str, *, typing_delay_ms: int) -> None:
+def _typing_delay_ms(*, base: int, rng: Random) -> int:
+    return max(15, base + rng.randint(-7, 9))
+
+
+def _typo_replacement(char: str) -> str:
+    if char.isalpha():
+        replacement = "e" if char.lower() != "e" else "r"
+        return replacement.upper() if char.isupper() else replacement
+    if char.isdigit():
+        return "1" if char != "1" else "2"
+    return char
+
+
+def _pick_typo_index(text: str, *, rng: Random) -> int | None:
+    if len(text) < 24 or " " not in text:
+        return None
+    if rng.random() >= 0.45:
+        return None
+    candidates = [index for index, char in enumerate(text[:-1]) if char.isalnum()]
+    if not candidates:
+        return None
+    return candidates[rng.randint(0, len(candidates) - 1)]
+
+
+def _type_message_with_jitter(page: Page, text: str, *, typing_delay_ms: int, rng: Random) -> None:
+    typo_index = _pick_typo_index(text, rng=rng)
+    for index, char in enumerate(text):
+        if typo_index is not None and index == typo_index:
+            wrong = _typo_replacement(char)
+            if wrong != char:
+                page.keyboard.type(wrong, delay=_typing_delay_ms(base=typing_delay_ms, rng=rng))
+                page.keyboard.press("Backspace")
+        page.keyboard.type(char, delay=_typing_delay_ms(base=typing_delay_ms, rng=rng))
+
+
+def _send_message(page: Page, text: str, *, typing_delay_ms: int, rng: Random) -> None:
     composer = _find_composer(page)
     composer.click()
     page.keyboard.press("ControlOrMeta+A")
     page.keyboard.press("Backspace")
-    page.keyboard.type(text, delay=typing_delay_ms)
+    _type_message_with_jitter(page, text, typing_delay_ms=typing_delay_ms, rng=rng)
     page.keyboard.press("Enter")
 
 
-def _human_pause(seconds_range: tuple[float, float]) -> None:
-    sleep(uniform(*seconds_range))
+def _human_pause(seconds: float) -> None:
+    sleep(seconds)
 
 
 def _wait_for_activity_labels(page: Page, *, timeout_seconds: float) -> None:
@@ -476,14 +512,20 @@ def _wait_for_activity_labels(page: Page, *, timeout_seconds: float) -> None:
     print("Warning: activity labels were not detected in time.")
 
 
-def _wait_for_text(page: Page, pattern: re.Pattern[str], *, timeout_seconds: float) -> bool:
+def _wait_for_text(
+    page: Page,
+    pattern: re.Pattern[str],
+    *,
+    timeout_seconds: float,
+    min_count: int = 1,
+) -> bool:
     deadline_ms = int(timeout_seconds * 1000)
     elapsed = 0
     tick_ms = 300
     while elapsed < deadline_ms:
         locator = page.get_by_text(pattern)
         count = locator.count()
-        if count:
+        if count >= min_count:
             for index in range(count - 1, -1, -1):
                 candidate = locator.nth(index)
                 if candidate.is_visible():
@@ -521,7 +563,7 @@ def _click_send_now(page: Page, *, timeout_seconds: float, show_tap_marker: bool
                 if show_tap_marker:
                     _show_tap_marker(page, x=click_x, y=click_y)
                     page.wait_for_timeout(170)
-                page.mouse.click(click_x, click_y)
+                page.touchscreen.tap(click_x, click_y)
                 print(f"Auto-clicked Send now at ({int(click_x)},{int(click_y)}).")
                 page.wait_for_timeout(500)
                 return True
@@ -568,27 +610,42 @@ def _show_tap_marker(page: Page, *, x: float, y: float) -> None:
 
 
 def _click_resume_choice(page: Page, *, choice_index: int, timeout_seconds: float) -> bool:
-    pattern = re.compile(rf"^{choice_index}\\.", re.IGNORECASE)
-    by_role = page.get_by_role("button", name=pattern).first
-    try:
-        by_role.wait_for(timeout=int(timeout_seconds * 1000))
-        by_role.click()
-        page.wait_for_timeout(500)
-    except PlaywrightTimeoutError:
-        pass
-    else:
-        return True
+    pattern = re.compile(rf"{choice_index}\\.", re.IGNORECASE)
+    deadline_ms = int(timeout_seconds * 1000)
+    elapsed = 0
+    tick_ms = 250
+    while elapsed < deadline_ms:
+        by_role = page.get_by_role("button", name=pattern)
+        if by_role.count():
+            for index in range(by_role.count()):
+                candidate = by_role.nth(index)
+                if not candidate.is_visible():
+                    continue
+                box = candidate.bounding_box()
+                if box is None:
+                    continue
+                page.touchscreen.tap(box["x"] + (box["width"] / 2), box["y"] + (box["height"] / 2))
+                page.wait_for_timeout(220)
+                return True
 
-    by_text = page.get_by_text(pattern).first
-    try:
-        by_text.wait_for(timeout=int(timeout_seconds * 1000))
-        by_text.click()
-        page.wait_for_timeout(500)
-    except PlaywrightTimeoutError:
-        print(f"Warning: could not click resume choice index {choice_index}.")
-        return False
-    else:
-        return True
+        by_text = page.get_by_text(pattern)
+        if by_text.count():
+            for index in range(by_text.count()):
+                candidate = by_text.nth(index)
+                if not candidate.is_visible():
+                    continue
+                box = candidate.bounding_box()
+                if box is None:
+                    continue
+                page.touchscreen.tap(box["x"] + (box["width"] / 2), box["y"] + (box["height"] / 2))
+                page.wait_for_timeout(220)
+                return True
+
+        page.wait_for_timeout(tick_ms)
+        elapsed += tick_ms
+
+    print(f"Warning: could not click resume choice index {choice_index}.")
+    return False
 
 
 def _wait_for_manual_send_now_click(page: Page, *, timeout_seconds: float) -> bool:
@@ -646,24 +703,28 @@ def _run_story_action(
     clicked = _click_resume_choice(page, choice_index=action.index, timeout_seconds=timeout_seconds)
     if clicked:
         return
-    print(f"Manual fallback: click resume option '{action.index}.' in Telegram Web. Waiting for selection...")
-    _wait_for_manual_resume_click(page, timeout_seconds=timeout_seconds)
+    print(f"Warning: resume option '{action.index}.' was not auto-clicked.")
 
 
 def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, manual_story_actions: bool) -> None:
-    pause_range = (scenario.runtime.pause_min_seconds, scenario.runtime.pause_max_seconds)
+    pause_seconds = (scenario.runtime.pause_min_seconds + scenario.runtime.pause_max_seconds) / 2
+    pdf_followup_pause_seconds = 0.75
+    typing_rng = Random(DETERMINISTIC_TYPING_SEED)
     for step in scenario.user_steps:
         if step.wait_for_text is not None:
+            wait_pattern = re.compile(step.wait_for_text.pattern, re.IGNORECASE)
+            seen_before = page.get_by_text(wait_pattern).count()
             waited = _wait_for_text(
                 page,
-                re.compile(step.wait_for_text.pattern, re.IGNORECASE),
+                wait_pattern,
                 timeout_seconds=step.wait_for_text.timeout_seconds,
+                min_count=seen_before + 1,
             )
             if not waited:
                 print(f"Warning: did not detect `{step.wait_for_text.pattern}` before step `{step.id}`.")
             if step.wait_for_text.after_ms > 0:
                 page.wait_for_timeout(step.wait_for_text.after_ms)
-        _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms)
+        _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
         for action in step.actions:
             _run_story_action(
                 page,
@@ -684,15 +745,19 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
         if step.id == "primary":
             page.wait_for_timeout(250)
             continue
-        _human_pause(pause_range)
+        if step.id == "resume":
+            continue
+        if step.id == "attachment":
+            _human_pause(pdf_followup_pause_seconds)
+            continue
+        _human_pause(pause_seconds)
 
     image_seen = _wait_for_text(
         page,
         re.compile(scenario.runtime.image_reply_pattern, re.IGNORECASE),
         timeout_seconds=timeout_seconds * 1.4,
     )
-    if not image_seen:
-        print("Warning: image delivery confirmation not detected in time.")
+    _ = image_seen
 
 
 def _latest_video_path(video_dir: Path) -> Path | None:

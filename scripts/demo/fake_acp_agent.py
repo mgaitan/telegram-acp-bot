@@ -73,6 +73,9 @@ McpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 class _SessionState:
     cwd: Path
     cancel_event: asyncio.Event
+    pending_route_id: str | None = None
+    pending_event_index: int = 0
+    resume_task: asyncio.Task[None] | None = None
 
 
 class FakeDemoAcpAgent(Agent):
@@ -188,7 +191,9 @@ class FakeDemoAcpAgent(Agent):
 
         for index, event in enumerate(route.events, start=1):
             if await self._sleep_with_cancel(session.cancel_event, event.delay_ms):
-                return await self._cancelled_response(session_id, route.cancel_reply_text)
+                self._store_interrupted_route(session=session, route_id=route.id, next_event_index=index - 1)
+                reply_text = "" if route.id == "release_flow" else route.cancel_reply_text
+                return await self._cancelled_response(session_id, reply_text)
             await self._emit_tool_event(
                 session_id=session_id,
                 tool_call_id=f"{route.id}-{index}",
@@ -197,7 +202,9 @@ class FakeDemoAcpAgent(Agent):
                 text=event.text,
             )
             if session.cancel_event.is_set():
-                return await self._cancelled_response(session_id, route.cancel_reply_text)
+                self._store_interrupted_route(session=session, route_id=route.id, next_event_index=index)
+                reply_text = "" if route.id == "release_flow" else route.cancel_reply_text
+                return await self._cancelled_response(session_id, reply_text)
 
         for asset_id in route.final_images:
             await self._notify_image_asset(session_id, self._scenario.assets[asset_id])
@@ -205,6 +212,8 @@ class FakeDemoAcpAgent(Agent):
             await self._notify_file_asset(session_id, self._scenario.assets[asset_id])
         if route.final_text.strip():
             await self._notify_agent_text(session_id, route.final_text)
+        if route.id == "webcam_flow" and session.pending_route_id is not None:
+            self._schedule_resume_interrupted_route(session_id=session_id, session=session)
 
         await self._flush_notifications()
         return PromptResponse(stop_reason=STOP_REASON_END_TURN)
@@ -303,6 +312,49 @@ class FakeDemoAcpAgent(Agent):
             await self._notify_agent_text(session_id, reply_text)
         await self._flush_notifications()
         return PromptResponse(stop_reason=STOP_REASON_CANCELLED)
+
+    def _store_interrupted_route(self, *, session: _SessionState, route_id: str, next_event_index: int) -> None:
+        if route_id != "release_flow":
+            return
+        session.pending_route_id = route_id
+        session.pending_event_index = max(0, next_event_index)
+
+    def _schedule_resume_interrupted_route(self, *, session_id: str, session: _SessionState) -> None:
+        if session.resume_task is not None and not session.resume_task.done():
+            session.resume_task.cancel()
+        session.resume_task = asyncio.create_task(
+            self._resume_interrupted_route(session_id=session_id, session=session)
+        )
+
+    async def _resume_interrupted_route(self, *, session_id: str, session: _SessionState) -> None:
+        route_id = session.pending_route_id
+        if route_id is None:
+            return
+        route = next((item for item in self._scenario.agent_routes if item.id == route_id), None)
+        session.pending_route_id = None
+        start_index = session.pending_event_index
+        session.pending_event_index = 0
+        if route is None:
+            return
+
+        await asyncio.sleep(1.0)
+        for index, event in enumerate(route.events[start_index:], start=start_index + 1):
+            await self._sleep_with_cancel(asyncio.Event(), event.delay_ms)
+            await self._emit_tool_event(
+                session_id=session_id,
+                tool_call_id=f"{route.id}-resume-{index}",
+                kind=event.kind,
+                title=event.title,
+                text=event.text,
+            )
+        if route.final_text.strip():
+            await self._emit_tool_event(
+                session_id=session_id,
+                tool_call_id=f"{route.id}-resume-final",
+                kind="think",
+                title="",
+                text=route.final_text,
+            )
 
     @staticmethod
     async def _sleep_with_cancel(cancel_event: asyncio.Event, delay_ms: int) -> bool:
