@@ -99,6 +99,7 @@ When you send a message while the agent is already processing a previous prompt,
 ### Send now
 
 Pressing **Send now** immediately cancels the current in-flight operation and processes your queued message.
+The queued notice is updated to `✅ Sent.` so chat state matches what happened.
 
 If the current task finishes naturally before you press the button, your queued message runs automatically and the button is removed (pressing it after that shows "Already sent." with no side effects).
 

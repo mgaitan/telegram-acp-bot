@@ -2564,7 +2564,8 @@ async def test_on_busy_callback_send_now_cancels_and_queued_runs():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert "Sending now" in callback.answers[-1]
+    assert callback.answers[-1] == "✅ Sent."
+    assert callback.edited_text == "✅ Sent."
     assert service.cancelled
 
     await task_one
@@ -2771,7 +2772,7 @@ async def test_on_busy_callback_edit_failure_is_handled_gracefully():
 
 
 async def test_on_busy_callback_send_now_edit_failure_is_handled():
-    """TelegramError on edit after 'Sending now' must not propagate."""
+    """TelegramError on edit after 'Sent now' must not propagate."""
     service = BlockingService()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
@@ -2807,7 +2808,7 @@ async def test_on_busy_callback_send_now_edit_failure_is_handled():
     )
     await bridge.on_busy_callback(update_cb, make_context())
 
-    assert "Sending now" in callback.answers[-1]
+    assert callback.answers[-1] == "✅ Sent."
     service.release()
     await task_one
 
