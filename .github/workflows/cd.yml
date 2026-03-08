@@ -40,40 +40,34 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         if: github.event_name == 'release'
 
+  docs-build:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - run: make docs
+
   docs-publish:
     name: Publish documentation to GitHub Pages
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: docs-build
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     environment:
-      name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'github-pages-preview' || 'github-pages' }}
+      name: github-pages
       url: ${{ steps.preview_url.outputs.url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Detect documentation preview target
-        id: preview
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "docs_subdir=_preview/pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo "docs_subdir=_preview/main" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "docs_subdir=_preview/manual" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/configure-pages@v5
       - uses: astral-sh/setup-uv@v7
       - run: make docs
       - name: Stage documentation artifact
         run: |
           out_dir="site"
-          subdir="${{ steps.preview.outputs.docs_subdir }}"
           rm -rf "$out_dir"
-          if [ -n "$subdir" ]; then
-            mkdir -p "$out_dir/$subdir"
-            cp -a docs/_build/html/. "$out_dir/$subdir/"
-          else
-            mkdir -p "$out_dir"
-            cp -a docs/_build/html/. "$out_dir/"
-          fi
+          mkdir -p "$out_dir"
+          cp -a docs/_build/html/. "$out_dir/"
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
@@ -83,10 +77,6 @@ jobs:
         id: preview_url
         run: |
           url="${{ steps.deployment.outputs.page_url }}"
-          subdir="${{ steps.preview.outputs.docs_subdir }}"
-          if [ -n "$subdir" ]; then
-            url="${url%/}/${subdir}"
-          fi
           echo "url=${url}" >> "$GITHUB_OUTPUT"
       - name: Summarize documentation URL
         run: |
