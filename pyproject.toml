@@ -42,6 +42,9 @@ module-name = "telegram_acp_bot"
 exclude-newer = "1 week"
 exclude-newer-package = { ty = "0 days" }
 
+[tool.ty.analysis]
+allowed-unresolved-imports = ["playwright.sync_api"]
+
 [tool.ruff]
 line-length = 120
 
