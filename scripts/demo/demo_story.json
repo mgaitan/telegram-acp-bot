@@ -225,7 +225,7 @@
           "delay_ms": 320
         }
       ],
-      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\n\n🤖 It uses the **Agent Client Protocol (ACP)**, the most widely adopted standard to connect with agents like **Codex**, **Claude**, **Gemini**, and many others.\n\nNo need to stay in front of the computer just monitoring: now you can ask **your agent** to ship that release to production 😉 while you water your garden in the sun. 🌱\n\nCheck the docs 📚 to get started.\n\n> \"The goal of the future is full unemployment, so we can play.\"\n>\n> — Arthur C. Clarke"
+      "final_text": "🚀 **telegram-acp-bot** is an **open-source** Python bot.\n\n🤖 It uses the **Agent Client Protocol (ACP)**, the most widely adopted standard to connect a User Interface with agents like **Codex**, **Claude**, **Gemini**, and many others.\n\nNo need to stay in front of the computer just monitoring: now you can ask **your agent** to ship that release to production 😉 while you water your garden in the sun. 🌱\n\nCheck the docs 📚 to get started.\n\n> \"The goal of the future is full unemployment, so we can play.\"\n>\n> — Arthur C. Clarke"
     }
   ]
 }

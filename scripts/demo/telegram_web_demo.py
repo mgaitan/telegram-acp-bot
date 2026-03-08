@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -62,6 +63,7 @@ class DemoConfig(argparse.Namespace):
     device_scale_factor: float
     scenario: Path
     manual_story_actions: bool
+    start_step: str | None
     start_server: bool
     server_wait_seconds: float
     server_command: str
@@ -151,6 +153,11 @@ def parse_args() -> DemoConfig:
         help="Pause for manual clicks on story actions like Send now and resume choice (default: false).",
     )
     parser.add_argument(
+        "--start-step",
+        default=None,
+        help="Start story from a specific step id (e.g. 'resume') or 1-based index (e.g. '4').",
+    )
+    parser.add_argument(
         "--start-server",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -180,12 +187,17 @@ def _shutdown_server(process: subprocess.Popen[bytes] | None) -> None:
         return
     if process.poll() is not None:
         return
-    process.terminate()
+    # Prefer Ctrl+C-style shutdown so asyncio tasks can drain before loop closes.
+    process.send_signal(signal.SIGINT)
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=8)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+        process.terminate()
+        try:
+            process.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=4)
 
 
 def _resolve_bot_username() -> str:
@@ -711,6 +723,7 @@ def _run_story_action(
     if clicked:
         return
     print(f"Warning: resume option '{action.index}.' was not auto-clicked.")
+    _wait_for_manual_resume_click(page, timeout_seconds=timeout_seconds)
 
 
 def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, manual_story_actions: bool) -> None:
@@ -719,12 +732,15 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
     typing_rng = Random(DETERMINISTIC_TYPING_SEED)
     for step in scenario.user_steps:
         if step.id == "recap":
-            _wait_for_text(
+            waited_resume = _wait_for_text(
                 page,
                 re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE),
-                timeout_seconds=1.5,
+                timeout_seconds=step.wait_for_text.timeout_seconds if step.wait_for_text else 12.0,
                 min_count=1,
             )
+            if not waited_resume:
+                print("Warning: recap skipped because resumed session confirmation was not detected.")
+                continue
             _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
             _human_pause(pause_seconds)
             continue
@@ -785,6 +801,21 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
     _ = image_seen
 
 
+def _resolve_start_index(scenario: DemoScenario, start_step: str | None) -> int:
+    if start_step is None or not start_step.strip():
+        return 0
+    value = start_step.strip()
+    if value.isdigit():
+        index = int(value) - 1
+        if 0 <= index < len(scenario.user_steps):
+            return index
+        raise SystemExit(f"--start-step index out of range: {value}")
+    for index, step in enumerate(scenario.user_steps):
+        if step.id == value:
+            return index
+    raise SystemExit(f"--start-step id not found: {value}")
+
+
 def _latest_video_path(video_dir: Path) -> Path | None:
     candidates = sorted(video_dir.rglob("*.webm"), key=lambda item: item.stat().st_mtime, reverse=True)
     for candidate in candidates:
@@ -807,6 +838,14 @@ def run() -> int:
     if config.server_wait_seconds <= 0:
         raise SystemExit(INVALID_WAIT_SECONDS_MESSAGE)
     scenario = load_demo_scenario(config.scenario)
+    start_index = _resolve_start_index(scenario, config.start_step)
+    if start_index > 0:
+        scenario = DemoScenario(
+            runtime=scenario.runtime,
+            assets=scenario.assets,
+            user_steps=scenario.user_steps[start_index:],
+            agent_routes=scenario.agent_routes,
+        )
     bot_username = _resolve_bot_username() if (not config.manual_open_chat and not config.open_first_chat) else ""
     _prepare_video_dir(config)
     if config.mode == "record":
