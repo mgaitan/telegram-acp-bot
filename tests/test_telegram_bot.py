@@ -1531,6 +1531,61 @@ async def test_format_activity_block_execute_preserves_escaped_backticks_and_und
     assert "ACP_TELEGRAM_CHANNEL_ALLOW_PATH" in rendered
 
 
+async def test_format_activity_block_search_uses_web_label_when_url_present():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "telegram acp"',
+        status="completed",
+        text="URL: https://agentclientprotocol.com/",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🌐 Searching web*" in rendered
+
+
+async def test_format_activity_block_search_uses_project_label_for_local_markers():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query project for "ACP_TELEGRAM_CHANNEL_ALLOW_PATH"',
+        status="completed",
+        text="ripgrep in workspace",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying project*" in rendered
+
+
+async def test_format_activity_block_search_defaults_to_neutral_querying_label():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "send now"',
+        status="completed",
+        text="",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying*" in rendered
+
+
+async def test_format_activity_block_search_report_word_is_not_misclassified_as_repo():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "annual report"',
+        status="completed",
+        text="",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying*" in rendered
+
+
+async def test_format_activity_block_search_uses_project_label_for_file_uri():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "config"',
+        status="completed",
+        text="file:///home/user/project/pyproject.toml",
+    )
+    rendered = TelegramBridge._format_activity_block(block)
+    assert "*🔎 Querying project*" in rendered
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 
