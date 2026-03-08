@@ -121,6 +121,7 @@ def _launch_context(
         user_data_dir=str(profile_dir),
         headless=headless,
         viewport={"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
+        args=["--app=https://web.telegram.org/k/", f"--window-size={MOBILE_WIDTH},{MOBILE_HEIGHT}"],
         **video_kwargs,  # type: ignore[arg-type]
     )
 
