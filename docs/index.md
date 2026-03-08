@@ -1,7 +1,8 @@
 # Telegram ACP bot
 
-[![ci](https://github.com/mgaitan/telegram-acp-bot/workflows/ci/badge.svg)](https://github.com/mgaitan/telegram-acp-bot/actions?query=workflow%3Aci)
+[![CI](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
 [![docs](https://img.shields.io/badge/docs-blue.svg?style=flat)](https://mgaitan.github.io/telegram-acp-bot/)
+[![GitHub](https://img.shields.io/badge/GitHub-repository-181717?logo=github)](https://github.com/mgaitan/telegram-acp-bot)
 [![pypi version](https://img.shields.io/pypi/v/telegram-acp-bot?logo=pypi&logoColor=white)](https://pypi.org/project/telegram-acp-bot/)
 [![Changelog](https://img.shields.io/github/v/release/mgaitan/telegram-acp-bot?include_prereleases&label=changelog)](https://github.com/mgaitan/telegram-acp-bot/releases)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/mgaitan/telegram-acp-bot/actions/workflows/ci.yml)
@@ -85,7 +86,7 @@ Software is changing incredibly fast, and we no longer need to write every line 
 
 ACP is the open protocol adopted by the industry to connect user interfaces to AI agents such as Codex, Claude Code, Gemini CLI, and [many others](https://agentclientprotocol.com/registry/index) that work on your machine.
 
-Telegram ACP bot is a full-featured, open-source ACP client that allows you to control your agent wherever you are. The good part? You can start an agent session on your computer from your preferred editor/CLI/IDE and continue it later on Telegram, or do it the other way around.
+Telegram ACP bot is a full-featured, [open-source](https://github.com/mgaitan/telegram-acp-bot) ACP client that allows you to control your agent wherever you are. The good part? You can start an agent session on your computer from your preferred editor/CLI/IDE and continue it later on Telegram, or do it the other way around.
 
 **Don't watch the computer. Watch the sky.**
 

@@ -113,6 +113,7 @@ lint = ["ruff"]
 qa = [
     { include-group = "lint" },
     "ty>=0.0.19",
+    "playwright>=1.55.0",
 ]
 docs = [
     "myst-parser>=3.0.0",
