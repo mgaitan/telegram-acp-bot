@@ -1,6 +1,14 @@
 name: Publish to PyPI
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - ".github/workflows/cd.yml"
   release:
     types: [created]
   pull_request:
@@ -35,7 +43,7 @@ jobs:
   docs-publish:
     name: Publish documentation to GitHub Pages
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'release' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     environment:
       name: ${{ github.event_name == 'pull_request' && 'github-pages-preview' || 'github-pages' }}
       url: ${{ steps.preview_url.outputs.url }}
