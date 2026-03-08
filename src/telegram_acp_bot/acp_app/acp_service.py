@@ -8,7 +8,7 @@ import mimetypes
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -217,9 +217,10 @@ class _AcpClient:
                 title=update.title,
             )
             if label != "think":
+                start_text = self._tool_start_text(update)
                 await self._emit_activity_block(
                     session_id=session_id,
-                    block=AgentActivityBlock(kind=label, title=update.title, status="in_progress"),
+                    block=AgentActivityBlock(kind=label, title=update.title, status="in_progress", text=start_text),
                 )
             return
         if isinstance(update, ToolCallProgress):
@@ -326,6 +327,46 @@ class _AcpClient:
         if not previous[-2].isdigit() or len(chunk) < MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH:
             return False
         return chunk[1].isdigit() or chunk[1] == "."
+
+    @staticmethod
+    def _tool_start_text(update: ToolCallStart) -> str:
+        if update.kind != "search":
+            return ""
+        queries = _AcpClient._collect_search_queries(update.raw_input)
+        if not queries:
+            return ""
+        return "\n".join(f'Query: "{query}"' for query in queries)
+
+    @staticmethod
+    def _collect_search_queries(raw_input: Any) -> list[str]:
+        queries: list[str] = []
+        seen_values: set[str] = set()
+        pending: list[Any] = [raw_input]
+        seen_nodes: set[int] = set()
+        query_keys = {"q", "query"}
+
+        while pending:
+            current = pending.pop(0)
+            node_id = id(current)
+            if node_id in seen_nodes:
+                continue
+            seen_nodes.add(node_id)
+
+            if isinstance(current, dict):
+                for key, value in current.items():
+                    normalized_key = key.lower().strip()
+                    if normalized_key in query_keys and isinstance(value, str):
+                        normalized_query = value.strip()
+                        if normalized_query and normalized_query not in seen_values:
+                            queries.append(normalized_query)
+                            seen_values.add(normalized_query)
+                    if isinstance(value, dict | list | tuple):
+                        pending.append(value)
+                continue
+            if isinstance(current, list | tuple):
+                pending.extend(current)
+
+        return queries
 
     async def _open_tool_block(self, *, session_id: str, tool_call_id: str, kind: str, title: str) -> None:
         await self._close_active_tool_block(session_id=session_id, status="in_progress")

@@ -50,7 +50,7 @@ Current interaction capabilities:
 
 Message flow:
 - The bot sends activity blocks while the prompt is running.
-- Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, and `🔎 Querying`.
+- Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, and `🔎 Querying` (or Spanish equivalents when `ACP_UI_LANGUAGE=es`).
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
 - The final answer is sent as a separate message after activity blocks.
 - If the final text is empty, no dummy "(no text response)" message is sent.
@@ -80,6 +80,7 @@ ACP_RESTART_COMMAND="uv run telegram-acp-bot --telegram-token <TOKEN> --agent-co
 ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608
+ACP_UI_LANGUAGE=en
 ```
 
 ## Agent Command

@@ -106,6 +106,16 @@ def test_main_runs_bot(mocker):
     mock_run_polling.assert_called_once()
 
 
+def test_main_passes_ui_language_to_config(mocker):
+    """CLI forwards UI language to runtime config."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--ui-language", "es"]) == 0
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.ui_language == "es"
+
+
 def test_main_reexecs_process_on_restart_request(mocker):
     """When polling returns restart code, main re-execs current process."""
     mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)

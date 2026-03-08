@@ -42,6 +42,11 @@ ACP_STDIO_LIMIT
   Increase this if the agent emits very large JSON lines.
   Maps to `--acp-stdio-limit`.
 
+ACP_UI_LANGUAGE
+  Language used for Telegram activity labels.
+  Allowed values: `en`, `es`.
+  Maps to `--ui-language`.
+
 ACP_CONNECT_TIMEOUT
   Timeout in seconds for ACP initialize/new_session handshake.
   Prevents `/new` from hanging forever if the agent does not speak ACP over stdio.
@@ -76,6 +81,7 @@ ACP_PERMISSION_MODE=ask
 ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608
 ACP_CONNECT_TIMEOUT=30
+ACP_UI_LANGUAGE=en
 ACP_LOG_LEVEL=INFO
 ```
 

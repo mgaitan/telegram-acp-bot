@@ -509,6 +509,41 @@ async def test_acp_client_emits_live_activity_blocks():
     assert events[1] == AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="")
 
 
+async def test_acp_client_emits_search_query_in_live_activity_block():
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-search-live"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(
+            title="Searching the Web",
+            tool_call_id="tool-search",
+            kind="search",
+            raw_input={"search_query": [{"q": "telegram acp bot"}]},
+            session_update="tool_call",
+        ),
+    )
+
+    assert events == [
+        AgentActivityBlock(
+            kind="search",
+            title="Searching the Web",
+            status="in_progress",
+            text='Query: "telegram acp bot"',
+        )
+    ]
+
+
 async def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
     events: list[AgentActivityBlock] = []
 

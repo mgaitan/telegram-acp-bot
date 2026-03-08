@@ -26,6 +26,7 @@ from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, TelegramBridge, mak
 
 ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
 ALLOWED_USERNAMES_ENV = "TELEGRAM_ALLOWED_USERNAMES"
+UI_LANGUAGE_ENV = "ACP_UI_LANGUAGE"
 
 
 def get_version() -> str:
@@ -91,6 +92,12 @@ def get_parser() -> argparse.ArgumentParser:
         "--restart-command",
         default=os.getenv("ACP_RESTART_COMMAND", ""),
         help="Optional command used by /restart to relaunch the bot (e.g. 'uv run telegram-acp-bot').",
+    )
+    parser.add_argument(
+        "--ui-language",
+        default=os.getenv(UI_LANGUAGE_ENV, "en"),
+        choices=["en", "es"],
+        help="Language for Telegram activity labels.",
     )
     return parser
 
@@ -166,6 +173,7 @@ def main(args: list[str] | None = None) -> int:
         allowed_user_ids=allowed_user_ids,
         allowed_usernames=allowed_usernames,
         workspace=opts.workspace,
+        ui_language=opts.ui_language,
     )
     service = AcpAgentService(
         SessionRegistry(),

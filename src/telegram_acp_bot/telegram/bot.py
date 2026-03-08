@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -57,15 +57,30 @@ RESUME_KEYBOARD_MAX_ROWS = 10
 RESTART_EXIT_CODE = 75
 TELEGRAM_MAX_UTF16_MESSAGE_LENGTH = 4096
 logger = logging.getLogger(__name__)
-KIND_LABELS = {
-    "think": "💡 Thinking",
-    "execute": "⚙️ Running",
-    "read": "📖 Reading",
-    "edit": "✏️ Editing",
-    "write": "✍️ Writing",
+UiLanguage = Literal["en", "es"]
+DEFAULT_UI_LANGUAGE: UiLanguage = "en"
+KIND_LABELS_BY_LANGUAGE: dict[UiLanguage, dict[str, str]] = {
+    "en": {
+        "think": "💡 Thinking",
+        "execute": "⚙️ Running",
+        "read": "📖 Reading",
+        "edit": "✏️ Editing",
+        "write": "✍️ Writing",
+        "fallback": "⚙️ Tool call",
+        "search_web": "🌐 Searching web",
+        "search_neutral": "🔎 Querying",
+    },
+    "es": {
+        "think": "💡 Pensando",
+        "execute": "⚙️ Ejecutando",
+        "read": "📖 Leyendo",
+        "edit": "✏️ Editando",
+        "write": "✍️ Escribiendo",
+        "fallback": "⚙️ Llamada de herramienta",
+        "search_web": "🌐 Buscando en la web",
+        "search_neutral": "🔎 Consultando",
+    },
 }
-SEARCH_LABEL_WEB = "🌐 Searching web"
-SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 
 
 @dataclass(slots=True, frozen=True)
@@ -76,6 +91,7 @@ class BotConfig:
     allowed_user_ids: set[int]
     allowed_usernames: set[str]
     default_workspace: Path
+    ui_language: UiLanguage = DEFAULT_UI_LANGUAGE
 
 
 @dataclass(slots=True, frozen=True)
@@ -409,7 +425,7 @@ class TelegramBridge:
             return
 
         workspace = self._activity_workspace(chat_id=chat_id)
-        text = self._format_activity_block(block, workspace=workspace)
+        text = self._format_activity_block(block, workspace=workspace, ui_language=self._config.ui_language)
         await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
 
     async def on_permission_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1014,17 +1030,27 @@ class TelegramBridge:
 
     @staticmethod
     async def _reply_activity_block(
-        update: Update, block: AgentActivityBlock, *, workspace: Path | None = None
+        update: Update,
+        block: AgentActivityBlock,
+        *,
+        workspace: Path | None = None,
+        ui_language: UiLanguage | str = DEFAULT_UI_LANGUAGE,
     ) -> None:
         if update.message is None:
             return
 
-        text = TelegramBridge._format_activity_block(block, workspace=workspace)
+        text = TelegramBridge._format_activity_block(block, workspace=workspace, ui_language=ui_language)
         await TelegramBridge._reply_markdown_message(update.message, text=text)
 
     @staticmethod
-    def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
-        label = TelegramBridge._activity_label(block)
+    def _format_activity_block(
+        block: AgentActivityBlock,
+        *,
+        workspace: Path | None = None,
+        ui_language: UiLanguage | str = DEFAULT_UI_LANGUAGE,
+    ) -> str:
+        normalized_ui_language = TelegramBridge._normalize_ui_language(ui_language)
+        label = TelegramBridge._activity_label(block, ui_language=normalized_ui_language)
         text_parts = [f"*{label}*"]
         normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
         normalized_text = TelegramBridge._normalize_activity_text(block, workspace=workspace)
@@ -1039,13 +1065,21 @@ class TelegramBridge:
         return "\n\n".join(text_parts)
 
     @staticmethod
-    def _activity_label(block: AgentActivityBlock) -> str:
+    def _activity_label(block: AgentActivityBlock, *, ui_language: UiLanguage = DEFAULT_UI_LANGUAGE) -> str:
+        labels = KIND_LABELS_BY_LANGUAGE[ui_language]
         if block.kind != "search":
-            return KIND_LABELS.get(block.kind, "⚙️ Tool call")
+            return labels.get(block.kind, labels["fallback"])
         source = TelegramBridge._search_source(block)
         if source == "web":
-            return SEARCH_LABEL_WEB
-        return SEARCH_LABEL_NEUTRAL
+            return labels["search_web"]
+        return labels["search_neutral"]
+
+    @staticmethod
+    def _normalize_ui_language(raw_language: UiLanguage | str) -> UiLanguage:
+        normalized = raw_language.strip().lower()
+        if normalized == "es":
+            return "es"
+        return DEFAULT_UI_LANGUAGE
 
     @staticmethod
     def _search_source(block: AgentActivityBlock) -> str | None:
@@ -1292,6 +1326,7 @@ def make_config(
     allowed_user_ids: list[int],
     workspace: str,
     allowed_usernames: list[str] | None = None,
+    ui_language: UiLanguage | str = DEFAULT_UI_LANGUAGE,
 ) -> BotConfig:
     normalized_usernames = {
         username.lstrip("@").strip().lower() for username in (allowed_usernames or []) if username.strip()
@@ -1301,4 +1336,5 @@ def make_config(
         allowed_user_ids=set(allowed_user_ids),
         allowed_usernames=normalized_usernames,
         default_workspace=Path(workspace).expanduser(),
+        ui_language=TelegramBridge._normalize_ui_language(ui_language),
     )

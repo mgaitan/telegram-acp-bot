@@ -1542,6 +1542,17 @@ async def test_format_activity_block_search_uses_web_label_when_url_present():
     assert "*🌐 Searching web*" in rendered
 
 
+async def test_format_activity_block_search_uses_spanish_label_when_configured():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "telegram acp"',
+        status="completed",
+        text="URL: https://agentclientprotocol.com/",
+    )
+    rendered = TelegramBridge._format_activity_block(block, ui_language="es")
+    assert "*🌐 Buscando en la web*" in rendered
+
+
 async def test_format_activity_block_search_uses_neutral_label_for_local_markers():
     block = AgentActivityBlock(
         kind="search",
@@ -1562,6 +1573,17 @@ async def test_format_activity_block_search_defaults_to_neutral_querying_label()
     )
     rendered = TelegramBridge._format_activity_block(block)
     assert "*🔎 Querying*" in rendered
+
+
+async def test_format_activity_block_search_uses_spanish_neutral_label_when_configured():
+    block = AgentActivityBlock(
+        kind="search",
+        title='Query: "send now"',
+        status="completed",
+        text="",
+    )
+    rendered = TelegramBridge._format_activity_block(block, ui_language="es")
+    assert "*🔎 Consultando*" in rendered
 
 
 async def test_format_activity_block_search_report_word_is_not_misclassified_as_repo():
