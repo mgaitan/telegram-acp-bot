@@ -28,7 +28,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 from playwright.sync_api import (
-    TimeoutError as PlaywrightTimeoutError,
+    Error as PlaywrightError,
 )
 
 MISSING_BOT_USERNAME_MESSAGE = "Missing bot username. Set TELEGRAM_DEMO_BOT_USERNAME (or TELEGRAM_BOT_USERNAME) in .env"
@@ -548,17 +548,13 @@ def _wait_for_text(
 
 
 def _click_send_now(page: Page, *, timeout_seconds: float, show_tap_marker: bool) -> bool:
-    busy_notice = page.get_by_text(re.compile(r"Agent is busy", re.IGNORECASE))
-    try:
-        busy_notice.first.wait_for(timeout=int(timeout_seconds * 1000))
-    except PlaywrightTimeoutError:
-        print("Warning: busy notice not detected; continuing without Send now click.")
-        return False
-
     deadline_ms = int(timeout_seconds * 1000)
     elapsed = 0
     tick_ms = 250
+    busy_notice_seen = False
     while elapsed < deadline_ms:
+        busy_notice = page.get_by_text(re.compile(r"Agent is busy", re.IGNORECASE))
+        busy_notice_seen = busy_notice_seen or (busy_notice.count() > 0 and busy_notice.last.is_visible())
         candidates = (
             page.get_by_role("button", name=re.compile(r"send now", re.IGNORECASE)).first,
             page.get_by_text(re.compile(r"send now", re.IGNORECASE)).first,
@@ -569,23 +565,32 @@ def _click_send_now(page: Page, *, timeout_seconds: float, show_tap_marker: bool
             if not candidate.count() or not candidate.is_visible():
                 continue
             box = candidate.bounding_box()
-            if box is not None:
+            if box is not None and show_tap_marker:
                 click_x = box["x"] + (box["width"] / 2)
                 click_y = box["y"] + (box["height"] / 2)
-                if show_tap_marker:
-                    _show_tap_marker(page, x=click_x, y=click_y)
-                    page.wait_for_timeout(170)
+                _show_tap_marker(page, x=click_x, y=click_y)
+                page.wait_for_timeout(170)
+            try:
+                candidate.click(timeout=450)
+                if _wait_for_manual_send_now_click(page, timeout_seconds=1.4):
+                    print("Auto-clicked Send now.")
+                    page.wait_for_timeout(300)
+                    return True
+            except PlaywrightError:
+                if box is None:
+                    continue
+                click_x = box["x"] + (box["width"] / 2)
+                click_y = box["y"] + (box["height"] / 2)
                 page.touchscreen.tap(click_x, click_y)
-                print(f"Auto-clicked Send now at ({int(click_x)},{int(click_y)}).")
-                page.wait_for_timeout(500)
-                return True
-            candidate.click()
-            print("Auto-clicked Send now (no bounding box available).")
-            page.wait_for_timeout(500)
-            return True
+                if _wait_for_manual_send_now_click(page, timeout_seconds=1.4):
+                    print(f"Auto-clicked Send now via tap at ({int(click_x)},{int(click_y)}).")
+                    page.wait_for_timeout(300)
+                    return True
         page.wait_for_timeout(tick_ms)
         elapsed += tick_ms
 
+    if not busy_notice_seen:
+        print("Warning: busy notice not detected; Send now button never appeared.")
     print("Warning: Send now button not detected in time.")
     return False
 
@@ -622,14 +627,15 @@ def _show_tap_marker(page: Page, *, x: float, y: float) -> None:
 
 
 def _click_resume_choice(page: Page, *, choice_index: int, timeout_seconds: float) -> bool:
-    pattern = re.compile(rf"{choice_index}\\.", re.IGNORECASE)
+    pattern = re.compile(rf"{choice_index}\.", re.IGNORECASE)
     resumed_pattern = re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)
+    resumed_min_count = page.get_by_text(resumed_pattern).count() + 1
     deadline_ms = int(timeout_seconds * 1000)
     elapsed = 0
     tick_ms = 250
     while elapsed < deadline_ms:
         # If manual click already resumed a session, continue immediately.
-        if _wait_for_text(page, resumed_pattern, timeout_seconds=0.25, min_count=1):
+        if _wait_for_text(page, resumed_pattern, timeout_seconds=0.25, min_count=resumed_min_count):
             return True
 
         by_role = page.get_by_role("button", name=pattern)
@@ -639,24 +645,38 @@ def _click_resume_choice(page: Page, *, choice_index: int, timeout_seconds: floa
                 if not candidate.is_visible():
                     continue
                 box = candidate.bounding_box()
-                if box is None:
-                    continue
-                page.touchscreen.tap(box["x"] + (box["width"] / 2), box["y"] + (box["height"] / 2))
-                page.wait_for_timeout(220)
-                return True
+                try:
+                    candidate.click(timeout=450)
+                    if _wait_for_text(page, resumed_pattern, timeout_seconds=1.8, min_count=resumed_min_count):
+                        page.wait_for_timeout(220)
+                        return True
+                except PlaywrightError:
+                    if box is None:
+                        continue
+                    page.touchscreen.tap(box["x"] + (box["width"] / 2), box["y"] + (box["height"] / 2))
+                    if _wait_for_text(page, resumed_pattern, timeout_seconds=1.8, min_count=resumed_min_count):
+                        page.wait_for_timeout(220)
+                        return True
 
-        by_text = page.get_by_text(pattern)
-        if by_text.count():
-            for index in range(by_text.count()):
-                candidate = by_text.nth(index)
+        by_button_text = page.locator("button").filter(has_text=pattern)
+        if by_button_text.count():
+            for index in range(by_button_text.count()):
+                candidate = by_button_text.nth(index)
                 if not candidate.is_visible():
                     continue
                 box = candidate.bounding_box()
-                if box is None:
-                    continue
-                page.touchscreen.tap(box["x"] + (box["width"] / 2), box["y"] + (box["height"] / 2))
-                page.wait_for_timeout(220)
-                return True
+                try:
+                    candidate.click(timeout=450)
+                    if _wait_for_text(page, resumed_pattern, timeout_seconds=1.8, min_count=resumed_min_count):
+                        page.wait_for_timeout(220)
+                        return True
+                except PlaywrightError:
+                    if box is None:
+                        continue
+                    page.touchscreen.tap(box["x"] + (box["width"] / 2), box["y"] + (box["height"] / 2))
+                    if _wait_for_text(page, resumed_pattern, timeout_seconds=1.8, min_count=resumed_min_count):
+                        page.wait_for_timeout(220)
+                        return True
 
         page.wait_for_timeout(tick_ms)
         elapsed += tick_ms
@@ -681,12 +701,12 @@ def _wait_for_manual_send_now_click(page: Page, *, timeout_seconds: float) -> bo
     return False
 
 
-def _wait_for_manual_resume_click(page: Page, *, timeout_seconds: float) -> bool:
+def _wait_for_manual_resume_click(page: Page, *, timeout_seconds: float, min_count: int = 1) -> bool:
     return _wait_for_text(
         page,
         re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE),
         timeout_seconds=timeout_seconds,
-        min_count=1,
+        min_count=min_count,
     )
 
 
@@ -696,53 +716,102 @@ def _run_story_action(
     action: SendNowAction | ResumeChoiceAction,
     timeout_seconds: float,
     manual_story_actions: bool,
-) -> None:
+) -> bool:
     if isinstance(action, SendNowAction):
         if manual_story_actions:
             print("Manual step: click 'Send now' in Telegram Web. Waiting for the click...")
             clicked = _wait_for_manual_send_now_click(page, timeout_seconds=timeout_seconds)
             if not clicked:
                 print("Warning: manual Send now click was not detected in time.")
-            return
+            return clicked
         clicked = _click_send_now(page, timeout_seconds=timeout_seconds, show_tap_marker=action.tap_marker)
         if clicked:
-            return
+            return True
         print("Manual fallback: click 'Send now' in Telegram Web. Waiting for the click...")
-        _wait_for_manual_send_now_click(page, timeout_seconds=timeout_seconds)
-        return
+        return _wait_for_manual_send_now_click(page, timeout_seconds=timeout_seconds)
 
     if manual_story_actions:
+        resume_seen_before = page.get_by_text(re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)).count()
         print(f"Manual step: click resume option '{action.index}.' in Telegram Web. Waiting for selection...")
-        clicked = _wait_for_manual_resume_click(page, timeout_seconds=timeout_seconds)
+        clicked = _wait_for_manual_resume_click(
+            page,
+            timeout_seconds=timeout_seconds,
+            min_count=resume_seen_before + 1,
+        )
         if not clicked:
             print("Warning: manual resume selection was not detected in time.")
-        return
-    # Keep auto-attempt short; if it misses, manual click should not be delayed.
-    auto_timeout = min(timeout_seconds, 3.0)
+        return clicked
+    # Give Telegram Web enough time to render inline buttons before falling back to manual click.
+    auto_timeout = min(timeout_seconds, 8.0)
     clicked = _click_resume_choice(page, choice_index=action.index, timeout_seconds=auto_timeout)
     if clicked:
-        return
+        return True
+    resume_seen_before = page.get_by_text(re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)).count()
     print(f"Warning: resume option '{action.index}.' was not auto-clicked.")
-    _wait_for_manual_resume_click(page, timeout_seconds=timeout_seconds)
+    print(f"Manual fallback: click resume option '{action.index}.' in Telegram Web. Waiting for selection...")
+    return _wait_for_manual_resume_click(
+        page,
+        timeout_seconds=timeout_seconds,
+        min_count=resume_seen_before + 1,
+    )
 
 
 def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, manual_story_actions: bool) -> None:
     pause_seconds = (scenario.runtime.pause_min_seconds + scenario.runtime.pause_max_seconds) / 2
     pdf_followup_pause_seconds = 0.75
     typing_rng = Random(DETERMINISTIC_TYPING_SEED)
-    for step in scenario.user_steps:
+    resumed_confirmed = False
+    resumed_pattern = re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)
+    recap_reply_seen = True
+    for step_index, step in enumerate(scenario.user_steps):
         if step.id == "recap":
-            waited_resume = _wait_for_text(
-                page,
-                re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE),
-                timeout_seconds=step.wait_for_text.timeout_seconds if step.wait_for_text else 12.0,
-                min_count=1,
-            )
-            if not waited_resume:
+            if not resumed_confirmed:
+                resumed_seen_before = page.get_by_text(resumed_pattern).count()
+                print("Warning: resume confirmation missing before recap; sending '/resume 0' fallback.")
+                _send_message(page, "/resume 0", typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
+                resumed_confirmed = _wait_for_text(
+                    page,
+                    resumed_pattern,
+                    timeout_seconds=min(timeout_seconds, 12.0),
+                    min_count=resumed_seen_before + 1,
+                )
+            if not resumed_confirmed:
                 print("Warning: recap skipped because resumed session confirmation was not detected.")
+                recap_reply_seen = False
                 continue
+            followup_pattern: re.Pattern[str] | None = None
+            followup_min_count = 1
+            followup_timeout_seconds = min(timeout_seconds, 15.0)
+            if step_index + 1 < len(scenario.user_steps):
+                next_step = scenario.user_steps[step_index + 1]
+                if next_step.wait_for_text is not None:
+                    followup_pattern = re.compile(next_step.wait_for_text.pattern, re.IGNORECASE)
+                    followup_min_count = page.get_by_text(followup_pattern).count() + 1
+                    followup_timeout_seconds = next_step.wait_for_text.timeout_seconds
             _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
+            recap_reply_seen = True
+            if followup_pattern is not None:
+                recap_reply_seen = _wait_for_text(
+                    page,
+                    followup_pattern,
+                    timeout_seconds=followup_timeout_seconds,
+                    min_count=followup_min_count,
+                )
+                if not recap_reply_seen:
+                    _click_send_now(page, timeout_seconds=min(timeout_seconds, 3.0), show_tap_marker=False)
+                    recap_reply_seen = _wait_for_text(
+                        page,
+                        followup_pattern,
+                        timeout_seconds=min(followup_timeout_seconds, 6.0),
+                        min_count=followup_min_count,
+                    )
+                if not recap_reply_seen:
+                    print("Warning: recap reply not detected after fallback.")
             _human_pause(pause_seconds)
+            continue
+
+        if step.id == "new_project" and not recap_reply_seen:
+            print("Warning: skipping new_project step because recap reply did not arrive.")
             continue
 
         if step.wait_for_text is not None:
@@ -752,8 +821,6 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
             # After /resume selection, the confirmation may already be visible.
             # In that case we should not wait for a second identical message.
             if "resumed session:" in step.wait_for_text.pattern.lower():
-                min_count = 1
-            if "diagnostics pdf is ready and attached" in step.wait_for_text.pattern.lower():
                 min_count = 1
             waited = _wait_for_text(
                 page,
@@ -767,12 +834,14 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
                 page.wait_for_timeout(step.wait_for_text.after_ms)
         _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
         for action in step.actions:
-            _run_story_action(
+            action_ok = _run_story_action(
                 page,
                 action=action,
                 timeout_seconds=timeout_seconds,
                 manual_story_actions=manual_story_actions,
             )
+            if step.id == "resume" and isinstance(action, ResumeChoiceAction):
+                resumed_confirmed = resumed_confirmed or action_ok
         if step.id == "new":
             started = _wait_for_text(
                 page,
