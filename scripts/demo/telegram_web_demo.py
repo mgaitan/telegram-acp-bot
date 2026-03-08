@@ -611,10 +611,15 @@ def _show_tap_marker(page: Page, *, x: float, y: float) -> None:
 
 def _click_resume_choice(page: Page, *, choice_index: int, timeout_seconds: float) -> bool:
     pattern = re.compile(rf"{choice_index}\\.", re.IGNORECASE)
+    resumed_pattern = re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)
     deadline_ms = int(timeout_seconds * 1000)
     elapsed = 0
     tick_ms = 250
     while elapsed < deadline_ms:
+        # If manual click already resumed a session, continue immediately.
+        if _wait_for_text(page, resumed_pattern, timeout_seconds=0.25, min_count=1):
+            return True
+
         by_role = page.get_by_role("button", name=pattern)
         if by_role.count():
             for index in range(by_role.count()):
@@ -665,12 +670,12 @@ def _wait_for_manual_send_now_click(page: Page, *, timeout_seconds: float) -> bo
 
 
 def _wait_for_manual_resume_click(page: Page, *, timeout_seconds: float) -> bool:
-    resumed_text = page.get_by_text(re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE)).last
-    try:
-        resumed_text.wait_for(timeout=int(timeout_seconds * 1000))
-    except PlaywrightTimeoutError:
-        return False
-    return True
+    return _wait_for_text(
+        page,
+        re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE),
+        timeout_seconds=timeout_seconds,
+        min_count=1,
+    )
 
 
 def _run_story_action(
@@ -700,7 +705,9 @@ def _run_story_action(
         if not clicked:
             print("Warning: manual resume selection was not detected in time.")
         return
-    clicked = _click_resume_choice(page, choice_index=action.index, timeout_seconds=timeout_seconds)
+    # Keep auto-attempt short; if it misses, manual click should not be delayed.
+    auto_timeout = min(timeout_seconds, 3.0)
+    clicked = _click_resume_choice(page, choice_index=action.index, timeout_seconds=auto_timeout)
     if clicked:
         return
     print(f"Warning: resume option '{action.index}.' was not auto-clicked.")
@@ -711,6 +718,17 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
     pdf_followup_pause_seconds = 0.75
     typing_rng = Random(DETERMINISTIC_TYPING_SEED)
     for step in scenario.user_steps:
+        if step.id == "recap":
+            _wait_for_text(
+                page,
+                re.compile(r"(Resumed session|Session resumed)", re.IGNORECASE),
+                timeout_seconds=1.5,
+                min_count=1,
+            )
+            _send_message(page, step.text, typing_delay_ms=scenario.runtime.typing_delay_ms, rng=typing_rng)
+            _human_pause(pause_seconds)
+            continue
+
         if step.wait_for_text is not None:
             wait_pattern = re.compile(step.wait_for_text.pattern, re.IGNORECASE)
             seen_before = page.get_by_text(wait_pattern).count()
@@ -718,6 +736,8 @@ def _run_story(page: Page, *, timeout_seconds: float, scenario: DemoScenario, ma
             # After /resume selection, the confirmation may already be visible.
             # In that case we should not wait for a second identical message.
             if "resumed session:" in step.wait_for_text.pattern.lower():
+                min_count = 1
+            if "diagnostics pdf is ready and attached" in step.wait_for_text.pattern.lower():
                 min_count = 1
             waited = _wait_for_text(
                 page,

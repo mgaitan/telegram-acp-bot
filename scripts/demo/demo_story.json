@@ -3,8 +3,8 @@
     "typing_delay_ms": 26,
     "pause_min_seconds": 1.4,
     "pause_max_seconds": 3.8,
-    "final_pause_seconds": 3.2,
-    "image_reply_pattern": "captured\\\\s+`?/tmp/webcam-small\\\\.jpg`?"
+    "final_pause_seconds": 6.0,
+    "image_reply_pattern": "webcam-small\\\\.jpg|you are cute"
   },
   "assets": {
     "webcam_image": {
@@ -53,9 +53,9 @@
       "id": "attachment",
       "text": "Also generate a short diagnostics report as a PDF and attach it here.",
       "wait_for_text": {
-        "pattern": "captured\\\\s+`?/tmp/webcam-small\\\\.jpg`?",
+        "pattern": "webcam-small\\\\.jpg|you are cute",
         "timeout_seconds": 30,
-        "after_ms": 350
+        "after_ms": 120
       }
     },
     {
@@ -69,7 +69,7 @@
       "actions": [
         {
           "type": "click_resume_choice",
-          "index": 2
+          "index": 0
         }
       ]
     },
