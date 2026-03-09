@@ -413,6 +413,20 @@ class TelegramBridge:
         text = self._format_activity_block(block, workspace=workspace)
         await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
 
+    async def _edit_permission_decision_message(self, query: CallbackQuery, *, decision_label: str) -> None:
+        try:
+            query_message = getattr(query, "message", None)
+            original = getattr(query_message, "text", None) if query_message is not None else None
+            base_text = original or "Permission request"
+            edited_text = f"{base_text}\nDecision: {decision_label}"
+            original_entities = getattr(query_message, "entities", None) if query_message is not None else None
+            if original_entities:
+                await query.edit_message_text(edited_text, entities=list(original_entities))
+                return
+            await query.edit_message_text(edited_text)
+        except TelegramError:
+            await query.edit_message_reply_markup(reply_markup=None)
+
     async def on_permission_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
         query = update.callback_query
@@ -456,18 +470,7 @@ class TelegramBridge:
             labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
             logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
             await query.answer(labels[raw_action])
-            try:
-                query_message = getattr(query, "message", None)
-                original = getattr(query_message, "text", None) if query_message is not None else None
-                base_text = original or "Permission request"
-                edited_text = f"{base_text}\nDecision: {labels[raw_action]}"
-                original_entities = getattr(query_message, "entities", None) if query_message is not None else None
-                if original_entities:
-                    await query.edit_message_text(edited_text, entities=list(original_entities))
-                else:
-                    await query.edit_message_text(edited_text)
-            except TelegramError:
-                await query.edit_message_reply_markup(reply_markup=None)
+            await self._edit_permission_decision_message(query, decision_label=labels[raw_action])
         except Exception:
             logger.exception("Unhandled error while processing permission callback")
             await query.answer("Permission action failed.")
