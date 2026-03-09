@@ -55,14 +55,6 @@ def get_log_context() -> dict[str, str]:
     return dict(_log_context.get() or {})
 
 
-class _ContextLogFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        context = _log_context.get() or {}
-        for key in _CONTEXT_FIELDS:
-            setattr(record, key, context.get(key, _MISSING))
-        return True
-
-
 def _install_log_record_factory() -> None:
     if logging.getLogRecordFactory() is _contextual_log_record_factory:
         return
