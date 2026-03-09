@@ -845,6 +845,7 @@ async def test_new_session_and_prompt(tmp_path: Path):
         spawner=fake_spawn,
         connector=fake_connect,
     )
+    assert service.get_active_session_context(chat_id=2) is None
 
     session_id = await service.new_session(chat_id=2, workspace=tmp_path)
     assert session_id == "real-session"
@@ -852,6 +853,7 @@ async def test_new_session_and_prompt(tmp_path: Path):
     assert connection.cwd == str(tmp_path.resolve())
     assert connection.new_session_mcp_servers == []
     assert service.get_workspace(chat_id=2) == tmp_path.resolve()
+    assert service.get_active_session_context(chat_id=2) == ("real-session", tmp_path.resolve())
 
     reply = await service.prompt(chat_id=2, text="hi")
     assert reply is not None

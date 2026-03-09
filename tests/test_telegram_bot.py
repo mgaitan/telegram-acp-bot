@@ -2448,6 +2448,13 @@ async def test_chat_id_without_chat_raises():
         TelegramBridge._chat_id(update)
 
 
+async def test_active_session_context_returns_none_when_provider_is_not_callable():
+    bridge = make_bridge()
+    bridge._agent_service = cast(AgentService, SimpleNamespace(get_active_session_context="invalid"))
+
+    assert bridge._active_session_context(chat_id=TEST_CHAT_ID) is None
+
+
 async def test_build_application_installs_handlers():
     bridge = make_bridge()
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
