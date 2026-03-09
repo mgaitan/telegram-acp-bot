@@ -3063,3 +3063,15 @@ async def test_on_busy_callback_cancel_failure_answers_safely():
     )
     await bridge.on_busy_callback(update_cb, make_context())
     assert callback.answers[-1] == "Cancel failed."
+
+
+def test_log_text_preview_compacts_and_truncates():
+    short = TelegramBridge._log_text_preview("  hola    mundo  ")
+    assert short == "hola mundo"
+
+    long_text = "x" * 400
+    preview = TelegramBridge._log_text_preview(long_text)
+    assert preview.endswith("...")
+    assert len(preview) == bot_module.LOG_TEXT_PREVIEW_MAX_CHARS + 3
+
+    assert TelegramBridge._log_text_preview("   ") == "<empty>"

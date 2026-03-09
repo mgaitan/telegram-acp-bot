@@ -37,6 +37,7 @@ def configure_logging(
                 existing_handler.close()
     root_logger.setLevel(level)
     root_logger.addHandler(handler)
+    _configure_third_party_logging()
 
 
 @contextmanager
@@ -74,6 +75,13 @@ def _contextual_log_record_factory(*args: object, **kwargs: object) -> logging.L
     for key in _CONTEXT_FIELDS:
         setattr(record, key, context.get(key, _MISSING))
     return record
+
+
+def _configure_third_party_logging() -> None:
+    """Reduce noisy transport/framework logs in default bot output."""
+
+    for logger_name in ("httpx", "httpcore", "telegram.ext", "apscheduler"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 class _TextLogFormatter(logging.Formatter):

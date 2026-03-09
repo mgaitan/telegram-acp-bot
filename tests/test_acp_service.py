@@ -32,7 +32,14 @@ from acp.schema import (
     ToolCallStart,
 )
 
-from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _PendingPermission
+from telegram_acp_bot.acp_app.acp_service import (
+    LOG_TEXT_PREVIEW_MAX_CHARS as ACP_LOG_TEXT_PREVIEW_MAX_CHARS,
+)
+from telegram_acp_bot.acp_app.acp_service import (
+    AcpAgentService,
+    _AcpClient,
+    _PendingPermission,
+)
 from telegram_acp_bot.acp_app.models import (
     AgentActivityBlock,
     AgentOutputLimitExceededError,
@@ -1942,3 +1949,15 @@ async def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch):
     resolved, no_warning = AcpAgentService._resolve_local_file_uri(file_path.as_uri(), workspace)
     assert resolved == file_path.resolve()
     assert no_warning is None
+
+
+def test_log_text_preview_compacts_and_truncates():
+    short = AcpAgentService._log_text_preview("  hello   world ")
+    assert short == "hello world"
+
+    long_text = "y" * 400
+    preview = AcpAgentService._log_text_preview(long_text)
+    assert preview.endswith("...")
+    assert len(preview) == ACP_LOG_TEXT_PREVIEW_MAX_CHARS + 3
+
+    assert AcpAgentService._log_text_preview("   ") == "<empty>"

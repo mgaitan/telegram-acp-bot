@@ -126,3 +126,19 @@ def test_configure_logging_json_includes_exception_field(caplog: pytest.LogCaptu
     payload = json.loads(formatter.format(caplog.records[0]))
     assert payload["message"] == "failed"
     assert "exception" in payload
+
+
+def test_configure_logging_reduces_third_party_logger_noise():
+    httpx_logger = logging.getLogger("httpx")
+    telegram_ext_logger = logging.getLogger("telegram.ext")
+    previous_httpx_level = httpx_logger.level
+    previous_telegram_ext_level = telegram_ext_logger.level
+    previous_factory = logging.getLogRecordFactory()
+    try:
+        configure_logging(level=logging.INFO, log_format="text", replace_handlers=False)
+        assert httpx_logger.level == logging.WARNING
+        assert telegram_ext_logger.level == logging.WARNING
+    finally:
+        httpx_logger.setLevel(previous_httpx_level)
+        telegram_ext_logger.setLevel(previous_telegram_ext_level)
+        logging.setLogRecordFactory(previous_factory)

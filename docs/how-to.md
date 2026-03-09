@@ -157,3 +157,10 @@ This lets you trace:
 - all logs tied to a single prompt execution (including queued prompts) via `prompt_cycle_id`.
 
 Use {term}`ACP_LOG_FORMAT`=`json` to emit structured logs for log aggregators.
+
+By default, the bot also emits compact text previews for prompts and replies:
+
+- `Prompt received: ...`
+- `Reply received: ...`
+
+To keep logs focused on auditability, verbose transport/framework logs (for example `httpx` Telegram API request lines) are downgraded to warning level by default.

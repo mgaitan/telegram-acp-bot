@@ -74,6 +74,7 @@ logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
 MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
+LOG_TEXT_PREVIEW_MAX_CHARS = 160
 PromptContentBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
 )
@@ -609,12 +610,7 @@ class AcpAgentService:
             return None
 
         with bind_log_context(chat_id=chat_id, session_id=live.acp_session_id):
-            logger.info(
-                "Dispatching prompt to ACP session with text=%s chars images=%s files=%s",
-                len(text),
-                len(images),
-                len(files),
-            )
+            logger.info("Prompt to ACP: %s", self._log_text_preview(text))
             async with live.prompt_lock:
                 if live.next_prompt_auto_approve:
                     live.active_prompt_auto_approve = True
@@ -646,7 +642,7 @@ class AcpAgentService:
                         raise
                     response = await live.client.finish_capture(live.acp_session_id)
                     response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
-                    logger.info("Received ACP reply with text=%s chars", len(response.text))
+                    logger.info("Reply from ACP: %s", self._log_text_preview(response.text))
                     return AgentReply(
                         text=response.text,
                         images=response.images,
@@ -1001,6 +997,15 @@ class AcpAgentService:
 
     def _chat_id_by_session(self, session_id: str) -> int | None:
         return self._chat_by_session.get(session_id)
+
+    @staticmethod
+    def _log_text_preview(text: str) -> str:
+        compact = " ".join(text.split())
+        if not compact:
+            return "<empty>"
+        if len(compact) <= LOG_TEXT_PREVIEW_MAX_CHARS:
+            return compact
+        return f"{compact[:LOG_TEXT_PREVIEW_MAX_CHARS]}..."
 
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""
