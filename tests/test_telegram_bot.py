@@ -454,15 +454,22 @@ async def test_start_allows_user_by_username_allowlist():
 
 
 async def test_restart_requests_app_stop():
-    bridge = make_bridge()
+    service = EchoAgentService(SessionRegistry())
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=service,
+    )
     update = make_update(with_message=True)
     stop_calls: list[str] = []
     bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+    session_id = await service.new_session(chat_id=TEST_CHAT_ID, workspace=Path("/tmp/restart-workspace"))
 
     await bridge.restart(update, make_context())
 
     assert update.message is not None
-    assert update.message.replies == ["Restart requested. Re-launching process..."]
+    assert update.message.replies == [
+        f"Session restarted: {session_id} in /tmp/restart-workspace\nRestart requested. Re-launching process..."
+    ]
     assert stop_calls == ["stop"]
 
 
@@ -478,7 +485,9 @@ async def test_restart_with_index_resumes_selected_candidate():
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == ["Session restarted: s-resume-1 in /tmp/ws1"]
+    assert update.message.replies == [
+        "Session restarted: s-resume-1 in /tmp/ws1\nRestart requested. Re-launching process..."
+    ]
 
 
 async def test_restart_with_workspace_arg_only_reports_usage():
@@ -513,7 +522,22 @@ async def test_restart_with_zero_index_reports_usage():
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == ["Session restarted: s-resume-1 in /tmp/ws1"]
+    assert update.message.replies == [
+        "Session restarted: s-resume-1 in /tmp/ws1\nRestart requested. Re-launching process..."
+    ]
+
+
+async def test_restart_with_running_app_and_no_active_session_reports_missing_session():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+    stop_calls: list[str] = []
+    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+
+    await bridge.restart(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["No active session. Use /new first."]
+    assert stop_calls == []
 
 
 async def test_restart_with_two_indexes_reports_usage():

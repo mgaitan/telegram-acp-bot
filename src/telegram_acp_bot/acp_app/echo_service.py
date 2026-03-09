@@ -79,6 +79,12 @@ class EchoAgentService:
         session = self._registry.get(chat_id)
         return None if session is None else session.workspace
 
+    def get_active_session_context(self, *, chat_id: int) -> tuple[str, Path] | None:
+        session = self._registry.get(chat_id)
+        if session is None:
+            return None
+        return session.session_id, session.workspace
+
     def supports_session_loading(self, *, chat_id: int) -> bool | None:
         del chat_id
         return True

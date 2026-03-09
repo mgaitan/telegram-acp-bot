@@ -343,7 +343,7 @@ class TelegramBridge:
             return
         await self._reply(update, "No active session. Use /new first.")
 
-    async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: PLR0911
+    async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
             return
 
@@ -356,38 +356,62 @@ class TelegramBridge:
             await self._reply(update, "Usage: /restart or /restart N [workspace]")
             return
         if parsed_args.resume_index is not None:
-            try:
-                candidates = await self._agent_service.list_resumable_sessions(
-                    chat_id=chat_id,
-                    workspace=parsed_args.workspace,
-                )
-            except Exception as exc:  # noqa: BLE001
-                await self._reply(update, f"Failed to list resumable sessions: {exc}")
-                return
-            if candidates is None:
-                await self._reply(update, "Agent does not support ACP `session/list`.")
-                return
-            if not candidates:
-                await self._reply(update, "No resumable sessions found.")
-                return
-            if parsed_args.resume_index < 0 or parsed_args.resume_index >= len(candidates):
-                await self._reply(
-                    update,
-                    f"Invalid restart index `{parsed_args.resume_index}`. Choose 0..{len(candidates) - 1}.",
-                )
-                return
-            await self._resume_candidate(
+            await self._restart_with_index(
                 update=update,
                 chat_id=chat_id,
-                candidate=candidates[parsed_args.resume_index],
-                success_label="Session restarted",
+                resume_index=parsed_args.resume_index,
+                workspace=parsed_args.workspace,
             )
             return
 
+        await self._restart_process(update=update, chat_id=chat_id)
+
+    async def _restart_with_index(
+        self,
+        *,
+        update: Update,
+        chat_id: int,
+        resume_index: int,
+        workspace: Path | None,
+    ) -> None:
+        try:
+            candidates = await self._agent_service.list_resumable_sessions(
+                chat_id=chat_id,
+                workspace=workspace,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await self._reply(update, f"Failed to list resumable sessions: {exc}")
+            return
+        if candidates is None:
+            await self._reply(update, "Agent does not support ACP `session/list`.")
+            return
+        if not candidates:
+            await self._reply(update, "No resumable sessions found.")
+            return
+        if resume_index < 0 or resume_index >= len(candidates):
+            await self._reply(
+                update,
+                f"Invalid restart index `{resume_index}`. Choose 0..{len(candidates) - 1}.",
+            )
+            return
+        await self._resume_candidate(
+            update=update,
+            chat_id=chat_id,
+            candidate=candidates[resume_index],
+            success_label="Session restarted",
+            include_restart_notice=True,
+        )
+
+    async def _restart_process(self, *, update: Update, chat_id: int) -> None:
         if self._app is None:
             await self._reply(update, "Restart is unavailable: application is not running.")
             return
-        await self._reply(update, "Restart requested. Re-launching process...")
+        active_session = self._active_session_context(chat_id=chat_id)
+        if active_session is None:
+            await self._reply(update, "No active session. Use /new first.")
+            return
+        session_id, workspace = active_session
+        await self._reply(update, self._format_restart_response(session_id=session_id, workspace=workspace))
         self._restart_requested = True
         self._app.stop_running()
 
@@ -593,6 +617,7 @@ class TelegramBridge:
         chat_id: int,
         candidate: ResumableSession,
         success_label: str = "Session resumed",
+        include_restart_notice: bool = False,
     ) -> bool:
         try:
             session_id = await self._agent_service.load_session(
@@ -603,7 +628,10 @@ class TelegramBridge:
         except Exception as exc:  # noqa: BLE001
             await self._reply(update, f"Failed to resume session `{candidate.session_id}`: {exc}")
             return False
-        await self._reply(update, f"{success_label}: `{session_id}` in `{candidate.workspace}`")
+        response = f"{success_label}: `{session_id}` in `{candidate.workspace}`"
+        if include_restart_notice:
+            response = f"{response}\nRestart requested. Re-launching process..."
+        await self._reply(update, response)
         return True
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -732,6 +760,20 @@ class TelegramBridge:
             return None
         active_workspace = self._agent_service.get_workspace(chat_id=chat_id) or workspace
         return session_id, active_workspace
+
+    def _active_session_context(self, *, chat_id: int) -> tuple[str, Path] | None:
+        context_provider = getattr(self._agent_service, "get_active_session_context", None)
+        if not callable(context_provider):
+            return None
+        context = context_provider(chat_id=chat_id)
+        if context is None:
+            return None
+        session_id, workspace = context
+        return session_id, workspace
+
+    @staticmethod
+    def _format_restart_response(*, session_id: str, workspace: Path) -> str:
+        return f"Session restarted: `{session_id}` in `{workspace}`\nRestart requested. Re-launching process..."
 
     def _implicit_start_lock(self, chat_id: int) -> asyncio.Lock:
         lock = self._implicit_start_locks_by_chat.get(chat_id)
