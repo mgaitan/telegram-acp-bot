@@ -460,7 +460,12 @@ class TelegramBridge:
                 query_message = getattr(query, "message", None)
                 original = getattr(query_message, "text", None) if query_message is not None else None
                 base_text = original or "Permission request"
-                await query.edit_message_text(f"{base_text}\nDecision: {labels[raw_action]}")
+                edited_text = f"{base_text}\nDecision: {labels[raw_action]}"
+                original_entities = getattr(query_message, "entities", None) if query_message is not None else None
+                if original_entities:
+                    await query.edit_message_text(edited_text, entities=list(original_entities))
+                else:
+                    await query.edit_message_text(edited_text)
             except TelegramError:
                 await query.edit_message_reply_markup(reply_markup=None)
         except Exception:

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from telegram import InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardMarkup, MessageEntity, Update
 from telegram.error import TelegramError
 from telegram.ext import Application
 
@@ -156,6 +156,7 @@ class DummyCallbackQuery:
         self.answers: list[str] = []
         self.reply_markup_cleared = False
         self.edited_text: str | None = None
+        self.edited_kwargs: dict[str, object] = {}
 
     async def answer(self, text: str) -> None:
         self.answers.append(text)
@@ -163,8 +164,9 @@ class DummyCallbackQuery:
     async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
         self.reply_markup_cleared = reply_markup is None
 
-    async def edit_message_text(self, text: str) -> None:
+    async def edit_message_text(self, text: str, **kwargs: object) -> None:
         self.edited_text = text
+        self.edited_kwargs = kwargs
 
 
 class LiveActivityService:
@@ -1767,6 +1769,46 @@ async def test_on_permission_callback_accepts_action():
     assert callback.edited_text is not None
     assert "Permission required" in callback.edited_text
     assert "Decision: Approved this time." in callback.edited_text
+
+
+async def test_on_permission_callback_preserves_original_entities():
+    class PermissionService:
+        def set_permission_request_handler(self, handler):
+            del handler
+
+        async def respond_permission_request(self, *, chat_id: int, request_id: str, action: str) -> bool:
+            assert chat_id == TEST_CHAT_ID
+            assert request_id == "req-entities"
+            assert action == "once"
+            return True
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, PermissionService()),
+    )
+    callback = DummyCallbackQuery("perm|req-entities|once")
+    callback.message = SimpleNamespace(
+        text="⚠️ Permission required\n\ngit diff -- README.md",
+        entities=[MessageEntity(type=MessageEntity.PRE, offset=22, length=22)],
+        chat=SimpleNamespace(id=TEST_CHAT_ID),
+    )
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    await bridge.on_permission_callback(update, make_context())
+
+    assert callback.answers[-1] == "Approved this time."
+    assert callback.edited_text is not None
+    assert "Decision: Approved this time." in callback.edited_text
+    assert "entities" in callback.edited_kwargs
+    assert callback.edited_kwargs["entities"] == callback.message.entities
 
 
 async def test_on_permission_callback_invalid_cases():
