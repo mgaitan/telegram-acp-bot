@@ -994,10 +994,10 @@ class AcpAgentService:
         handler = self._activity_event_handler
         if handler is None:
             return
-        for chat_id, live in self._live_by_chat.items():
-            if live.acp_session_id == session_id:
-                await handler(chat_id, block)
-                return
+        chat_id = self._chat_id_by_session(session_id)
+        if chat_id is None:
+            return
+        await handler(chat_id, block)
 
     def _chat_id_by_session(self, session_id: str) -> int | None:
         return self._chat_by_session.get(session_id)

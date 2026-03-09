@@ -11,6 +11,7 @@ from typing import Any
 _CONTEXT_FIELDS = ("chat_id", "session_id", "prompt_cycle_id")
 _MISSING = "-"
 _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_context", default=None)
+_BASE_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
 
 
 def configure_logging(*, level: int, log_format: str = "text", replace_handlers: bool = True) -> None:
@@ -21,11 +22,12 @@ def configure_logging(*, level: int, log_format: str = "text", replace_handlers:
         handler.setFormatter(_JsonLogFormatter())
     else:
         handler.setFormatter(_TextLogFormatter())
-    handler.addFilter(_ContextLogFilter())
-
+    _install_log_record_factory()
     root_logger = logging.getLogger()
     if replace_handlers:
-        root_logger.handlers.clear()
+        for existing_handler in list(root_logger.handlers):
+            root_logger.removeHandler(existing_handler)
+            existing_handler.close()
     root_logger.setLevel(level)
     root_logger.addHandler(handler)
 
@@ -59,6 +61,20 @@ class _ContextLogFilter(logging.Filter):
         for key in _CONTEXT_FIELDS:
             setattr(record, key, context.get(key, _MISSING))
         return True
+
+
+def _install_log_record_factory() -> None:
+    if logging.getLogRecordFactory() is _contextual_log_record_factory:
+        return
+    logging.setLogRecordFactory(_contextual_log_record_factory)
+
+
+def _contextual_log_record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+    record = _BASE_LOG_RECORD_FACTORY(*args, **kwargs)
+    context = _log_context.get() or {}
+    for key in _CONTEXT_FIELDS:
+        setattr(record, key, context.get(key, _MISSING))
+    return record
 
 
 class _TextLogFormatter(logging.Formatter):
