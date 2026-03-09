@@ -630,7 +630,7 @@ class TelegramBridge:
             return False
         response = f"{success_label}: `{session_id}` in `{candidate.workspace}`"
         if include_restart_notice:
-            response = f"{response}\nRestart requested. Re-launching process..."
+            response = f"Restart requested. Re-launching process...\n{response}"
         await self._reply(update, response)
         return True
 
@@ -773,7 +773,7 @@ class TelegramBridge:
 
     @staticmethod
     def _format_restart_response(*, session_id: str, workspace: Path) -> str:
-        return f"Session restarted: `{session_id}` in `{workspace}`\nRestart requested. Re-launching process..."
+        return f"Restart requested. Re-launching process...\nSession restarted: `{session_id}` in `{workspace}`"
 
     def _implicit_start_lock(self, chat_id: int) -> asyncio.Lock:
         lock = self._implicit_start_locks_by_chat.get(chat_id)

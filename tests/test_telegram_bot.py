@@ -468,7 +468,7 @@ async def test_restart_requests_app_stop():
 
     assert update.message is not None
     assert update.message.replies == [
-        f"Session restarted: {session_id} in /tmp/restart-workspace\nRestart requested. Re-launching process..."
+        f"Restart requested. Re-launching process...\nSession restarted: {session_id} in /tmp/restart-workspace"
     ]
     assert stop_calls == ["stop"]
 
@@ -486,7 +486,7 @@ async def test_restart_with_index_resumes_selected_candidate():
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
     assert update.message.replies == [
-        "Session restarted: s-resume-1 in /tmp/ws1\nRestart requested. Re-launching process..."
+        "Restart requested. Re-launching process...\nSession restarted: s-resume-1 in /tmp/ws1"
     ]
 
 
@@ -523,7 +523,7 @@ async def test_restart_with_zero_index_reports_usage():
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
     assert update.message.replies == [
-        "Session restarted: s-resume-1 in /tmp/ws1\nRestart requested. Re-launching process..."
+        "Restart requested. Re-launching process...\nSession restarted: s-resume-1 in /tmp/ws1"
     ]
 
 
