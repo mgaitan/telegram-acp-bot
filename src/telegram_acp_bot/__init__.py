@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService
 from telegram_acp_bot.acp_app.models import PermissionEventOutput, PermissionMode
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.logging_context import configure_logging
 from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, TelegramBridge, make_config, run_polling
 
@@ -92,6 +93,12 @@ def get_parser() -> argparse.ArgumentParser:
         default=os.getenv("ACP_RESTART_COMMAND", ""),
         help="Optional command used by /restart to relaunch the bot (e.g. 'uv run telegram-acp-bot').",
     )
+    parser.add_argument(
+        "--log-format",
+        default=os.getenv("ACP_LOG_FORMAT", "text"),
+        choices=["text", "json"],
+        help="Application log format.",
+    )
     return parser
 
 
@@ -139,10 +146,10 @@ def _resolve_allowed_users(*, parser: argparse.ArgumentParser, opts: argparse.Na
 def main(args: list[str] | None = None) -> int:
     """Run the main program."""
     load_dotenv(override=False)
-    log_level = os.getenv("ACP_LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
     parser = get_parser()
     opts = parser.parse_args(args=args)
+    log_level = os.getenv("ACP_LOG_LEVEL", "INFO").upper()
+    configure_logging(level=getattr(logging, log_level, logging.INFO), log_format=opts.log_format)
 
     if not opts.telegram_token:
         parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")

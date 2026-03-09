@@ -43,6 +43,7 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
     ResumableSession,
 )
+from telegram_acp_bot.logging_context import bind_log_context
 
 PERMISSION_CALLBACK_PREFIX = "perm"
 RESUME_CALLBACK_PREFIX = "resume"
@@ -85,6 +86,7 @@ class _PromptInput:
     text: str
     images: tuple[PromptImage, ...]
     files: tuple[PromptFile, ...]
+    cycle_id: str = field(default_factory=lambda: uuid4().hex[:12])
 
 
 @dataclass(slots=True, frozen=True)
@@ -462,7 +464,6 @@ class TelegramBridge:
                 return
 
             data = query.data or ""
-            logger.info("Permission callback received: %s", data)
             parts = data.split("|", maxsplit=2)
             if len(parts) != PERMISSION_CALLBACK_PARTS:
                 await query.answer("Invalid action.")
@@ -481,20 +482,22 @@ class TelegramBridge:
                 await query.answer("Missing chat.")
                 return
 
-            accepted = await self._agent_service.respond_permission_request(
-                chat_id=chat_id,
-                request_id=request_id,
-                action=cast(PermissionDecisionAction, raw_action),
-            )
-            if not accepted:
-                logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)
-                await query.answer("Request expired.")
-                return
+            with bind_log_context(chat_id=chat_id):
+                logger.info("Permission callback received: %s", data)
+                accepted = await self._agent_service.respond_permission_request(
+                    chat_id=chat_id,
+                    request_id=request_id,
+                    action=cast(PermissionDecisionAction, raw_action),
+                )
+                if not accepted:
+                    logger.warning("Permission callback rejected: request_id=%s chat_id=%s", request_id, chat_id)
+                    await query.answer("Request expired.")
+                    return
 
-            labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
-            logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
-            await query.answer(labels[raw_action])
-            await self._edit_permission_decision_message(query, decision_label=labels[raw_action])
+                labels = {"once": "Approved this time.", "always": "Approved for this session.", "deny": "Denied."}
+                logger.info("Permission callback accepted: request_id=%s action=%s", request_id, raw_action)
+                await query.answer(labels[raw_action])
+                await self._edit_permission_decision_message(query, decision_label=labels[raw_action])
         except Exception:
             logger.exception("Unhandled error while processing permission callback")
             await query.answer("Permission action failed.")
@@ -513,18 +516,20 @@ class TelegramBridge:
         chat_id, candidate = selection
 
         try:
-            session_id = await self._agent_service.load_session(
-                chat_id=chat_id,
-                session_id=candidate.session_id,
-                workspace=candidate.workspace,
-            )
+            with bind_log_context(chat_id=chat_id, session_id=candidate.session_id):
+                session_id = await self._agent_service.load_session(
+                    chat_id=chat_id,
+                    session_id=candidate.session_id,
+                    workspace=candidate.workspace,
+                )
         except Exception as exc:
-            logger.exception(
-                "Resume failed for chat_id=%s session_id=%s workspace=%s",
-                chat_id,
-                candidate.session_id,
-                candidate.workspace,
-            )
+            with bind_log_context(chat_id=chat_id, session_id=candidate.session_id):
+                logger.exception(
+                    "Resume failed for chat_id=%s session_id=%s workspace=%s",
+                    chat_id,
+                    candidate.session_id,
+                    candidate.workspace,
+                )
             await query.answer("Failed to resume.")
             await self._reply(update, f"Failed to resume session `{candidate.session_id}`: {exc}")
             return
@@ -568,21 +573,22 @@ class TelegramBridge:
                 await query.edit_message_reply_markup(reply_markup=None)
             return
 
-        try:
-            await self._agent_service.cancel(chat_id=chat_id)
-        except Exception:
-            logger.exception("Unhandled error while cancelling prompt in busy callback")
+        with bind_log_context(chat_id=chat_id, prompt_cycle_id=pending.prompt_input.cycle_id):
+            try:
+                await self._agent_service.cancel(chat_id=chat_id)
+            except Exception:
+                logger.exception("Unhandled error while cancelling prompt in busy callback")
+                with suppress(TelegramError):
+                    await query.edit_message_reply_markup(reply_markup=None)
+                pending.notify_msg_id = None
+                await query.answer("Cancel failed.")
+                return
+            await query.answer(BUSY_SEND_NOW_TEXT)
+            with suppress(TelegramError):
+                await query.edit_message_text(BUSY_SEND_NOW_TEXT)
             with suppress(TelegramError):
                 await query.edit_message_reply_markup(reply_markup=None)
             pending.notify_msg_id = None
-            await query.answer("Cancel failed.")
-            return
-        await query.answer(BUSY_SEND_NOW_TEXT)
-        with suppress(TelegramError):
-            await query.edit_message_text(BUSY_SEND_NOW_TEXT)
-        with suppress(TelegramError):
-            await query.edit_message_reply_markup(reply_markup=None)
-        pending.notify_msg_id = None
 
     async def _resolve_resume_selection(
         self,
@@ -647,6 +653,8 @@ class TelegramBridge:
 
         chat_id = prompt_input.chat_id
         lock = self._chat_prompt_lock(chat_id)
+        with bind_log_context(chat_id=chat_id, prompt_cycle_id=prompt_input.cycle_id):
+            logger.info("Prompt received for processing")
 
         if lock.locked():
             await self._queue_busy_prompt(chat_id=chat_id, prompt_input=prompt_input, update=update)
@@ -672,11 +680,13 @@ class TelegramBridge:
         current_update = update
 
         while True:
-            reply = await self._request_reply(
-                update=current_update,
-                context=context,
-                prompt_input=current_input,
-            )
+            with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
+                logger.info("Prompt cycle started")
+                reply = await self._request_reply(
+                    update=current_update,
+                    context=context,
+                    prompt_input=current_input,
+                )
 
             # Pop any pending prompt before sending the reply. A concurrent
             # on_message for this chat cannot interfere here because the
@@ -687,10 +697,14 @@ class TelegramBridge:
 
             if reply is not None:
                 await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
+                with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
+                    logger.info("Prompt cycle completed")
 
             if pending is None:
                 return
 
+            with bind_log_context(chat_id=chat_id, prompt_cycle_id=pending.prompt_input.cycle_id):
+                logger.info("Dequeued pending prompt cycle")
             current_input = pending.prompt_input
             current_update = pending.update
 
@@ -747,7 +761,8 @@ class TelegramBridge:
         invalid_workspace_label: str,
     ) -> tuple[str, Path] | None:
         try:
-            session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
+            with bind_log_context(chat_id=chat_id):
+                session_id = await self._agent_service.new_session(chat_id=chat_id, workspace=workspace)
         except ValueError as exc:
             message = str(exc) or str(workspace)
             await self._reply(update, f"{invalid_workspace_label}: {message}")
@@ -805,36 +820,38 @@ class TelegramBridge:
         update: Update,
     ) -> None:
         """Queue a prompt while the agent is busy and show a *Send now* inline button."""
-        old_pending = self._pending_prompts_by_chat.get(chat_id)
-        if old_pending is not None and old_pending.notify_msg_id is not None and self._app is not None:
-            with suppress(TelegramError):
-                await self._app.bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=old_pending.notify_msg_id,
-                    reply_markup=None,
+        with bind_log_context(chat_id=chat_id, prompt_cycle_id=prompt_input.cycle_id):
+            old_pending = self._pending_prompts_by_chat.get(chat_id)
+            if old_pending is not None and old_pending.notify_msg_id is not None and self._app is not None:
+                with suppress(TelegramError):
+                    await self._app.bot.edit_message_reply_markup(
+                        chat_id=chat_id,
+                        message_id=old_pending.notify_msg_id,
+                        reply_markup=None,
+                    )
+
+            token = str(uuid4())
+            pending = _PendingPrompt(prompt_input=prompt_input, update=update, token=token)
+            self._pending_prompts_by_chat[chat_id] = pending
+            logger.info("Queued prompt cycle while chat lock is busy")
+
+            if self._app is not None:
+                keyboard = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(text="Send now", callback_data=f"{BUSY_CALLBACK_PREFIX}|{token}")]]
                 )
-
-        token = str(uuid4())
-        pending = _PendingPrompt(prompt_input=prompt_input, update=update, token=token)
-        self._pending_prompts_by_chat[chat_id] = pending
-
-        if self._app is not None:
-            keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(text="Send now", callback_data=f"{BUSY_CALLBACK_PREFIX}|{token}")]]
-            )
-            send_kwargs: dict[str, object] = {
-                "chat_id": chat_id,
-                "text": "⏳ Agent is busy. Your message is queued.",
-                "reply_markup": keyboard,
-            }
-            queued_message = update.message
-            if queued_message is not None and isinstance(queued_message.message_id, int):
-                send_kwargs["reply_to_message_id"] = queued_message.message_id
-            try:
-                notify_msg = await self._app.bot.send_message(**send_kwargs)
-                pending.notify_msg_id = getattr(notify_msg, "message_id", None)
-            except TelegramError:
-                logger.exception("Failed to send busy notification for chat_id=%s", chat_id)
+                send_kwargs: dict[str, object] = {
+                    "chat_id": chat_id,
+                    "text": "⏳ Agent is busy. Your message is queued.",
+                    "reply_markup": keyboard,
+                }
+                queued_message = update.message
+                if queued_message is not None and isinstance(queued_message.message_id, int):
+                    send_kwargs["reply_to_message_id"] = queued_message.message_id
+                try:
+                    notify_msg = await self._app.bot.send_message(**send_kwargs)
+                    pending.notify_msg_id = getattr(notify_msg, "message_id", None)
+                except TelegramError:
+                    logger.exception("Failed to send busy notification for chat_id=%s", chat_id)
 
     async def _clear_busy_button(self, pending: _PendingPrompt | None) -> None:
         """Remove the *Send now* button when the queued prompt is about to be processed."""
@@ -854,14 +871,26 @@ class TelegramBridge:
         context: ContextTypes.DEFAULT_TYPE,
         prompt_input: _PromptInput,
     ) -> AgentReply | None:
-        await context.bot.send_chat_action(chat_id=prompt_input.chat_id, action=ChatAction.TYPING)
+        session_context = self._active_session_context(chat_id=prompt_input.chat_id)
+        session_id = None if session_context is None else session_context[0]
+        with bind_log_context(
+            chat_id=prompt_input.chat_id,
+            prompt_cycle_id=prompt_input.cycle_id,
+            session_id=session_id,
+        ):
+            await context.bot.send_chat_action(chat_id=prompt_input.chat_id, action=ChatAction.TYPING)
         try:
-            reply = await self._agent_service.prompt(
+            with bind_log_context(
                 chat_id=prompt_input.chat_id,
-                text=prompt_input.text,
-                images=prompt_input.images,
-                files=prompt_input.files,
-            )
+                prompt_cycle_id=prompt_input.cycle_id,
+                session_id=session_id,
+            ):
+                reply = await self._agent_service.prompt(
+                    chat_id=prompt_input.chat_id,
+                    text=prompt_input.text,
+                    images=prompt_input.images,
+                    files=prompt_input.files,
+                )
         except AgentOutputLimitExceededError:
             await self._reply(
                 update,

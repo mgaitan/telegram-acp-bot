@@ -458,8 +458,10 @@ async def test_acp_client_capture_tool_events():
         del options, tool_call
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
-    events: list[str] = []
-    client = _AcpClient(permission_decider=allow_first, event_reporter=events.append)
+    events: list[tuple[str, str]] = []
+    client = _AcpClient(
+        permission_decider=allow_first, event_reporter=lambda session_id, event: events.append((session_id, event))
+    )
     session_id = "s-tool"
     client.start_capture(session_id)
 
@@ -474,8 +476,10 @@ async def test_acp_client_capture_tool_events():
     await client.session_update(session_id=session_id, update=start)
     await client.session_update(session_id=session_id, update=progress)
     _ = await client.finish_capture(session_id)
-    assert "tool start tool-1 read file (read)" in events[0]
-    assert "tool completed tool-1 read file" in events[1]
+    assert events[0][0] == session_id
+    assert "tool start tool-1 read file (read)" in events[0][1]
+    assert events[1][0] == session_id
+    assert "tool completed tool-1 read file" in events[1][1]
 
 
 async def test_acp_client_emits_live_activity_blocks():
@@ -1748,12 +1752,12 @@ async def test_available_actions_reflect_agent_options():
 async def test_report_permission_event_respects_output_mode(caplog: pytest.LogCaptureFixture):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], permission_event_output="off")
     with caplog.at_level(logging.INFO):
-        service._report_permission_event("x")
+        service._report_permission_event("session-x", "x")
     assert not caplog.records
 
     service = AcpAgentService(SessionRegistry(), program="agent", args=[], permission_event_output="stdout")
     with caplog.at_level(logging.INFO):
-        service._report_permission_event("y")
+        service._report_permission_event("session-y", "y")
     assert any("ACP permission event: y" in record.message for record in caplog.records)
 
 
