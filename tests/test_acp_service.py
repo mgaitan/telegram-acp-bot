@@ -1256,6 +1256,30 @@ async def test_prompt_reraises_unrelated_value_error(tmp_path: Path) -> None:
         await service.prompt(chat_id=1, text="boom")
 
 
+async def test_prompt_resets_active_auto_approve_on_prompt_error(tmp_path: Path):
+    process = FakeProcess()
+    connection = GenericValueErrorConnection(session_id="value-error-session")
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    await service.set_next_prompt_auto_approve(chat_id=1, enabled=True)
+    with pytest.raises(ValueError, match="unexpected"):
+        await service.prompt(chat_id=1, text="boom")
+
+    live = service._live_by_chat[1]
+    assert live.next_prompt_auto_approve is False
+    assert live.active_prompt_auto_approve is False
+
+
 async def test_prompt_resolves_file_uri_resource_as_image(tmp_path: Path):
     workspace = tmp_path / "ws"
     image_path = workspace / "img sample.png"

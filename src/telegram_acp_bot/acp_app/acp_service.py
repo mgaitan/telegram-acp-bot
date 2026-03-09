@@ -474,6 +474,7 @@ class AcpAgentService:
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
         self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
+        self._chat_by_session: dict[str, int] = {}
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
         self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
@@ -491,6 +492,7 @@ class AcpAgentService:
         if existing is not None:
             await self._shutdown(existing.process)
             await self._drop_channel_session_mapping(session_id=existing.acp_session_id)
+            self._chat_by_session.pop(existing.acp_session_id, None)
 
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         try:
@@ -515,6 +517,7 @@ class AcpAgentService:
             supports_session_list=self._supports_session_list(capabilities),
             permission_mode=self._default_permission_mode,
         )
+        self._chat_by_session[session.session_id] = chat_id
         with bind_log_context(chat_id=chat_id, session_id=session.session_id):
             logger.info("ACP session started for chat_id=%s session_id=%s", chat_id, session.session_id)
         return session.session_id
@@ -531,6 +534,7 @@ class AcpAgentService:
         if existing is not None:
             await self._shutdown(existing.process)
             await self._drop_channel_session_mapping(session_id=existing.acp_session_id)
+            self._chat_by_session.pop(existing.acp_session_id, None)
 
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         if not self._supports_load_session(capabilities):
@@ -561,6 +565,7 @@ class AcpAgentService:
             supports_session_list=self._supports_session_list(capabilities),
             permission_mode=self._default_permission_mode,
         )
+        self._chat_by_session[session_id] = chat_id
         with bind_log_context(chat_id=chat_id, session_id=session_id):
             logger.info("ACP session loaded for chat_id=%s session_id=%s", chat_id, session_id)
         return session_id
@@ -633,20 +638,22 @@ class AcpAgentService:
                         )
 
                 try:
-                    await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
-                except ValueError as exc:
-                    if "chunk is longer than limit" in str(exc):
-                        raise AgentOutputLimitExceededError from exc
-                    raise
-                response = await live.client.finish_capture(live.acp_session_id)
-                live.active_prompt_auto_approve = False
-                response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
-                logger.info("Received ACP reply with text=%s chars", len(response.text))
-                return AgentReply(
-                    text=response.text,
-                    images=response.images,
-                    files=response.files,
-                )
+                    try:
+                        await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
+                    except ValueError as exc:
+                        if "chunk is longer than limit" in str(exc):
+                            raise AgentOutputLimitExceededError from exc
+                        raise
+                    response = await live.client.finish_capture(live.acp_session_id)
+                    response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
+                    logger.info("Received ACP reply with text=%s chars", len(response.text))
+                    return AgentReply(
+                        text=response.text,
+                        images=response.images,
+                        files=response.files,
+                    )
+                finally:
+                    live.active_prompt_auto_approve = False
 
     def get_workspace(self, *, chat_id: int) -> Path | None:
         session = self._registry.get(chat_id)
@@ -685,6 +692,7 @@ class AcpAgentService:
 
         await self._shutdown(live.process)
         self._registry.clear(chat_id)
+        self._chat_by_session.pop(live.acp_session_id, None)
         await self._drop_channel_session_mapping(session_id=live.acp_session_id)
         return True
 
@@ -992,10 +1000,7 @@ class AcpAgentService:
                 return
 
     def _chat_id_by_session(self, session_id: str) -> int | None:
-        for chat_id, live in self._live_by_chat.items():
-            if live.acp_session_id == session_id:
-                return chat_id
-        return None
+        return self._chat_by_session.get(session_id)
 
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""

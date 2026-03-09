@@ -13,7 +13,7 @@ _MISSING = "-"
 _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_context", default=None)
 
 
-def configure_logging(*, level: int, log_format: str = "text") -> None:
+def configure_logging(*, level: int, log_format: str = "text", replace_handlers: bool = True) -> None:
     """Configure root logging with request/session context enrichment."""
 
     handler = logging.StreamHandler()
@@ -24,7 +24,8 @@ def configure_logging(*, level: int, log_format: str = "text") -> None:
     handler.addFilter(_ContextLogFilter())
 
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()
+    if replace_handlers:
+        root_logger.handlers.clear()
     root_logger.setLevel(level)
     root_logger.addHandler(handler)
 
@@ -74,7 +75,7 @@ class _TextLogFormatter(logging.Formatter):
 class _JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "timestamp": datetime.now(tz=UTC).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
