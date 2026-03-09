@@ -109,7 +109,20 @@ If the current task finishes naturally before you press the button, your queued 
 /restart
 ```
 
-The bot exits polling and re-execs the process (or uses `ACP_RESTART_COMMAND` if configured).
+With an active session, the bot replies with:
+
+```text
+Restart requested. Re-launching process...
+Session restarted: <session_id> in <workspace>
+```
+
+Then it exits polling and re-execs the process (or uses `ACP_RESTART_COMMAND` if configured).
+
+If there is no active session, it replies:
+
+```text
+No active session. Use /new first.
+```
 
 Restart by resuming a specific saved session (without restarting the process):
 
