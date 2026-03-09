@@ -1919,8 +1919,8 @@ async def test_on_permission_callback_fallback_to_clear_markup_on_edit_error():
             return True
 
     class FailingEditCallbackQuery(DummyCallbackQuery):
-        async def edit_message_text(self, text: str) -> None:
-            del text
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
             raise MarkdownFailureError
 
     bridge = TelegramBridge(
@@ -2158,8 +2158,8 @@ async def test_on_resume_callback_success_and_failure_paths():
 
 async def test_on_resume_callback_fallback_to_clear_markup_on_edit_error():
     class FailingEditCallbackQuery(DummyCallbackQuery):
-        async def edit_message_text(self, text: str) -> None:
-            del text
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
             raise MarkdownFailureError
 
     service = ResumeService()
