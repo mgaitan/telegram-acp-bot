@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any, cast
 
 import pytest
 
@@ -36,11 +37,11 @@ def test_configure_logging_text_includes_context_fields(caplog: pytest.LogCaptur
         root.setLevel(previous_level)
 
     assert len(caplog.records) == 1
-    record = caplog.records[0]
+    record = cast(Any, caplog.records[0])
     assert record.message == "hello"
-    assert getattr(record, "chat_id") == "42"
-    assert getattr(record, "session_id") == "s-1"
-    assert getattr(record, "prompt_cycle_id") == "c-1"
+    assert record.chat_id == "42"
+    assert record.session_id == "s-1"
+    assert record.prompt_cycle_id == "c-1"
 
 
 def test_configure_logging_json_includes_context_fields(caplog: pytest.LogCaptureFixture):
