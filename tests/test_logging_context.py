@@ -27,18 +27,26 @@ def test_configure_logging_text_includes_context_fields(caplog: pytest.LogCaptur
     root = logging.getLogger()
     previous_handlers = list(root.handlers)
     previous_level = root.level
+    previous_factory = logging.getLogRecordFactory()
+    added_handler: logging.Handler | None = None
     try:
-        configure_logging(level=logging.INFO, log_format="text")
+        configure_logging(level=logging.INFO, log_format="text", replace_handlers=False)
+        added_handler = root.handlers[-1]
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
         logger = logging.getLogger("telegram_acp_bot.test")
         with bind_log_context(chat_id=42, session_id="s-1", prompt_cycle_id="c-1"):
             logger.info("hello")
     finally:
+        if added_handler is not None:
+            root.removeHandler(added_handler)
+            added_handler.close()
+        root.removeHandler(caplog.handler)
         root.handlers.clear()
         for handler in previous_handlers:
             root.addHandler(handler)
         root.setLevel(previous_level)
+        logging.setLogRecordFactory(previous_factory)
 
     assert len(caplog.records) == 1
     record = cast(Any, caplog.records[0])
@@ -52,20 +60,28 @@ def test_configure_logging_json_includes_context_fields(caplog: pytest.LogCaptur
     root = logging.getLogger()
     previous_handlers = list(root.handlers)
     previous_level = root.level
+    previous_factory = logging.getLogRecordFactory()
+    added_handler: logging.Handler | None = None
     formatter: logging.Formatter | None = None
     try:
-        configure_logging(level=logging.INFO, log_format="json")
-        formatter = root.handlers[0].formatter
+        configure_logging(level=logging.INFO, log_format="json", replace_handlers=False)
+        added_handler = root.handlers[-1]
+        formatter = added_handler.formatter
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
         logger = logging.getLogger("telegram_acp_bot.test")
         with bind_log_context(chat_id=7, session_id="session-7", prompt_cycle_id="cycle-7"):
             logger.info("json hello")
     finally:
+        if added_handler is not None:
+            root.removeHandler(added_handler)
+            added_handler.close()
+        root.removeHandler(caplog.handler)
         root.handlers.clear()
         for handler in previous_handlers:
             root.addHandler(handler)
         root.setLevel(previous_level)
+        logging.setLogRecordFactory(previous_factory)
 
     assert len(caplog.records) == 1
     assert formatter is not None
@@ -80,10 +96,13 @@ def test_configure_logging_json_includes_exception_field(caplog: pytest.LogCaptu
     root = logging.getLogger()
     previous_handlers = list(root.handlers)
     previous_level = root.level
+    previous_factory = logging.getLogRecordFactory()
+    added_handler: logging.Handler | None = None
     formatter: logging.Formatter | None = None
     try:
-        configure_logging(level=logging.INFO, log_format="json")
-        formatter = root.handlers[0].formatter
+        configure_logging(level=logging.INFO, log_format="json", replace_handlers=False)
+        added_handler = root.handlers[-1]
+        formatter = added_handler.formatter
         root.addHandler(caplog.handler)
         root.setLevel(logging.INFO)
         logger = logging.getLogger("telegram_acp_bot.test")
@@ -92,10 +111,15 @@ def test_configure_logging_json_includes_exception_field(caplog: pytest.LogCaptu
         except RuntimeError:
             logger.exception("failed")
     finally:
+        if added_handler is not None:
+            root.removeHandler(added_handler)
+            added_handler.close()
+        root.removeHandler(caplog.handler)
         root.handlers.clear()
         for handler in previous_handlers:
             root.addHandler(handler)
         root.setLevel(previous_level)
+        logging.setLogRecordFactory(previous_factory)
 
     assert len(caplog.records) == 1
     assert formatter is not None

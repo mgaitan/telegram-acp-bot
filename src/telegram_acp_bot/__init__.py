@@ -149,7 +149,11 @@ def main(args: list[str] | None = None) -> int:
     parser = get_parser()
     opts = parser.parse_args(args=args)
     log_level = os.getenv("ACP_LOG_LEVEL", "INFO").upper()
-    configure_logging(level=getattr(logging, log_level, logging.INFO), log_format=opts.log_format)
+    configure_logging(
+        level=getattr(logging, log_level, logging.INFO),
+        log_format=opts.log_format,
+        close_replaced_handlers=True,
+    )
 
     if not opts.telegram_token:
         parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")

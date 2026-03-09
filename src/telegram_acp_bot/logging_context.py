@@ -14,7 +14,13 @@ _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_c
 _BASE_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
 
 
-def configure_logging(*, level: int, log_format: str = "text", replace_handlers: bool = True) -> None:
+def configure_logging(
+    *,
+    level: int,
+    log_format: str = "text",
+    replace_handlers: bool = True,
+    close_replaced_handlers: bool = False,
+) -> None:
     """Configure root logging with request/session context enrichment."""
 
     handler = logging.StreamHandler()
@@ -27,7 +33,8 @@ def configure_logging(*, level: int, log_format: str = "text", replace_handlers:
     if replace_handlers:
         for existing_handler in list(root_logger.handlers):
             root_logger.removeHandler(existing_handler)
-            existing_handler.close()
+            if close_replaced_handlers:
+                existing_handler.close()
     root_logger.setLevel(level)
     root_logger.addHandler(handler)
 
