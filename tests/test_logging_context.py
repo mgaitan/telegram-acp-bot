@@ -9,6 +9,10 @@ import pytest
 from telegram_acp_bot.logging_context import bind_log_context, configure_logging, get_log_context
 
 
+def _raise_runtime_error() -> None:
+    raise RuntimeError("boom")
+
+
 def test_bind_log_context_is_scoped():
     assert get_log_context() == {}
     with bind_log_context(chat_id=123):
@@ -70,3 +74,31 @@ def test_configure_logging_json_includes_context_fields(caplog: pytest.LogCaptur
     assert payload["chat_id"] == "7"
     assert payload["session_id"] == "session-7"
     assert payload["prompt_cycle_id"] == "cycle-7"
+
+
+def test_configure_logging_json_includes_exception_field(caplog: pytest.LogCaptureFixture):
+    root = logging.getLogger()
+    previous_handlers = list(root.handlers)
+    previous_level = root.level
+    formatter: logging.Formatter | None = None
+    try:
+        configure_logging(level=logging.INFO, log_format="json")
+        formatter = root.handlers[0].formatter
+        root.addHandler(caplog.handler)
+        root.setLevel(logging.INFO)
+        logger = logging.getLogger("telegram_acp_bot.test")
+        try:
+            _raise_runtime_error()
+        except RuntimeError:
+            logger.exception("failed")
+    finally:
+        root.handlers.clear()
+        for handler in previous_handlers:
+            root.addHandler(handler)
+        root.setLevel(previous_level)
+
+    assert len(caplog.records) == 1
+    assert formatter is not None
+    payload = json.loads(formatter.format(caplog.records[0]))
+    assert payload["message"] == "failed"
+    assert "exception" in payload
