@@ -905,7 +905,7 @@ class TelegramBridge:
                 prompt_cycle_id=prompt_input.cycle_id,
                 session_id=session_id,
             ):
-                logger.info("Reply received: %s", self._log_text_preview(reply.text))
+                logger.info("Reply sent: %s", self._log_text_preview(reply.text))
             return reply
         await self._reply(update, "No active session. Send a message again or use /new [workspace].")
         return None

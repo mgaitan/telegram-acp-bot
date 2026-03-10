@@ -642,7 +642,7 @@ class AcpAgentService:
                         raise
                     response = await live.client.finish_capture(live.acp_session_id)
                     response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
-                    logger.info("Reply from ACP: %s", self._log_text_preview(response.text))
+                    logger.debug("Reply from ACP: %s", self._log_text_preview(response.text))
                     return AgentReply(
                         text=response.text,
                         images=response.images,

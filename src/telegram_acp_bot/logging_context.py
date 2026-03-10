@@ -8,6 +8,9 @@ from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from typing import Any
 
+from rich.logging import RichHandler
+from rich.markup import escape
+
 _CONTEXT_FIELDS = ("chat_id", "session_id", "prompt_cycle_id")
 _MISSING = "-"
 _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_context", default=None)
@@ -23,11 +26,20 @@ def configure_logging(
 ) -> None:
     """Configure root logging with request/session context enrichment."""
 
-    handler = logging.StreamHandler()
+    handler: logging.Handler
     if log_format == "json":
+        handler = logging.StreamHandler()
         handler.setFormatter(_JsonLogFormatter())
     else:
-        handler.setFormatter(_TextLogFormatter())
+        handler = RichHandler(
+            markup=True,
+            rich_tracebacks=True,
+            show_level=True,
+            show_path=False,
+            show_time=True,
+            omit_repeated_times=False,
+        )
+        handler.setFormatter(_RichTextFormatter())
     _install_log_record_factory()
     root_logger = logging.getLogger()
     if replace_handlers:
@@ -84,15 +96,26 @@ def _configure_third_party_logging() -> None:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
-class _TextLogFormatter(logging.Formatter):
-    def __init__(self) -> None:
-        super().__init__(
-            fmt=(
-                "%(asctime)s %(levelname)s %(name)s "
-                "chat_id=%(chat_id)s session_id=%(session_id)s prompt_cycle_id=%(prompt_cycle_id)s %(message)s"
-            ),
-            datefmt="%Y-%m-%dT%H:%M:%S%z",
-        )
+class _RichTextFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        logger_label = _logger_label(record.name)
+        parts = [f"[bold bright_cyan]{logger_label}[/]"]
+
+        chat_id = getattr(record, "chat_id", _MISSING)
+        if chat_id != _MISSING:
+            parts.append(f"[cyan]chat[/]=[white]{escape(str(chat_id))}[/]")
+
+        session_id = getattr(record, "session_id", _MISSING)
+        if session_id != _MISSING:
+            parts.append(f"[magenta]session[/]=[white]{escape(str(session_id))}[/]")
+
+        prompt_cycle_id = getattr(record, "prompt_cycle_id", _MISSING)
+        if prompt_cycle_id != _MISSING:
+            parts.append(f"[yellow]cycle[/]=[white]{escape(str(prompt_cycle_id))}[/]")
+
+        message = escape(record.getMessage())
+        parts.append(message)
+        return "  ".join(parts)
 
 
 class _JsonLogFormatter(logging.Formatter):
@@ -109,3 +132,11 @@ class _JsonLogFormatter(logging.Formatter):
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _logger_label(logger_name: str) -> str:
+    labels = {
+        "telegram_acp_bot.telegram.bot": "telegram",
+        "telegram_acp_bot.acp_app.acp_service": "acp",
+    }
+    return labels.get(logger_name, logger_name.rsplit(".", maxsplit=1)[-1])

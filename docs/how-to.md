@@ -161,6 +161,8 @@ Use {term}`ACP_LOG_FORMAT`=`json` to emit structured logs for log aggregators.
 By default, the bot also emits compact text previews for prompts and replies:
 
 - `Prompt received: ...`
-- `Reply received: ...`
+- `Reply sent: ...`
+
+The human-oriented `text` log format uses `rich` output in the terminal to highlight the logger, chat/session/cycle ids, and the message preview.
 
 To keep logs focused on auditability, verbose transport/framework logs (for example `httpx` Telegram API request lines) are downgraded to warning level by default.

@@ -1951,7 +1951,7 @@ async def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch):
     assert no_warning is None
 
 
-def test_log_text_preview_compacts_and_truncates():
+async def test_log_text_preview_compacts_and_truncates():
     short = AcpAgentService._log_text_preview("  hello   world ")
     assert short == "hello world"
 

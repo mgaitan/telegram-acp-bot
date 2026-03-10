@@ -3065,7 +3065,7 @@ async def test_on_busy_callback_cancel_failure_answers_safely():
     assert callback.answers[-1] == "Cancel failed."
 
 
-def test_log_text_preview_compacts_and_truncates():
+async def test_log_text_preview_compacts_and_truncates():
     short = TelegramBridge._log_text_preview("  hola    mundo  ")
     assert short == "hola mundo"
 
