@@ -23,6 +23,7 @@ from telegram_acp_bot.acp_app.models import (
     ResumableSession,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
 from telegram_acp_bot.telegram import bot as bot_module
 from telegram_acp_bot.telegram.bot import (
     BUSY_CALLBACK_PREFIX,
@@ -3063,3 +3064,15 @@ async def test_on_busy_callback_cancel_failure_answers_safely():
     )
     await bridge.on_busy_callback(update_cb, make_context())
     assert callback.answers[-1] == "Cancel failed."
+
+
+async def test_log_text_preview_compacts_and_truncates():
+    short = log_text_preview("  hola    mundo  ")
+    assert short == "hola mundo"
+
+    long_text = "x" * 400
+    preview = log_text_preview(long_text)
+    assert preview.endswith("...")
+    assert len(preview) == LOG_TEXT_PREVIEW_MAX_CHARS + 3
+
+    assert log_text_preview("   ") == "<empty>"

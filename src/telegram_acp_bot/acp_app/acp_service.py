@@ -62,6 +62,7 @@ from telegram_acp_bot.acp_app.models import (
     ToolCallStatus,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
 from telegram_acp_bot.mcp_channel_state import (
     load_last_session_id,
     load_session_chat_map,
@@ -157,7 +158,7 @@ class _AcpClient:
         self,
         *,
         permission_decider: Callable[[str, list[PermissionOption], ToolCall], Awaitable[RequestPermissionResponse]],
-        event_reporter: Callable[[str], None] | None = None,
+        event_reporter: Callable[[str, str], None] | None = None,
         activity_reporter: Callable[[str, AgentActivityBlock], Awaitable[None]] | None = None,
     ) -> None:
         self._permission_decider = permission_decider
@@ -194,7 +195,8 @@ class _AcpClient:
     ) -> RequestPermissionResponse:
         del kwargs
         self._report_event(
-            f"permission requested for {tool_call.title} ({tool_call.tool_call_id}), options={len(options)}"
+            session_id,
+            f"permission requested for {tool_call.title} ({tool_call.tool_call_id}), options={len(options)}",
         )
         return await self._permission_decider(session_id, options, tool_call)
 
@@ -208,7 +210,7 @@ class _AcpClient:
 
         if isinstance(update, ToolCallStart):
             label = update.kind or "other"
-            self._report_event(f"tool start {update.tool_call_id} {update.title} ({label})")
+            self._report_event(session_id, f"tool start {update.tool_call_id} {update.title} ({label})")
             await self._flush_pending_non_tool_text(session_id=session_id)
             await self._open_tool_block(
                 session_id=session_id,
@@ -225,7 +227,7 @@ class _AcpClient:
         if isinstance(update, ToolCallProgress):
             status = update.status or "in_progress"
             title = update.title or "tool"
-            self._report_event(f"tool {status} {update.tool_call_id} {title}")
+            self._report_event(session_id, f"tool {status} {update.tool_call_id} {title}")
             active_block = self._active_tool_blocks.get(session_id)
             if status in TERMINAL_TOOL_STATUSES and active_block is not None:
                 if active_block.tool_call_id != update.tool_call_id:
@@ -356,9 +358,9 @@ class _AcpClient:
         if block.kind == "think" or block.text:
             await self._emit_activity_block(session_id=session_id, block=block)
 
-    def _report_event(self, event: str) -> None:
+    def _report_event(self, session_id: str, event: str) -> None:
         if self._event_reporter is not None:
-            self._event_reporter(event)
+            self._event_reporter(session_id, event)
 
     async def _emit_activity_block(self, *, session_id: str, block: AgentActivityBlock) -> None:
         if self._activity_reporter is None:
@@ -472,6 +474,7 @@ class AcpAgentService:
         self._connector = connector or cast(AcpConnectionFactory, connect_to_agent)
         self._spawner = spawner or cast(AcpSpawnFn, asyncio.create_subprocess_exec)
         self._live_by_chat: dict[int, _LiveSession] = {}
+        self._chat_by_session: dict[str, int] = {}
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
         self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
@@ -479,7 +482,8 @@ class AcpAgentService:
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
-        logger.info("Starting ACP session for chat_id=%s workspace=%s", chat_id, workspace)
+        with bind_log_context(chat_id=chat_id):
+            logger.info("Starting ACP session for chat_id=%s workspace=%s", chat_id, workspace)
         if workspace.exists() and not workspace.is_dir():
             raise ValueError(workspace)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -488,6 +492,7 @@ class AcpAgentService:
         if existing is not None:
             await self._shutdown(existing.process)
             await self._drop_channel_session_mapping(session_id=existing.acp_session_id)
+            self._chat_by_session.pop(existing.acp_session_id, None)
 
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         try:
@@ -512,11 +517,15 @@ class AcpAgentService:
             supports_session_list=self._supports_session_list(capabilities),
             permission_mode=self._default_permission_mode,
         )
-        logger.info("ACP session started for chat_id=%s session_id=%s", chat_id, session.session_id)
+        self._chat_by_session[session.session_id] = chat_id
+        with bind_log_context(chat_id=chat_id, session_id=session.session_id):
+            logger.info("ACP session started for chat_id=%s session_id=%s", chat_id, session.session_id)
         return session.session_id
 
     async def load_session(self, *, chat_id: int, session_id: str, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
+        with bind_log_context(chat_id=chat_id, session_id=session_id):
+            logger.info("Loading ACP session for chat_id=%s session_id=%s workspace=%s", chat_id, session_id, workspace)
         if workspace.exists() and not workspace.is_dir():
             raise ValueError(workspace)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -525,6 +534,7 @@ class AcpAgentService:
         if existing is not None:
             await self._shutdown(existing.process)
             await self._drop_channel_session_mapping(session_id=existing.acp_session_id)
+            self._chat_by_session.pop(existing.acp_session_id, None)
 
         process, connection, client, capabilities = await self._start_initialized_connection(chat_id=chat_id)
         if not self._supports_load_session(capabilities):
@@ -555,7 +565,9 @@ class AcpAgentService:
             supports_session_list=self._supports_session_list(capabilities),
             permission_mode=self._default_permission_mode,
         )
-        logger.info("ACP session loaded for chat_id=%s session_id=%s", chat_id, session_id)
+        self._chat_by_session[session_id] = chat_id
+        with bind_log_context(chat_id=chat_id, session_id=session_id):
+            logger.info("ACP session loaded for chat_id=%s session_id=%s", chat_id, session_id)
         return session_id
 
     async def list_resumable_sessions(
@@ -592,41 +604,51 @@ class AcpAgentService:
     ) -> AgentReply | None:
         live = self._live_by_chat.get(chat_id)
         if live is None:
+            with bind_log_context(chat_id=chat_id):
+                logger.warning("Prompt ignored because no live session exists for chat_id=%s", chat_id)
             return None
 
-        async with live.prompt_lock:
-            if live.next_prompt_auto_approve:
-                live.active_prompt_auto_approve = True
-                live.next_prompt_auto_approve = False
-            live.client.start_capture(live.acp_session_id)
-            prompt_blocks: list[PromptContentBlock] = [text_block(text)]
-            prompt_blocks.extend(
-                [ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image") for image in images]
-            )
-            for file in files:
-                if file.text_content is not None:
-                    text_payload = f"File: {file.name}\n\n{file.text_content}"
-                    prompt_blocks.append(text_block(text_payload))
-                    continue
-                if file.data_base64 is not None:
-                    prompt_blocks.append(
-                        text_block(f"Binary file attached: {file.name} ({file.mime_type or 'unknown'})")
-                    )
+        with bind_log_context(chat_id=chat_id, session_id=live.acp_session_id):
+            logger.info("Prompt to ACP: %s", log_text_preview(text))
+            async with live.prompt_lock:
+                if live.next_prompt_auto_approve:
+                    live.active_prompt_auto_approve = True
+                    live.next_prompt_auto_approve = False
+                live.client.start_capture(live.acp_session_id)
+                prompt_blocks: list[PromptContentBlock] = [text_block(text)]
+                prompt_blocks.extend(
+                    [
+                        ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image")
+                        for image in images
+                    ]
+                )
+                for file in files:
+                    if file.text_content is not None:
+                        text_payload = f"File: {file.name}\n\n{file.text_content}"
+                        prompt_blocks.append(text_block(text_payload))
+                        continue
+                    if file.data_base64 is not None:
+                        prompt_blocks.append(
+                            text_block(f"Binary file attached: {file.name} ({file.mime_type or 'unknown'})")
+                        )
 
-            try:
-                await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
-            except ValueError as exc:
-                if "chunk is longer than limit" in str(exc):
-                    raise AgentOutputLimitExceededError from exc
-                raise
-            response = await live.client.finish_capture(live.acp_session_id)
-            live.active_prompt_auto_approve = False
-            response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
-            return AgentReply(
-                text=response.text,
-                images=response.images,
-                files=response.files,
-            )
+                try:
+                    try:
+                        await live.connection.prompt(session_id=live.acp_session_id, prompt=prompt_blocks)
+                    except ValueError as exc:
+                        if "chunk is longer than limit" in str(exc):
+                            raise AgentOutputLimitExceededError from exc
+                        raise
+                    response = await live.client.finish_capture(live.acp_session_id)
+                    response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
+                    logger.debug("Reply from ACP: %s", log_text_preview(response.text))
+                    return AgentReply(
+                        text=response.text,
+                        images=response.images,
+                        files=response.files,
+                    )
+                finally:
+                    live.active_prompt_auto_approve = False
 
     def get_workspace(self, *, chat_id: int) -> Path | None:
         session = self._registry.get(chat_id)
@@ -665,6 +687,7 @@ class AcpAgentService:
 
         await self._shutdown(live.process)
         self._registry.clear(chat_id)
+        self._chat_by_session.pop(live.acp_session_id, None)
         await self._drop_channel_session_mapping(session_id=live.acp_session_id)
         return True
 
@@ -715,23 +738,27 @@ class AcpAgentService:
     ) -> bool:
         pending = self._pending_permissions.get(request_id)
         if pending is None or pending.chat_id != chat_id or pending.future.done():
-            logger.warning(
-                "Permission response ignored: request_id=%s chat_id=%s pending=%s",
-                request_id,
-                chat_id,
-                pending is not None,
-            )
+            with bind_log_context(chat_id=chat_id):
+                logger.warning(
+                    "Permission response ignored: request_id=%s chat_id=%s pending=%s",
+                    request_id,
+                    chat_id,
+                    pending is not None,
+                )
             return False
 
+        with bind_log_context(chat_id=chat_id, session_id=pending.acp_session_id):
+            logger.info("Permission response received: request_id=%s action=%s", request_id, action)
         available_actions = self._available_actions(pending.options)
         if action not in available_actions:
-            logger.warning(
-                "Permission response rejected: unavailable action request_id=%s chat_id=%s action=%s available=%s",
-                request_id,
-                chat_id,
-                action,
-                ",".join(available_actions),
-            )
+            with bind_log_context(chat_id=chat_id, session_id=pending.acp_session_id):
+                logger.warning(
+                    "Permission response rejected: unavailable action request_id=%s chat_id=%s action=%s available=%s",
+                    request_id,
+                    chat_id,
+                    action,
+                    ",".join(available_actions),
+                )
             return False
 
         response = self._build_permission_response(
@@ -742,7 +769,8 @@ class AcpAgentService:
             live = self._live_by_chat.get(chat_id)
             if live is not None:
                 live.permission_mode = "approve"
-        logger.info("Permission response accepted: request_id=%s chat_id=%s action=%s", request_id, chat_id, action)
+        with bind_log_context(chat_id=chat_id, session_id=pending.acp_session_id):
+            logger.info("Permission response accepted: request_id=%s chat_id=%s action=%s", request_id, chat_id, action)
         pending.future.set_result(response)
         return True
 
@@ -769,7 +797,8 @@ class AcpAgentService:
             stdout=aio_subprocess.PIPE,
             limit=self._stdio_limit,
         )
-        logger.debug("Spawned ACP process for chat_id=%s pid=%s", chat_id, getattr(process, "pid", "unknown"))
+        with bind_log_context(chat_id=chat_id):
+            logger.debug("Spawned ACP process for chat_id=%s pid=%s", chat_id, getattr(process, "pid", "unknown"))
         if process.stdin is None or process.stdout is None:
             raise RuntimeError
 
@@ -780,7 +809,8 @@ class AcpAgentService:
         )
         connection = self._connector(client, process.stdin, process.stdout)
         try:
-            logger.debug("Initializing ACP connection for chat_id=%s", chat_id)
+            with bind_log_context(chat_id=chat_id):
+                logger.debug("Initializing ACP connection for chat_id=%s", chat_id)
             initialized = await asyncio.wait_for(
                 connection.initialize(
                     protocol_version=PROTOCOL_VERSION,
@@ -948,18 +978,24 @@ class AcpAgentService:
             return "always"
         return "deny"
 
-    def _report_permission_event(self, event: str) -> None:
-        if self._permission_event_output == "stdout":
+    def _report_permission_event(self, session_id: str, event: str) -> None:
+        if self._permission_event_output != "stdout":
+            return
+        chat_id = self._chat_id_by_session(session_id)
+        with bind_log_context(chat_id=chat_id, session_id=session_id):
             logger.info("ACP permission event: %s", event)
 
     async def _forward_activity_event(self, session_id: str, block: AgentActivityBlock) -> None:
         handler = self._activity_event_handler
         if handler is None:
             return
-        for chat_id, live in self._live_by_chat.items():
-            if live.acp_session_id == session_id:
-                await handler(chat_id, block)
-                return
+        chat_id = self._chat_id_by_session(session_id)
+        if chat_id is None:
+            return
+        await handler(chat_id, block)
+
+    def _chat_id_by_session(self, session_id: str) -> int | None:
+        return self._chat_by_session.get(session_id)
 
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""

@@ -142,3 +142,27 @@ You can combine index and workspace filter:
 - The first prompt creates a session implicitly when none is active (including after `/restart`).
 - `/new` replaces the active session for that chat and is intended for explicitly switching to another workspace/session.
 - `/resume` is ACP-native (`session/list` + `session/load`) and depends on agent capabilities.
+
+## Logging and traceability
+
+Every application log line includes contextual identifiers:
+
+- `chat_id`: Telegram chat id.
+- `session_id`: ACP session id (when a session is active).
+- `prompt_cycle_id`: per-prompt cycle/task id generated for each incoming user prompt.
+
+This lets you trace:
+
+- all activity from one ACP session (`session_id`),
+- all logs tied to a single prompt execution (including queued prompts) via `prompt_cycle_id`.
+
+Use {term}`ACP_LOG_FORMAT`=`json` to emit structured logs for log aggregators.
+
+By default, the bot also emits compact text previews for prompts and replies:
+
+- `Prompt received: ...`
+- `Reply sent: ...`
+
+The human-oriented `text` log format uses `rich` output in the terminal to highlight the logger, chat/session/cycle ids, and the message preview.
+
+To keep logs focused on auditability, verbose transport/framework logs (for example `httpx` Telegram API request lines) are downgraded to warning level by default.

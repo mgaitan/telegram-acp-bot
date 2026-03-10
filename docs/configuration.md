@@ -51,6 +51,12 @@ ACP_LOG_LEVEL
   Application log level.
   Common values: `DEBUG`, `INFO`, `WARNING`, `ERROR`.
 
+ACP_LOG_FORMAT
+  Application log format.
+  Allowed values: `text`, `json`.
+  `text` includes contextual key/value fields in each line.
+  `json` emits structured logs with `chat_id`, `session_id`, and `prompt_cycle_id`.
+
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
   Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
   Disabled by default. Set to `1` (or `true`/`yes`/`on`) only when file-path inputs are trusted.
@@ -77,6 +83,7 @@ ACP_PERMISSION_EVENT_OUTPUT=stdout
 ACP_STDIO_LIMIT=8388608
 ACP_CONNECT_TIMEOUT=30
 ACP_LOG_LEVEL=INFO
+ACP_LOG_FORMAT=text
 ```
 
 ## MCP behavior
