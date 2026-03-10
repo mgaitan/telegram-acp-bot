@@ -129,16 +129,63 @@ def test_configure_logging_json_includes_exception_field(caplog: pytest.LogCaptu
 
 
 def test_configure_logging_reduces_third_party_logger_noise():
+    root = logging.getLogger()
+    previous_handlers = list(root.handlers)
+    previous_level = root.level
     httpx_logger = logging.getLogger("httpx")
     telegram_ext_logger = logging.getLogger("telegram.ext")
     previous_httpx_level = httpx_logger.level
     previous_telegram_ext_level = telegram_ext_logger.level
     previous_factory = logging.getLogRecordFactory()
+    added_handler: logging.Handler | None = None
     try:
         configure_logging(level=logging.INFO, log_format="text", replace_handlers=False)
+        added_handler = root.handlers[-1]
         assert httpx_logger.level == logging.WARNING
         assert telegram_ext_logger.level == logging.WARNING
     finally:
+        if added_handler is not None:
+            root.removeHandler(added_handler)
+            added_handler.close()
+        root.handlers.clear()
+        for handler in previous_handlers:
+            root.addHandler(handler)
+        root.setLevel(previous_level)
         httpx_logger.setLevel(previous_httpx_level)
         telegram_ext_logger.setLevel(previous_telegram_ext_level)
         logging.setLogRecordFactory(previous_factory)
+
+
+def test_configure_logging_chains_existing_log_record_factory(caplog: pytest.LogCaptureFixture):
+    root = logging.getLogger()
+    previous_handlers = list(root.handlers)
+    previous_level = root.level
+    previous_factory = logging.getLogRecordFactory()
+    added_handler: logging.Handler | None = None
+
+    def custom_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+        record = previous_factory(*args, **kwargs)
+        record.custom_field = "present"
+        return record
+
+    try:
+        logging.setLogRecordFactory(custom_factory)
+        configure_logging(level=logging.INFO, log_format="json", replace_handlers=False)
+        added_handler = root.handlers[-1]
+        root.addHandler(caplog.handler)
+        root.setLevel(logging.INFO)
+        logging.getLogger("telegram_acp_bot.test").info("factory chain")
+    finally:
+        if added_handler is not None:
+            root.removeHandler(added_handler)
+            added_handler.close()
+        root.removeHandler(caplog.handler)
+        root.handlers.clear()
+        for handler in previous_handlers:
+            root.addHandler(handler)
+        root.setLevel(previous_level)
+        logging.setLogRecordFactory(previous_factory)
+
+    assert len(caplog.records) == 1
+    record = cast(Any, caplog.records[0])
+    assert record.custom_field == "present"

@@ -62,7 +62,7 @@ from telegram_acp_bot.acp_app.models import (
     ToolCallStatus,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.logging_context import bind_log_context
+from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
 from telegram_acp_bot.mcp_channel_state import (
     load_last_session_id,
     load_session_chat_map,
@@ -74,7 +74,6 @@ logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
 MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
-LOG_TEXT_PREVIEW_MAX_CHARS = 160
 PromptContentBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
 )
@@ -610,7 +609,7 @@ class AcpAgentService:
             return None
 
         with bind_log_context(chat_id=chat_id, session_id=live.acp_session_id):
-            logger.info("Prompt to ACP: %s", self._log_text_preview(text))
+            logger.info("Prompt to ACP: %s", log_text_preview(text))
             async with live.prompt_lock:
                 if live.next_prompt_auto_approve:
                     live.active_prompt_auto_approve = True
@@ -642,7 +641,7 @@ class AcpAgentService:
                         raise
                     response = await live.client.finish_capture(live.acp_session_id)
                     response = self._resolve_file_uri_resources(response=response, workspace=live.workspace)
-                    logger.debug("Reply from ACP: %s", self._log_text_preview(response.text))
+                    logger.debug("Reply from ACP: %s", log_text_preview(response.text))
                     return AgentReply(
                         text=response.text,
                         images=response.images,
@@ -997,15 +996,6 @@ class AcpAgentService:
 
     def _chat_id_by_session(self, session_id: str) -> int | None:
         return self._chat_by_session.get(session_id)
-
-    @staticmethod
-    def _log_text_preview(text: str) -> str:
-        compact = " ".join(text.split())
-        if not compact:
-            return "<empty>"
-        if len(compact) <= LOG_TEXT_PREVIEW_MAX_CHARS:
-            return compact
-        return f"{compact[:LOG_TEXT_PREVIEW_MAX_CHARS]}..."
 
     def _resolve_file_uri_resources(self, *, response: AgentReply, workspace: Path) -> AgentReply:
         """Resolve `file://` resources from ACP into binary payloads for Telegram delivery."""

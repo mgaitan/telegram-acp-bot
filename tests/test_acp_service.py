@@ -32,14 +32,7 @@ from acp.schema import (
     ToolCallStart,
 )
 
-from telegram_acp_bot.acp_app.acp_service import (
-    LOG_TEXT_PREVIEW_MAX_CHARS as ACP_LOG_TEXT_PREVIEW_MAX_CHARS,
-)
-from telegram_acp_bot.acp_app.acp_service import (
-    AcpAgentService,
-    _AcpClient,
-    _PendingPermission,
-)
+from telegram_acp_bot.acp_app.acp_service import AcpAgentService, _AcpClient, _PendingPermission
 from telegram_acp_bot.acp_app.models import (
     AgentActivityBlock,
     AgentOutputLimitExceededError,
@@ -50,6 +43,7 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
+from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
 from telegram_acp_bot.mcp_channel_state import (
     load_last_session_id,
     load_session_chat_map,
@@ -1952,12 +1946,12 @@ async def test_resolve_local_file_uri_validation(tmp_path: Path, monkeypatch):
 
 
 async def test_log_text_preview_compacts_and_truncates():
-    short = AcpAgentService._log_text_preview("  hello   world ")
+    short = log_text_preview("  hello   world ")
     assert short == "hello world"
 
     long_text = "y" * 400
-    preview = AcpAgentService._log_text_preview(long_text)
+    preview = log_text_preview(long_text)
     assert preview.endswith("...")
-    assert len(preview) == ACP_LOG_TEXT_PREVIEW_MAX_CHARS + 3
+    assert len(preview) == LOG_TEXT_PREVIEW_MAX_CHARS + 3
 
-    assert AcpAgentService._log_text_preview("   ") == "<empty>"
+    assert log_text_preview("   ") == "<empty>"

@@ -6,15 +6,20 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol, cast
 
 from rich.logging import RichHandler
 from rich.markup import escape
 
 _CONTEXT_FIELDS = ("chat_id", "session_id", "prompt_cycle_id")
 _MISSING = "-"
+LOG_TEXT_PREVIEW_MAX_CHARS = 160
 _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_context", default=None)
-_BASE_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
+_LOG_RECORD_FACTORY_STATE: dict[str, object] = {"delegate": logging.getLogRecordFactory()}
+
+
+class _RecordFactory(Protocol):
+    def __call__(self, *args: object, **kwargs: object) -> logging.LogRecord: ...
 
 
 def configure_logging(
@@ -76,13 +81,16 @@ def get_log_context() -> dict[str, str]:
 
 
 def _install_log_record_factory() -> None:
-    if logging.getLogRecordFactory() is _contextual_log_record_factory:
+    current_factory = logging.getLogRecordFactory()
+    if current_factory is _contextual_log_record_factory:
         return
+    _LOG_RECORD_FACTORY_STATE["delegate"] = current_factory
     logging.setLogRecordFactory(_contextual_log_record_factory)
 
 
 def _contextual_log_record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
-    record = _BASE_LOG_RECORD_FACTORY(*args, **kwargs)
+    delegate = cast(_RecordFactory, _LOG_RECORD_FACTORY_STATE["delegate"])
+    record = delegate(*args, **kwargs)
     context = _log_context.get() or {}
     for key in _CONTEXT_FIELDS:
         setattr(record, key, context.get(key, _MISSING))
@@ -94,6 +102,17 @@ def _configure_third_party_logging() -> None:
 
     for logger_name in ("httpx", "httpcore", "telegram.ext", "apscheduler"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+def log_text_preview(text: str) -> str:
+    """Return a compact single-line preview for prompt/reply logs."""
+
+    compact = " ".join(text.split())
+    if not compact:
+        return "<empty>"
+    if len(compact) <= LOG_TEXT_PREVIEW_MAX_CHARS:
+        return compact
+    return f"{compact[:LOG_TEXT_PREVIEW_MAX_CHARS]}..."
 
 
 class _RichTextFormatter(logging.Formatter):

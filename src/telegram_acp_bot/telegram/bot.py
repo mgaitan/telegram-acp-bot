@@ -43,7 +43,7 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
     ResumableSession,
 )
-from telegram_acp_bot.logging_context import bind_log_context
+from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
 
 PERMISSION_CALLBACK_PREFIX = "perm"
 RESUME_CALLBACK_PREFIX = "resume"
@@ -68,7 +68,6 @@ KIND_LABELS = {
 SEARCH_LABEL_WEB = "🌐 Searching web"
 SEARCH_LABEL_LOCAL = "🔎 Querying project"
 SEARCH_LABEL_NEUTRAL = "🔎 Querying"
-LOG_TEXT_PREVIEW_MAX_CHARS = 160
 
 
 @dataclass(slots=True, frozen=True)
@@ -655,7 +654,7 @@ class TelegramBridge:
         chat_id = prompt_input.chat_id
         lock = self._chat_prompt_lock(chat_id)
         with bind_log_context(chat_id=chat_id, prompt_cycle_id=prompt_input.cycle_id):
-            logger.info("Prompt received: %s", self._log_text_preview(prompt_input.text))
+            logger.info("Prompt received: %s", log_text_preview(prompt_input.text))
 
         if lock.locked():
             await self._queue_busy_prompt(chat_id=chat_id, prompt_input=prompt_input, update=update)
@@ -905,7 +904,7 @@ class TelegramBridge:
                 prompt_cycle_id=prompt_input.cycle_id,
                 session_id=session_id,
             ):
-                logger.info("Reply sent: %s", self._log_text_preview(reply.text))
+                logger.info("Reply sent: %s", log_text_preview(reply.text))
             return reply
         await self._reply(update, "No active session. Send a message again or use /new [workspace].")
         return None
@@ -1020,15 +1019,6 @@ class TelegramBridge:
         if query_message is None:
             return None
         return query_message.chat.id
-
-    @staticmethod
-    def _log_text_preview(text: str) -> str:
-        compact = " ".join(text.split())
-        if not compact:
-            return "<empty>"
-        if len(compact) <= LOG_TEXT_PREVIEW_MAX_CHARS:
-            return compact
-        return f"{compact[:LOG_TEXT_PREVIEW_MAX_CHARS]}..."
 
     @staticmethod
     def _resume_index(data: str) -> int | None:
