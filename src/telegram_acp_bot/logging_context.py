@@ -15,6 +15,8 @@ _CONTEXT_FIELDS = ("chat_id", "session_id", "prompt_cycle_id")
 _MISSING = "-"
 LOG_TEXT_PREVIEW_MAX_CHARS = 160
 _log_context: ContextVar[dict[str, str] | None] = ContextVar("telegram_acp_log_context", default=None)
+_factory_reentry: ContextVar[bool] = ContextVar("telegram_acp_log_factory_reentry", default=False)
+_BASE_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
 _LOG_RECORD_FACTORY_STATE: dict[str, object] = {"delegate": logging.getLogRecordFactory()}
 
 
@@ -89,8 +91,20 @@ def _install_log_record_factory() -> None:
 
 
 def _contextual_log_record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+    if _factory_reentry.get():
+        record = _BASE_LOG_RECORD_FACTORY(*args, **kwargs)
+        context = _log_context.get() or {}
+        for key in _CONTEXT_FIELDS:
+            setattr(record, key, context.get(key, _MISSING))
+        return record
+
     delegate = cast(_RecordFactory, _LOG_RECORD_FACTORY_STATE["delegate"])
-    record = delegate(*args, **kwargs)
+    token = _factory_reentry.set(True)
+    try:
+        record = delegate(*args, **kwargs)
+    finally:
+        _factory_reentry.reset(token)
+
     context = _log_context.get() or {}
     for key in _CONTEXT_FIELDS:
         setattr(record, key, context.get(key, _MISSING))
