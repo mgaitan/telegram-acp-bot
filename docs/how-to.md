@@ -124,7 +124,7 @@ If there is no active session, it replies:
 No active session. Use /new first.
 ```
 
-Restart by resuming a specific saved session (without restarting the process):
+Resume a specific saved session in-process with the restart command:
 
 ```text
 /restart 0
@@ -134,6 +134,12 @@ You can combine index and workspace filter:
 
 ```text
 /restart 2 /home/user/project
+```
+
+That path replies with:
+
+```text
+Session resumed: <session_id> in <workspace>
 ```
 
 ## Notes
