@@ -99,6 +99,18 @@ def get_parser() -> argparse.ArgumentParser:
         choices=["text", "json"],
         help="Application log format.",
     )
+    parser.add_argument(
+        "--activity-mode",
+        default=os.getenv("ACP_ACTIVITY_MODE", "verbose"),
+        choices=["verbose", "compact"],
+        help=(
+            "Activity display mode. "
+            "'verbose' (default) emits each agent event as its own message, with "
+            "in-place updates when tool output arrives. "
+            "'compact' collapses all intermediate events into a single in-place status message "
+            "that is replaced by the final answer when the agent responds."
+        ),
+    )
     return parser
 
 
@@ -177,6 +189,7 @@ def main(args: list[str] | None = None) -> int:
         allowed_user_ids=allowed_user_ids,
         allowed_usernames=allowed_usernames,
         workspace=opts.workspace,
+        compact_activity=opts.activity_mode == "compact",
     )
     service = AcpAgentService(
         SessionRegistry(),
