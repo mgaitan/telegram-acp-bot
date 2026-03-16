@@ -21,6 +21,7 @@ from telegram import (
     InputFile,
     Message,
     MessageEntity,
+    ReactionTypeEmoji,
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
@@ -68,6 +69,17 @@ KIND_LABELS = {
 SEARCH_LABEL_WEB = "🌐 Searching web"
 SEARCH_LABEL_LOCAL = "🔎 Querying project"
 SEARCH_LABEL_NEUTRAL = "🔎 Querying"
+
+# Reactions used on the user's original message while the agent is active in compact mode.
+# Limited to the emoji subset supported by Telegram Bot API setMessageReaction.
+KIND_REACTIONS: dict[str, str] = {
+    "think": "🤔",
+    "execute": "⚡",
+    "read": "👀",
+    "edit": "👨‍💻",
+    "write": "👨‍💻",
+}
+SEARCH_REACTION = "👀"
 
 
 @dataclass(slots=True, frozen=True)
@@ -187,6 +199,12 @@ class TelegramBridge:
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
         self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
         self._compact_status_msg_id: dict[int, int] = {}
+        # Per-chat lock to prevent concurrent sends from creating multiple status messages.
+        self._compact_status_locks: dict[int, asyncio.Lock] = {}
+        # Rotating dot counter per chat (cycles 1→2→3→1…) for progress indication.
+        self._compact_dot_counter: dict[int, int] = {}
+        # User's original message ID, used to set a reaction while the agent is active.
+        self._compact_prompt_msg_id: dict[int, int] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -439,16 +457,35 @@ class TelegramBridge:
 
         if self._config.compact_activity:
             label = TelegramBridge._activity_label(block)
-            status_text = f"⏳ {label}…"
-            existing_msg_id = self._compact_status_msg_id.get(chat_id)
-            if existing_msg_id is None:
+            # Acquire per-chat lock to prevent concurrent sends from creating multiple
+            # status messages when the agent fires several events before the first
+            # send_message call completes.
+            lock = self._compact_status_locks.setdefault(chat_id, asyncio.Lock())
+            async with lock:
+                count = self._compact_dot_counter.get(chat_id, 0)
+                dots = "." * (count % 3 + 1)  # cycles: . → .. → ... → . (repeat)
+                self._compact_dot_counter[chat_id] = count + 1
+                status_text = f"{label}{dots}"
+                existing_msg_id = self._compact_status_msg_id.get(chat_id)
+                if existing_msg_id is None:
+                    with suppress(TelegramError):
+                        msg = await app.bot.send_message(chat_id=chat_id, text=status_text)
+                        self._compact_status_msg_id[chat_id] = msg.message_id
+                else:
+                    with suppress(TelegramError):
+                        await app.bot.edit_message_text(
+                            chat_id=chat_id, message_id=existing_msg_id, text=status_text
+                        )
+            # Set a reaction on the user's original message to show the current activity
+            # kind without cluttering the chat with extra messages.
+            prompt_msg_id = self._compact_prompt_msg_id.get(chat_id)
+            if prompt_msg_id is not None:
+                reaction = TelegramBridge._activity_reaction(block)
                 with suppress(TelegramError):
-                    msg = await app.bot.send_message(chat_id=chat_id, text=status_text)
-                    self._compact_status_msg_id[chat_id] = msg.message_id
-            else:
-                with suppress(TelegramError):
-                    await app.bot.edit_message_text(
-                        chat_id=chat_id, message_id=existing_msg_id, text=status_text
+                    await app.bot.set_message_reaction(
+                        chat_id=chat_id,
+                        message_id=prompt_msg_id,
+                        reaction=[ReactionTypeEmoji(emoji=reaction)],
                     )
             return
 
@@ -697,6 +734,13 @@ class TelegramBridge:
         current_update = update
 
         while True:
+            # In compact mode, record the user's message ID so on_activity_event can
+            # place a reaction on it to show activity kind without extra messages.
+            if self._config.compact_activity:
+                msg = current_update.message
+                if msg is not None:
+                    self._compact_prompt_msg_id[chat_id] = msg.message_id
+
             with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
                 logger.info("Prompt cycle started")
                 reply = await self._request_reply(
@@ -750,6 +794,13 @@ class TelegramBridge:
         """
         app = self._app
         status_msg_id = self._compact_status_msg_id.pop(chat_id, None)
+        prompt_msg_id = self._compact_prompt_msg_id.pop(chat_id, None)
+        self._compact_dot_counter.pop(chat_id, None)
+        if prompt_msg_id is not None and app is not None:
+            with suppress(TelegramError):
+                await app.bot.set_message_reaction(
+                    chat_id=chat_id, message_id=prompt_msg_id, reaction=[]
+                )
         if status_msg_id is not None and app is not None:
             success = await TelegramBridge._edit_markdown_in_chat(
                 bot=app.bot, chat_id=chat_id, message_id=status_msg_id, text=text
@@ -764,6 +815,13 @@ class TelegramBridge:
         """Delete the in-progress compact status message if one exists."""
         app = self._app
         status_msg_id = self._compact_status_msg_id.pop(chat_id, None)
+        prompt_msg_id = self._compact_prompt_msg_id.pop(chat_id, None)
+        self._compact_dot_counter.pop(chat_id, None)
+        if prompt_msg_id is not None and app is not None:
+            with suppress(TelegramError):
+                await app.bot.set_message_reaction(
+                    chat_id=chat_id, message_id=prompt_msg_id, reaction=[]
+                )
         if status_msg_id is None or app is None:
             return
         with suppress(TelegramError):
@@ -1190,6 +1248,13 @@ class TelegramBridge:
         if source == "local":
             return SEARCH_LABEL_LOCAL
         return SEARCH_LABEL_NEUTRAL
+
+    @staticmethod
+    def _activity_reaction(block: AgentActivityBlock) -> str:
+        """Return a Telegram-compatible reaction emoji for the given activity block."""
+        if block.kind == "search":
+            return SEARCH_REACTION
+        return KIND_REACTIONS.get(block.kind, "⚡")
 
     @staticmethod
     def _search_source(block: AgentActivityBlock) -> str | None:
