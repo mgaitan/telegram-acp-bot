@@ -1419,20 +1419,20 @@ class TelegramBridge:
             rendered_text, rendered_entities = convert(text)
             chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
         except (RuntimeError, ValueError, TypeError):
-            chunk_text: str = text
+            send_text: str = text
             entities: list | None = None
         else:
             if len(chunks) != 1:
                 await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
                 return None
-            chunk_text, raw_entities = chunks[0]
+            send_text, raw_entities = chunks[0]
             entities = [TelegramBridge._to_telegram_entity(e) for e in raw_entities] if raw_entities else None
         if entities:
             with suppress(TelegramError):
-                msg = await app.bot.send_message(chat_id=chat_id, text=chunk_text, entities=entities)
+                msg = await app.bot.send_message(chat_id=chat_id, text=send_text, entities=entities)
                 return msg.message_id
         with suppress(TelegramError):
-            msg = await app.bot.send_message(chat_id=chat_id, text=chunk_text)
+            msg = await app.bot.send_message(chat_id=chat_id, text=send_text)
             return msg.message_id
         return None
 
