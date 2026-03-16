@@ -78,6 +78,7 @@ class BotConfig:
     allowed_user_ids: set[int]
     allowed_usernames: set[str]
     default_workspace: Path
+    compact_activity: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -185,6 +186,9 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
         self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
+        self._compact_status_msg_id: dict[int, int] = {}
+        self._verbose_activity_msg_id: dict[int, int] = {}
+        self._verbose_activity_key: dict[int, tuple[str, str]] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -435,8 +439,38 @@ class TelegramBridge:
         if app is None:
             return
 
+        if self._config.compact_activity:
+            label = TelegramBridge._activity_label(block)
+            status_text = f"⏳ {label}…"
+            existing_msg_id = self._compact_status_msg_id.get(chat_id)
+            if existing_msg_id is None:
+                with suppress(TelegramError):
+                    msg = await app.bot.send_message(chat_id=chat_id, text=status_text)
+                    self._compact_status_msg_id[chat_id] = msg.message_id
+            else:
+                with suppress(TelegramError):
+                    await app.bot.edit_message_text(chat_id=chat_id, message_id=existing_msg_id, text=status_text)
+            return
+
         workspace = self._activity_workspace(chat_id=chat_id)
         text = self._format_activity_block(block, workspace=workspace)
+
+        if block.status == "in_progress":
+            msg_id = await self._send_verbose_activity_message(chat_id=chat_id, text=text)
+            if msg_id is not None:
+                self._verbose_activity_msg_id[chat_id] = msg_id
+                self._verbose_activity_key[chat_id] = (block.kind, block.title)
+            return
+
+        tracked_msg_id = self._verbose_activity_msg_id.pop(chat_id, None)
+        tracked_key = self._verbose_activity_key.pop(chat_id, None)
+        if tracked_msg_id is not None and tracked_key == (block.kind, block.title):
+            success = await TelegramBridge._edit_markdown_in_chat(
+                bot=app.bot, chat_id=chat_id, message_id=tracked_msg_id, text=text
+            )
+            if success:
+                return
+
         await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
 
     async def _edit_permission_decision_message(self, query: CallbackQuery, *, decision_label: str) -> None:
@@ -713,9 +747,44 @@ class TelegramBridge:
             workspace = self._activity_workspace(chat_id=chat_id)
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
+        self._verbose_activity_msg_id.pop(chat_id, None)
+        self._verbose_activity_key.pop(chat_id, None)
         await self._send_attachments(update, reply)
         if reply.text.strip():
-            await self._reply_agent(update, reply.text)
+            if self._config.compact_activity and self._app is not None:
+                await self._finalize_compact_reply(chat_id=chat_id, update=update, text=reply.text)
+            else:
+                await self._reply_agent(update, reply.text)
+        elif self._config.compact_activity and self._app is not None:
+            await self._clear_compact_status(chat_id)
+
+    async def _finalize_compact_reply(self, *, chat_id: int, update: Update, text: str) -> None:
+        """Replace the compact in-progress status message with the final reply.
+
+        Edits the status message in place when possible. Falls back to deleting it
+        and delivering the reply as a new message when editing is not possible
+        (e.g. reply is too long, Telegram API error).
+        """
+        app = self._app
+        status_msg_id = self._compact_status_msg_id.pop(chat_id, None)
+        if status_msg_id is not None and app is not None:
+            success = await TelegramBridge._edit_markdown_in_chat(
+                bot=app.bot, chat_id=chat_id, message_id=status_msg_id, text=text
+            )
+            if success:
+                return
+            with suppress(TelegramError):
+                await app.bot.delete_message(chat_id=chat_id, message_id=status_msg_id)
+        await self._reply_agent(update, text)
+
+    async def _clear_compact_status(self, chat_id: int) -> None:
+        """Delete the in-progress compact status message if one exists."""
+        app = self._app
+        status_msg_id = self._compact_status_msg_id.pop(chat_id, None)
+        if status_msg_id is None or app is None:
+            return
+        with suppress(TelegramError):
+            await app.bot.delete_message(chat_id=chat_id, message_id=status_msg_id)
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
@@ -1336,6 +1405,79 @@ class TelegramBridge:
         except (RuntimeError, ValueError, TypeError):
             await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
+    async def _send_verbose_activity_message(self, *, chat_id: int, text: str) -> int | None:
+        """Send a verbose activity message and return its `message_id` for later editing.
+
+        Returns `None` when sending fails or the content spans multiple chunks,
+        so the caller will not attempt in-place editing of a partial message.
+        Multi-chunk content is still delivered via {py:meth}`_send_markdown_to_chat`.
+        """
+        app = self._app
+        if app is None:
+            return None
+        try:
+            rendered_text, rendered_entities = convert(text)
+            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+        except (RuntimeError, ValueError, TypeError):
+            chunk_text: str = text
+            entities: list | None = None
+        else:
+            if len(chunks) != 1:
+                await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+                return None
+            chunk_text, raw_entities = chunks[0]
+            entities = [TelegramBridge._to_telegram_entity(e) for e in raw_entities] if raw_entities else None
+        if entities:
+            with suppress(TelegramError):
+                msg = await app.bot.send_message(chat_id=chat_id, text=chunk_text, entities=entities)
+                return msg.message_id
+        with suppress(TelegramError):
+            msg = await app.bot.send_message(chat_id=chat_id, text=chunk_text)
+            return msg.message_id
+        return None
+
+    @staticmethod
+    async def _edit_markdown_in_chat(
+        *,
+        bot: Bot,
+        chat_id: int,
+        message_id: int,
+        text: str,
+    ) -> bool:
+        """Edit an existing chat message in place with markdown content.
+
+        Returns `True` when the message was successfully updated, `False` when
+        editing is not possible (API error, or content spans multiple chunks).
+        Multi-chunk content signals to the caller to fall back to normal delivery.
+        """
+        try:
+            rendered_text, rendered_entities = convert(text)
+            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+        except (RuntimeError, ValueError, TypeError):
+            try:
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+            except TelegramError:
+                return False
+            else:
+                return True
+        if len(chunks) != 1:
+            return False
+        chunk_text, chunk_entities = chunks[0]
+        if chunk_entities:
+            entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
+            try:
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=chunk_text, entities=entities)
+            except TelegramError:
+                pass
+            else:
+                return True
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=chunk_text)
+        except TelegramError:
+            return False
+        else:
+            return True
+
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
 
@@ -1387,6 +1529,7 @@ def make_config(
     allowed_user_ids: list[int],
     workspace: str,
     allowed_usernames: list[str] | None = None,
+    compact_activity: bool = False,
 ) -> BotConfig:
     normalized_usernames = {
         username.lstrip("@").strip().lower() for username in (allowed_usernames or []) if username.strip()
@@ -1396,4 +1539,5 @@ def make_config(
         allowed_user_ids=set(allowed_user_ids),
         allowed_usernames=normalized_usernames,
         default_workspace=Path(workspace).expanduser(),
+        compact_activity=compact_activity,
     )

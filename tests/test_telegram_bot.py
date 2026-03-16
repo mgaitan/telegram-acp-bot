@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from telegram import InlineKeyboardMarkup, MessageEntity, Update
+from telegram import Bot, InlineKeyboardMarkup, MessageEntity, Update
 from telegram.error import TelegramError
 from telegram.ext import Application
 
@@ -48,6 +48,7 @@ ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
 EXPECTED_BUSY_NOTIFY_MESSAGES_AFTER_REPLACE = 2
 QUEUED_MESSAGE_ID = 22
+COMPACT_STATUS_MSG_ID = 42
 
 
 class MarkdownFailureError(TelegramError):
@@ -126,6 +127,8 @@ class DummyBot:
         self.sent_messages: list[dict[str, object]] = []
         self._next_message_id = 1
         self.edited_reply_markups: list[dict[str, object]] = []
+        self.edited_messages: list[dict[str, object]] = []
+        self.deleted_message_ids: list[tuple[int, int]] = []
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         self.actions.append((chat_id, action))
@@ -142,12 +145,36 @@ class DummyBot:
     async def edit_message_reply_markup(self, **kwargs: object) -> None:
         self.edited_reply_markups.append(kwargs)
 
+    async def edit_message_text(self, **kwargs: object) -> None:
+        self.edited_messages.append(dict(kwargs))
+
+    async def delete_message(self, **kwargs: object) -> None:
+        chat_id = cast(int, kwargs.get("chat_id"))
+        message_id = cast(int, kwargs.get("message_id"))
+        self.deleted_message_ids.append((chat_id, message_id))
+
 
 class FailingMarkdownBot(DummyBot):
     async def send_message(self, **kwargs: object) -> SimpleNamespace:
         if "entities" in kwargs:
             raise MarkdownFailureError
         return await super().send_message(**kwargs)
+
+
+class FailingEditBot(DummyBot):
+    """Always raises on edit_message_text (used to test compact/verbose fallback)."""
+
+    async def edit_message_text(self, **kwargs: object) -> None:
+        raise MarkdownFailureError
+
+
+class EntityFailingEditBot(DummyBot):
+    """Raises on edit_message_text only when entities are supplied."""
+
+    async def edit_message_text(self, **kwargs: object) -> None:
+        if "entities" in kwargs:
+            raise MarkdownFailureError
+        await super().edit_message_text(**kwargs)
 
 
 class DummyCallbackQuery:
@@ -410,6 +437,11 @@ def make_context(*, args: list[str] | None = None, application: object | None = 
 
 def make_bridge(*, allowed_ids: set[int] | None = None) -> TelegramBridge:
     config = make_config(token="TOKEN", allowed_user_ids=list(allowed_ids or set()), workspace=".")
+    return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+
+
+def make_compact_bridge() -> TelegramBridge:
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
@@ -3076,3 +3108,534 @@ async def test_log_text_preview_compacts_and_truncates():
     assert len(preview) == LOG_TEXT_PREVIEW_MAX_CHARS + 3
 
     assert log_text_preview("   ") == "<empty>"
+
+
+# ---------------------------------------------------------------------------
+# Compact activity mode tests
+# ---------------------------------------------------------------------------
+
+
+async def test_make_config_compact_activity_defaults_to_false():
+    config = make_config(token="T", allowed_user_ids=[1], workspace=".")
+    assert config.compact_activity is False
+
+
+async def test_make_config_compact_activity_can_be_set():
+    config = make_config(token="T", allowed_user_ids=[1], workspace=".", compact_activity=True)
+    assert config.compact_activity is True
+
+
+async def test_compact_on_activity_event_sends_initial_status_message():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="Checking", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 1
+    assert "💡 Thinking" in cast(str, bot.sent_messages[0]["text"])
+    assert TEST_CHAT_ID in bridge._compact_status_msg_id
+
+
+async def test_compact_on_activity_event_edits_existing_status_message():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 0
+    assert len(bot.edited_messages) == 1
+    assert bot.edited_messages[0]["message_id"] == COMPACT_STATUS_MSG_ID
+    assert "⚙️ Running" in cast(str, bot.edited_messages[0]["text"])
+
+
+async def test_compact_on_activity_event_send_failure_is_silent():
+    bridge = make_compact_bridge()
+
+    class SendFailBot(DummyBot):
+        async def send_message(self, **kwargs: object) -> SimpleNamespace:
+            raise MarkdownFailureError
+
+    bot = SendFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_on_activity_event_edit_failure_is_silent():
+    bridge = make_compact_bridge()
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert bridge._compact_status_msg_id[TEST_CHAT_ID] == COMPACT_STATUS_MSG_ID
+
+
+async def test_compact_dispatch_reply_edits_status_message():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+    reply = AgentReply(text="Final answer.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert len(bot.edited_messages) == 1
+    assert "Final answer." in cast(str, bot.edited_messages[0]["text"])
+    assert update.message is not None
+    assert update.message.replies == []
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_dispatch_reply_fallback_on_edit_failure():
+    bridge = make_compact_bridge()
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+    reply = AgentReply(text="Final answer.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert (TEST_CHAT_ID, COMPACT_STATUS_MSG_ID) in bot.deleted_message_ids
+    assert update.message is not None
+    assert "Final answer." in update.message.replies[-1]
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_dispatch_reply_no_status_message_sends_normally():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(text="hello")
+    reply = AgentReply(text="Final answer.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert bot.edited_messages == []
+    assert update.message is not None
+    assert "Final answer." in update.message.replies[-1]
+
+
+async def test_compact_dispatch_reply_empty_text_deletes_status():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+    reply = AgentReply(text="")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert (TEST_CHAT_ID, COMPACT_STATUS_MSG_ID) in bot.deleted_message_ids
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+async def test_compact_dispatch_reply_empty_text_no_status_is_noop():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(text="hello")
+    reply = AgentReply(text="")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert bot.deleted_message_ids == []
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+async def test_finalize_compact_reply_without_app_sends_normally():
+    bridge = make_compact_bridge()
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+
+    await bridge._finalize_compact_reply(chat_id=TEST_CHAT_ID, update=update, text="Final answer.")
+
+    assert update.message is not None
+    assert "Final answer." in update.message.replies[-1]
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_clear_compact_status_without_app_is_noop():
+    bridge = make_compact_bridge()
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_clear_compact_status_no_status_is_noop():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert bot.deleted_message_ids == []
+
+
+async def test_clear_compact_status_delete_failure_is_silent():
+    bridge = make_compact_bridge()
+
+    class DeleteFailBot(DummyBot):
+        async def delete_message(self, **kwargs: object) -> None:
+            raise MarkdownFailureError
+
+    bot = DeleteFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_live_activity_full_flow():
+    """Integration: compact mode sends one status, then edits it with the final answer."""
+    service = LiveActivityService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert update.message is not None
+    assert update.message.replies == []
+    assert len(bot.sent_messages) == 1
+    assert "💡 Thinking" in cast(str, bot.sent_messages[0]["text"])
+    assert len(bot.edited_messages) == 1
+    assert "Final response." in cast(str, bot.edited_messages[0]["text"])
+
+
+async def test_edit_markdown_in_chat_returns_true_on_success():
+    bot = DummyBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello world"
+    )
+    assert result is True
+    assert bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_returns_true_for_text_with_entities():
+    bot = DummyBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="*bold text*"
+    )
+    assert result is True
+    assert bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_returns_false_on_multi_chunk():
+    bot = DummyBot()
+    long_text = "word " * 1500
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text=long_text
+    )
+    assert result is False
+    assert not bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_entity_edit_fails_falls_back_to_plain():
+    bot = EntityFailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="*bold text*"
+    )
+    assert result is True
+    assert bot.edited_messages
+    assert "entities" not in bot.edited_messages[-1]
+
+
+async def test_edit_markdown_in_chat_returns_false_when_all_entity_edits_fail():
+    bot = FailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="*bold text*"
+    )
+    assert result is False
+
+
+async def test_edit_markdown_in_chat_returns_false_when_plain_edit_fails():
+    bot = FailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Simple text"
+    )
+    assert result is False
+
+
+async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
+    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    bot = DummyBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
+    )
+    assert result is True
+    assert bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_convert_error_returns_false_when_edit_fails(mocker):
+    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    bot = FailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
+    )
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Verbose streaming activity mode tests
+# ---------------------------------------------------------------------------
+
+
+async def test_verbose_on_activity_event_in_progress_sends_message_and_tracks():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 1
+    assert "⚙️ Running" in cast(str, bot.sent_messages[0]["text"])
+    assert bridge._verbose_activity_msg_id[TEST_CHAT_ID] == bot.sent_messages[0].get(
+        "message_id", bot._next_message_id - 1
+    )
+    assert bridge._verbose_activity_key[TEST_CHAT_ID] == ("execute", "Run ls")
+
+
+async def test_verbose_on_activity_event_completed_edits_tracked_message():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._verbose_activity_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._verbose_activity_key[TEST_CHAT_ID] = ("execute", "Run ls")
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="completed", text="file.txt")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.edited_messages) == 1
+    assert bot.edited_messages[0]["message_id"] == COMPACT_STATUS_MSG_ID
+    assert "file.txt" in cast(str, bot.edited_messages[0]["text"])
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_key
+
+
+async def test_verbose_on_activity_event_completed_mismatched_key_sends_new():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._verbose_activity_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._verbose_activity_key[TEST_CHAT_ID] = ("read", "Read config.py")
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="completed", text="output")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    # Mismatched key: sends a new message instead of editing
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 0
+
+
+async def test_verbose_on_activity_event_completed_no_tracking_sends_new():
+    """Completed block with no tracked in_progress (e.g. think) sends a new message."""
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="", status="completed", text="Deep thought.")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 1
+    assert "Deep thought." in cast(str, bot.sent_messages[0]["text"])
+
+
+async def test_verbose_on_activity_event_completed_edit_failure_sends_new():
+    bridge = make_bridge()
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._verbose_activity_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._verbose_activity_key[TEST_CHAT_ID] = ("execute", "Run ls")
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="completed", text="output")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    # Edit failed; must send a new message as fallback
+    assert len(bot.sent_messages) == 1
+    assert "output" in cast(str, bot.sent_messages[0]["text"])
+
+
+async def test_verbose_on_activity_event_in_progress_send_failure_skips_tracking():
+    bridge = make_bridge()
+
+    class SendFailBot(DummyBot):
+        async def send_message(self, **kwargs: object) -> SimpleNamespace:
+            raise MarkdownFailureError
+
+    bot = SendFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_key
+
+
+async def test_verbose_dispatch_reply_clears_stale_tracking():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    # Simulate stale in-progress tracking (tool started but never completed)
+    bridge._verbose_activity_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._verbose_activity_key[TEST_CHAT_ID] = ("execute", "Run ls")
+    update = make_update(text="hello")
+    reply = AgentReply(text="Done.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_key
+    assert update.message is not None
+    assert "Done." in update.message.replies[-1]
+
+
+async def test_verbose_in_progress_then_completed_full_cycle():
+    """Integration: verbose mode sends an in-progress message then updates it in-place."""
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    in_progress = AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="")
+    completed = AgentActivityBlock(kind="execute", title="Run ls", status="completed", text="file.txt")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, in_progress)
+    await bridge.on_activity_event(TEST_CHAT_ID, completed)
+
+    # One message sent for in_progress, one edit for completed
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert "file.txt" in cast(str, bot.edited_messages[0]["text"])
+    # Tracking cleaned up after completed
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+
+
+async def test_verbose_think_block_completed_sends_message():
+    """Think blocks only emit a completed event; verbose mode sends them as new messages."""
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="", status="completed", text="Some insight.")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 1
+    assert "Some insight." in cast(str, bot.sent_messages[0]["text"])
+
+
+async def test_verbose_on_activity_event_no_app_returns_early():
+    bridge = make_bridge()
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+
+
+async def test_send_verbose_activity_message_single_chunk_returns_id():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="Hello world")
+
+    assert msg_id is not None
+    assert len(bot.sent_messages) == 1
+
+
+async def test_send_verbose_activity_message_multi_chunk_sends_but_returns_none():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    long_text = "word " * 1500
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text=long_text)
+
+    assert msg_id is None
+    assert len(bot.sent_messages) >= 1
+
+
+async def test_send_verbose_activity_message_send_failure_returns_none():
+    bridge = make_bridge()
+
+    class SendFailBot(DummyBot):
+        async def send_message(self, **kwargs: object) -> SimpleNamespace:
+            raise MarkdownFailureError
+
+    bot = SendFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="Hello")
+
+    assert msg_id is None
+
+
+async def test_send_verbose_activity_message_no_app_returns_none():
+    bridge = make_bridge()
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="Hello")
+
+    assert msg_id is None
+
+
+async def test_send_verbose_activity_message_entity_failure_falls_back_to_plain():
+    bridge = make_bridge()
+    bot = FailingMarkdownBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="*bold*")
+
+    assert msg_id is not None
+    assert len(bot.sent_messages) == 1
+
+
+async def test_send_verbose_activity_message_convert_error_plain_fallback(mocker):
+    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="Hello")
+
+    assert msg_id is not None
+    assert len(bot.sent_messages) == 1
+
+
+async def test_send_verbose_activity_message_convert_error_send_fail_returns_none(mocker):
+    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    bridge = make_bridge()
+
+    class SendFailBot(DummyBot):
+        async def send_message(self, **kwargs: object) -> SimpleNamespace:
+            raise MarkdownFailureError
+
+    bot = SendFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="Hello")
+
+    assert msg_id is None
