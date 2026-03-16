@@ -27,8 +27,14 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch: pytest.MonkeyPatch, mocker):
-    """Remove real token env vars and stub load_dotenv for register_commands."""
+    """Remove real token env vars and stub load_dotenv for both dispatch paths.
+
+    `main()` calls `telegram_acp_bot.load_dotenv`; `register_commands_main()`
+    calls `telegram_acp_bot.register_commands.load_dotenv`.  Both are patched
+    so neither path loads a real `.env` file during tests.
+    """
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    mocker.patch("telegram_acp_bot.load_dotenv")
     return mocker.patch("telegram_acp_bot.register_commands.load_dotenv")
 
 

@@ -260,6 +260,7 @@ def test_show_help(capsys: pytest.CaptureFixture):
         main(["-h"])
     captured = capsys.readouterr()
     assert "telegram-acp-bot" in captured.out
+    assert "register-commands" in captured.out
 
 
 def test_show_version(mocker, capsys: pytest.CaptureFixture):
