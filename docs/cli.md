@@ -48,6 +48,19 @@ The bot entrypoint is `telegram-acp-bot`.
   Default: {term}`ACP_CONNECT_TIMEOUT`.
   Timeout in seconds for ACP `initialize` + `new_session` handshake.
 
+- `--log-format`
+  Default: {term}`ACP_LOG_FORMAT`.
+  Allowed values: `text`, `json`.
+
+- `--activity-mode`
+  Default: {term}`ACP_ACTIVITY_MODE`.
+  Allowed values: `verbose`, `compact`.
+  Controls how intermediate agent activity events appear in the chat.
+  `verbose` sends each in-progress tool-call as its own message and updates it in-place
+  when the tool completes (with command output, thinking text, etc.).
+  `compact` collapses all intermediate events into a single status message edited in-place,
+  then replaced by the final answer.
+
 - `-V`, `--version`
   Print CLI version and exit.
 

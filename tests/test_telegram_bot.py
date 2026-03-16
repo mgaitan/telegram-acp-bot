@@ -249,6 +249,54 @@ class LiveActivityService:
         self._activity_handler = handler
 
 
+class _NullReplyActivityService:
+    """Emits one in-progress activity block then returns None from prompt (simulates prompt failure)."""
+
+    def __init__(self) -> None:
+        self._activity_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
+
+    async def new_session(self, *, chat_id: int, workspace):
+        del workspace
+        return f"s-{chat_id}"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del text, images, files
+        if self._activity_handler is not None:
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text=""),
+            )
+
+    def get_workspace(self, *, chat_id: int):
+        del chat_id
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+    def set_activity_event_handler(self, handler):
+        self._activity_handler = handler
+
+
 class ResumeService:
     def __init__(self) -> None:
         self.loaded: tuple[int, str, Path] | None = None
@@ -3639,3 +3687,88 @@ async def test_send_verbose_activity_message_convert_error_send_fail_returns_non
     msg_id = await bridge._send_verbose_activity_message(chat_id=TEST_CHAT_ID, text="Hello")
 
     assert msg_id is None
+
+
+# ---------------------------------------------------------------------------
+# _clear_activity_state / stale-tracking cleanup regression tests
+# ---------------------------------------------------------------------------
+
+
+async def test_clear_activity_state_removes_verbose_tracking():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._verbose_activity_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._verbose_activity_key[TEST_CHAT_ID] = ("execute", "Run ls")
+
+    await bridge._clear_activity_state(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_key
+    assert bot.deleted_message_ids == []
+
+
+async def test_clear_activity_state_deletes_compact_status():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+
+    await bridge._clear_activity_state(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+    assert (TEST_CHAT_ID, COMPACT_STATUS_MSG_ID) in bot.deleted_message_ids
+
+
+async def test_clear_activity_state_both_verbose_and_compact():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._verbose_activity_msg_id[TEST_CHAT_ID] = 99
+    bridge._verbose_activity_key[TEST_CHAT_ID] = ("think", "")
+
+    await bridge._clear_activity_state(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_key
+    assert (TEST_CHAT_ID, COMPACT_STATUS_MSG_ID) in bot.deleted_message_ids
+
+
+async def test_stale_compact_status_cleared_on_null_reply():
+    """Regression: compact status message is deleted when _request_reply returns None."""
+    service = _NullReplyActivityService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    # The compact status message sent during activity should have been deleted
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+    sent_ids = [cast(int, m.get("message_id", i + 1)) for i, m in enumerate(bot.sent_messages)]
+    for sent_id in sent_ids:
+        assert (TEST_CHAT_ID, sent_id) in bot.deleted_message_ids
+
+
+async def test_stale_verbose_tracking_cleared_on_null_reply():
+    """Regression: verbose activity tracking is cleared when _request_reply returns None."""
+    service = _NullReplyActivityService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    # Verbose tracking should be cleared even though no reply was dispatched
+    assert TEST_CHAT_ID not in bridge._verbose_activity_msg_id
+    assert TEST_CHAT_ID not in bridge._verbose_activity_key

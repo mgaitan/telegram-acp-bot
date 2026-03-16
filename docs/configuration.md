@@ -57,6 +57,15 @@ ACP_LOG_FORMAT
   `text` includes contextual key/value fields in each line.
   `json` emits structured logs with `chat_id`, `session_id`, and `prompt_cycle_id`.
 
+ACP_ACTIVITY_MODE
+  Controls how intermediate agent activity events are displayed in the chat.
+  Allowed values: `verbose`, `compact`.
+  `verbose` (default) sends each agent event as its own message; in-progress tool-call
+  messages are updated in-place when the block completes.
+  `compact` collapses all intermediate events into a single in-place status message
+  that is replaced by the final answer when the agent responds.
+  Maps to `--activity-mode`.
+
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
   Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
   Disabled by default. Set to `1` (or `true`/`yes`/`on`) only when file-path inputs are trusted.
@@ -84,6 +93,7 @@ ACP_STDIO_LIMIT=8388608
 ACP_CONNECT_TIMEOUT=30
 ACP_LOG_LEVEL=INFO
 ACP_LOG_FORMAT=text
+ACP_ACTIVITY_MODE=verbose
 ```
 
 ## MCP behavior

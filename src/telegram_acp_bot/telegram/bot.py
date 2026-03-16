@@ -733,6 +733,8 @@ class TelegramBridge:
                 await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
                 with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
                     logger.info("Prompt cycle completed")
+            else:
+                await self._clear_activity_state(chat_id)
 
             if pending is None:
                 return
@@ -785,6 +787,17 @@ class TelegramBridge:
             return
         with suppress(TelegramError):
             await app.bot.delete_message(chat_id=chat_id, message_id=status_msg_id)
+
+    async def _clear_activity_state(self, chat_id: int) -> None:
+        """Clear all per-chat activity tracking when a prompt cycle ends without a reply.
+
+        Removes stale verbose tracking and deletes any pending compact status message so
+        the chat does not retain temporary in-progress indicators after an error or a
+        `None`-reply prompt cycle.
+        """
+        self._verbose_activity_msg_id.pop(chat_id, None)
+        self._verbose_activity_key.pop(chat_id, None)
+        await self._clear_compact_status(chat_id)
 
     async def _start_implicit_session(self, *, update: Update, chat_id: int) -> bool:
         workspace = self._config.default_workspace
