@@ -486,9 +486,7 @@ async def test_restart_with_index_resumes_selected_candidate():
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == [
-        "Restart requested. Re-launching process...\nSession restarted: s-resume-1 in /tmp/ws1"
-    ]
+    assert update.message.replies == ["Session resumed: s-resume-1 in /tmp/ws1"]
 
 
 async def test_restart_with_workspace_arg_only_reports_usage():
@@ -523,9 +521,7 @@ async def test_restart_with_zero_index_reports_usage():
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == [
-        "Restart requested. Re-launching process...\nSession restarted: s-resume-1 in /tmp/ws1"
-    ]
+    assert update.message.replies == ["Session resumed: s-resume-1 in /tmp/ws1"]
 
 
 async def test_restart_with_running_app_and_no_active_session_reports_missing_session():
