@@ -293,3 +293,33 @@ def test_get_version_package_not_found(mocker):
         side_effect=metadata.PackageNotFoundError("not found"),
     )
     assert get_version() == "unknown"
+
+
+def test_main_activity_mode_defaults_to_verbose(mocker):
+    """Default activity mode is verbose (compact_activity=False)."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.compact_activity is False
+
+
+def test_main_compact_activity_mode_sets_flag(mocker):
+    """--activity-mode compact sets compact_activity=True on the config."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert (
+        main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--activity-mode", "compact"]) == 0
+    )
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.compact_activity is True
+
+
+def test_main_activity_mode_env_var_compact(mocker, monkeypatch):
+    """ACP_ACTIVITY_MODE=compact activates compact mode."""
+    monkeypatch.setenv("ACP_ACTIVITY_MODE", "compact")
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.compact_activity is True

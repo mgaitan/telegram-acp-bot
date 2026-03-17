@@ -48,6 +48,10 @@ The bot entrypoint is `telegram-acp-bot`.
   Default: {term}`ACP_CONNECT_TIMEOUT`.
   Timeout in seconds for ACP `initialize` + `new_session` handshake.
 
+- `--activity-mode`
+  Default: {term}`ACP_ACTIVITY_MODE`.
+  Allowed values: `verbose`, `compact`.
+
 - `-V`, `--version`
   Print CLI version and exit.
 

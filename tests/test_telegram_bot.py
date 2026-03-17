@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from telegram import InlineKeyboardMarkup, MessageEntity, Update
+from telegram import Bot, InlineKeyboardMarkup, MessageEntity, Update
 from telegram.error import TelegramError
 from telegram.ext import Application
 
@@ -48,6 +48,8 @@ ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
 EXPECTED_BUSY_NOTIFY_MESSAGES_AFTER_REPLACE = 2
 QUEUED_MESSAGE_ID = 22
+COMPACT_STATUS_MSG_ID = 42
+COMPACT_PROMPT_MSG_ID = 10  # user's original message ID used in compact reaction tests
 
 
 class MarkdownFailureError(TelegramError):
@@ -126,6 +128,9 @@ class DummyBot:
         self.sent_messages: list[dict[str, object]] = []
         self._next_message_id = 1
         self.edited_reply_markups: list[dict[str, object]] = []
+        self.edited_messages: list[dict[str, object]] = []
+        self.deleted_message_ids: list[tuple[int, int]] = []
+        self.reactions: list[dict[str, object]] = []
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         self.actions.append((chat_id, action))
@@ -142,12 +147,39 @@ class DummyBot:
     async def edit_message_reply_markup(self, **kwargs: object) -> None:
         self.edited_reply_markups.append(kwargs)
 
+    async def edit_message_text(self, **kwargs: object) -> None:
+        self.edited_messages.append(dict(kwargs))
+
+    async def delete_message(self, **kwargs: object) -> None:
+        chat_id = cast(int, kwargs.get("chat_id"))
+        message_id = cast(int, kwargs.get("message_id"))
+        self.deleted_message_ids.append((chat_id, message_id))
+
+    async def set_message_reaction(self, **kwargs: object) -> None:
+        self.reactions.append(dict(kwargs))
+
 
 class FailingMarkdownBot(DummyBot):
     async def send_message(self, **kwargs: object) -> SimpleNamespace:
         if "entities" in kwargs:
             raise MarkdownFailureError
         return await super().send_message(**kwargs)
+
+
+class FailingEditBot(DummyBot):
+    """Always raises on edit_message_text (used to test compact fallback)."""
+
+    async def edit_message_text(self, **kwargs: object) -> None:
+        raise MarkdownFailureError
+
+
+class EntityFailingEditBot(DummyBot):
+    """Raises on edit_message_text only when entities are supplied."""
+
+    async def edit_message_text(self, **kwargs: object) -> None:
+        if "entities" in kwargs:
+            raise MarkdownFailureError
+        await super().edit_message_text(**kwargs)
 
 
 class DummyCallbackQuery:
@@ -410,6 +442,11 @@ def make_context(*, args: list[str] | None = None, application: object | None = 
 
 def make_bridge(*, allowed_ids: set[int] | None = None) -> TelegramBridge:
     config = make_config(token="TOKEN", allowed_user_ids=list(allowed_ids or set()), workspace=".")
+    return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+
+
+def make_compact_bridge() -> TelegramBridge:
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
@@ -3076,3 +3113,486 @@ async def test_log_text_preview_compacts_and_truncates():
     assert len(preview) == LOG_TEXT_PREVIEW_MAX_CHARS + 3
 
     assert log_text_preview("   ") == "<empty>"
+
+
+# ---------------------------------------------------------------------------
+# Compact activity mode tests
+# ---------------------------------------------------------------------------
+
+async def test_make_config_compact_activity_defaults_to_false():
+    config = make_config(token="T", allowed_user_ids=[1], workspace=".")
+    assert config.compact_activity is False
+
+
+async def test_make_config_compact_activity_can_be_set():
+    config = make_config(token="T", allowed_user_ids=[1], workspace=".", compact_activity=True)
+    assert config.compact_activity is True
+
+
+async def test_compact_on_activity_event_sends_initial_status_message():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="Checking", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 1
+    status_text = cast(str, bot.sent_messages[0]["text"])
+    # Plain text label — no emoji in the message body.
+    assert "Thinking" in status_text
+    assert "💡" not in status_text
+    assert "." in status_text
+    assert TEST_CHAT_ID in bridge._compact_status_msg_id
+
+
+async def test_compact_on_activity_event_edits_existing_status_message():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    block = AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.sent_messages) == 0
+    assert len(bot.edited_messages) == 1
+    assert bot.edited_messages[0]["message_id"] == COMPACT_STATUS_MSG_ID
+    edited_text = cast(str, bot.edited_messages[0]["text"])
+    # Plain text label — no emoji in the message body.
+    assert "Running" in edited_text
+    assert "⚙️" not in edited_text
+
+
+async def test_compact_on_activity_event_send_failure_is_silent():
+    bridge = make_compact_bridge()
+
+    class SendFailBot(DummyBot):
+        async def send_message(self, **kwargs: object) -> SimpleNamespace:
+            raise MarkdownFailureError
+
+    bot = SendFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_on_activity_event_edit_failure_is_silent():
+    bridge = make_compact_bridge()
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert bridge._compact_status_msg_id[TEST_CHAT_ID] == COMPACT_STATUS_MSG_ID
+
+
+async def test_compact_dispatch_reply_edits_status_message():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+    reply = AgentReply(text="Final answer.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert len(bot.edited_messages) == 1
+    assert "Final answer." in cast(str, bot.edited_messages[0]["text"])
+    assert update.message is not None
+    assert update.message.replies == []
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_dispatch_reply_fallback_on_edit_failure():
+    bridge = make_compact_bridge()
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+    reply = AgentReply(text="Final answer.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert (TEST_CHAT_ID, COMPACT_STATUS_MSG_ID) in bot.deleted_message_ids
+    assert update.message is not None
+    assert "Final answer." in update.message.replies[-1]
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_dispatch_reply_no_status_message_sends_normally():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(text="hello")
+    reply = AgentReply(text="Final answer.")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert bot.edited_messages == []
+    assert update.message is not None
+    assert "Final answer." in update.message.replies[-1]
+
+
+async def test_compact_dispatch_reply_empty_text_deletes_status():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+    reply = AgentReply(text="")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert (TEST_CHAT_ID, COMPACT_STATUS_MSG_ID) in bot.deleted_message_ids
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+async def test_compact_dispatch_reply_empty_text_no_status_is_noop():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(text="hello")
+    reply = AgentReply(text="")
+
+    await bridge._dispatch_reply(chat_id=TEST_CHAT_ID, update=update, reply=reply)
+
+    assert bot.deleted_message_ids == []
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+async def test_finalize_compact_reply_without_app_sends_normally():
+    bridge = make_compact_bridge()
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    update = make_update(text="hello")
+
+    await bridge._finalize_compact_reply(chat_id=TEST_CHAT_ID, update=update, text="Final answer.")
+
+    assert update.message is not None
+    assert "Final answer." in update.message.replies[-1]
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_clear_compact_status_without_app_is_noop():
+    bridge = make_compact_bridge()
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_clear_compact_status_no_status_is_noop():
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert bot.deleted_message_ids == []
+
+
+async def test_clear_compact_status_delete_failure_is_silent():
+    bridge = make_compact_bridge()
+
+    class DeleteFailBot(DummyBot):
+        async def delete_message(self, **kwargs: object) -> None:
+            raise MarkdownFailureError
+
+    bot = DeleteFailBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+
+
+async def test_compact_live_activity_full_flow():
+    """Integration: compact mode sends one status, then edits it with the final answer."""
+    service = LiveActivityService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert update.message is not None
+    assert update.message.replies == []
+    assert len(bot.sent_messages) == 1
+    # Status text: plain label + dots (no emoji in message body).
+    status_text = cast(str, bot.sent_messages[0]["text"])
+    assert "Thinking" in status_text
+    assert "💡" not in status_text
+    assert not status_text.startswith("⏳")
+    assert len(bot.edited_messages) == 1
+    assert "Final response." in cast(str, bot.edited_messages[0]["text"])
+
+
+async def test_edit_markdown_in_chat_returns_true_on_success():
+
+    bot = DummyBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello world"
+    )
+    assert result is True
+    assert bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_returns_true_for_text_with_entities():
+
+    bot = DummyBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="*bold text*"
+    )
+    assert result is True
+    assert bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_returns_false_on_multi_chunk():
+
+    bot = DummyBot()
+    long_text = "word " * 1500
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text=long_text
+    )
+    assert result is False
+    assert not bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_entity_edit_fails_falls_back_to_plain():
+
+    bot = EntityFailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="*bold text*"
+    )
+    assert result is True
+    assert bot.edited_messages
+    assert "entities" not in bot.edited_messages[-1]
+
+
+async def test_edit_markdown_in_chat_returns_false_when_all_entity_edits_fail():
+
+    bot = FailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="*bold text*"
+    )
+    assert result is False
+
+
+async def test_edit_markdown_in_chat_returns_false_when_plain_edit_fails():
+
+    bot = FailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Simple text"
+    )
+    assert result is False
+
+
+async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
+
+    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    bot = DummyBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
+    )
+    assert result is True
+    assert bot.edited_messages
+
+
+async def test_edit_markdown_in_chat_convert_error_returns_false_when_edit_fails(mocker):
+
+    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    bot = FailingEditBot()
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
+    )
+    assert result is False
+
+
+async def test_compact_stale_status_cleared_when_reply_is_none():
+    """Compact status message is deleted when the prompt cycle exits without a final reply."""
+
+    class LimitErrorCompactService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            if self._activity_handler is not None:
+                await self._activity_handler(
+                    chat_id,
+                    AgentActivityBlock(kind="think", title="Thinking…", status="in_progress", text=""),
+                )
+            raise AgentOutputLimitExceededError(ACP_STDIO_LIMIT_ERROR)
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, LimitErrorCompactService()))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert TEST_CHAT_ID not in bridge._compact_status_msg_id
+    assert len(bot.deleted_message_ids) == 1
+    assert update.message is not None
+    assert "Agent output exceeded ACP stdio limit." in update.message.replies[-1]
+
+
+async def test_compact_rotating_dots_cycle():
+    """Activity events produce rotating dots: . → .. → ... → . → ..."""
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    for _ in range(4):
+        await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    texts = [cast(str, bot.sent_messages[0]["text"])] + [
+        cast(str, m["text"]) for m in bot.edited_messages
+    ]
+    # Dot sequence should cycle: . → .. → ... → .
+    assert texts[0].endswith(".")
+    assert texts[1].endswith("..")
+    assert texts[2].endswith("...")
+    assert texts[3].endswith(".")
+
+
+async def test_compact_on_activity_event_sets_reaction_when_prompt_msg_known():
+    """Sets a Telegram reaction on the user's original message."""
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_prompt_msg_id[TEST_CHAT_ID] = COMPACT_PROMPT_MSG_ID
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert len(bot.reactions) == 1
+    reaction_call = bot.reactions[0]
+    assert reaction_call["chat_id"] == TEST_CHAT_ID
+    assert reaction_call["message_id"] == COMPACT_PROMPT_MSG_ID
+
+
+async def test_compact_on_activity_event_no_reaction_when_no_prompt_msg():
+    """No reaction call when user's message ID is not yet recorded."""
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+
+    assert bot.reactions == []
+
+
+async def test_compact_finalize_reply_clears_reaction():
+    """Removing the reaction on finalize_compact_reply."""
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._compact_prompt_msg_id[TEST_CHAT_ID] = COMPACT_PROMPT_MSG_ID
+    update = make_update(text="hello")
+
+    await bridge._finalize_compact_reply(chat_id=TEST_CHAT_ID, update=update, text="Done.")
+
+    # Reaction cleared (reaction=[]) after finalize
+    assert any(
+        r.get("chat_id") == TEST_CHAT_ID
+        and r.get("message_id") == COMPACT_PROMPT_MSG_ID
+        and r.get("reaction") == []
+        for r in bot.reactions
+    )
+    assert TEST_CHAT_ID not in bridge._compact_prompt_msg_id
+    assert TEST_CHAT_ID not in bridge._compact_dot_counter
+
+
+async def test_compact_clear_status_clears_reaction():
+    """Removing the reaction on _clear_compact_status."""
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+    bridge._compact_prompt_msg_id[TEST_CHAT_ID] = COMPACT_PROMPT_MSG_ID
+
+    await bridge._clear_compact_status(TEST_CHAT_ID)
+
+    assert any(
+        r.get("chat_id") == TEST_CHAT_ID
+        and r.get("message_id") == COMPACT_PROMPT_MSG_ID
+        and r.get("reaction") == []
+        for r in bot.reactions
+    )
+    assert TEST_CHAT_ID not in bridge._compact_prompt_msg_id
+    assert TEST_CHAT_ID not in bridge._compact_dot_counter
+
+
+async def test_compact_concurrent_activity_sends_only_one_message():
+    """Race-condition guard: concurrent activity events produce exactly one send."""
+    bridge = make_compact_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="x", status="in_progress", text="")
+
+    # Schedule three events concurrently; without the per-chat lock this would
+    # create three separate status messages because all three coroutines would
+    # read existing_msg_id=None before the first send_message completes.
+    await asyncio.gather(
+        bridge.on_activity_event(TEST_CHAT_ID, block),
+        bridge.on_activity_event(TEST_CHAT_ID, block),
+        bridge.on_activity_event(TEST_CHAT_ID, block),
+    )
+
+    assert len(bot.sent_messages) == 1, "Only one status message should be created"
+    assert TEST_CHAT_ID in bridge._compact_status_msg_id
+
+
+async def test_compact_live_activity_full_flow_with_reactions():
+    """Integration: compact mode sets reaction, sends one status, edits with final answer."""
+
+    class MultiActivityService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del text, images, files
+            if self._activity_handler is not None:
+                for kind in ("think", "execute"):
+                    await self._activity_handler(
+                        chat_id,
+                        AgentActivityBlock(kind=kind, title="Working", status="in_progress", text=""),
+                    )
+            return AgentReply(text="Done!")
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", compact_activity=True)
+    service = MultiActivityService()
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello", message_id=COMPACT_PROMPT_MSG_ID)
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    # Exactly one status message sent, zero direct replies.
+    assert len(bot.sent_messages) == 1
+    assert update.message is not None
+    assert update.message.replies == []
+    # Status text has no leading ⏳; final edit contains the answer.
+    assert not cast(str, bot.sent_messages[0]["text"]).startswith("⏳")
+    assert "Done!" in cast(str, bot.edited_messages[-1]["text"])
+    # Reactions were set then cleared.
+    assert any(r.get("message_id") == COMPACT_PROMPT_MSG_ID for r in bot.reactions)
+    # Last reaction call clears the reaction (reaction=[]).
+    last_reaction = bot.reactions[-1]
+    assert last_reaction.get("reaction") == []
