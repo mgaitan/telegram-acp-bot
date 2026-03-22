@@ -10,12 +10,12 @@
 
 Run with::
 
-    uv run scripts/demo/configurable_fake_agent.py --rules my_rules.yaml
+    uv run scripts/demo/configurable_fake_agent.py --script my_rules.yaml
 
 or use it as an ``--agent-command`` when starting the Telegram bot::
 
     telegram-acp-bot --agent-command \\
-        "uv run scripts/demo/configurable_fake_agent.py --rules my_rules.yaml" \\
+        "uv run scripts/demo/configurable_fake_agent.py --script my_rules.yaml" \\
         ...
 
 See `scripts/demo/example_rules.yaml` for the supported YAML format.
@@ -26,10 +26,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Never, cast
+from typing import Any, Never, cast
 from uuid import uuid4
 
 from acp import (
@@ -62,6 +62,8 @@ from acp.schema import (
     SessionResumeCapabilities,
     SseMcpServer,
     TextContentBlock,
+    ToolCallStatus,
+    ToolKind,
 )
 from dotenv import load_dotenv
 from rule_config import Rule, RuleConfig, Step, load_rule_config, render_step
@@ -82,6 +84,9 @@ McpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 class _SessionState:
     cwd: Path
     cancel_event: asyncio.Event
+    last_user_message: str = ""
+    last_rule: str = ""
+    session_variables: dict[str, Any] = field(default_factory=dict)
 
 
 class ConfigurableFakeAcpAgent(Agent):
@@ -90,6 +95,10 @@ class ConfigurableFakeAcpAgent(Agent):
     Each incoming prompt is matched against the configured rules in order.
     The first matching rule's `then` steps are executed. If no rule matches,
     the agent acknowledges the message with a generic echo reply.
+
+    Per-session state (last_user_message, last_rule, and any variables set by
+    rules via `set_variables`) is available in step templates as
+    ``{{ state.<key> }}``.
 
     See also `rule_config.load_rule_config` for the YAML format.
     """
@@ -194,14 +203,27 @@ class ConfigurableFakeAcpAgent(Agent):
         session.cancel_event = asyncio.Event()
         message = self._extract_text(prompt)
 
+        # Capture state from previous turn BEFORE applying rule's set_variables.
+        state = self._build_state(session)
+
         rule = self._config.find_rule(message)
         if rule is None:
             await self._echo_reply(session_id=session_id, message=message)
             await self._flush()
+            session.last_user_message = message
             return PromptResponse(stop_reason=STOP_REASON_END_TURN)
 
-        await self._execute_rule(session_id=session_id, rule=rule, message=message)
+        # Apply set_variables declared in the rule so templates can reference them.
+        if rule.set_variables:
+            session.session_variables.update(rule.set_variables)
+            state = self._build_state(session)
+
+        await self._execute_rule(session_id=session_id, rule=rule, message=message, state=state)
         await self._flush()
+
+        # Update per-turn state after execution.
+        session.last_user_message = message
+        session.last_rule = rule.name
         return PromptResponse(stop_reason=STOP_REASON_END_TURN)
 
     async def fork_session(
@@ -256,12 +278,12 @@ class ConfigurableFakeAcpAgent(Agent):
     # Rule execution
     # ------------------------------------------------------------------
 
-    async def _execute_rule(self, *, session_id: str, rule: Rule, message: str) -> None:
+    async def _execute_rule(self, *, session_id: str, rule: Rule, message: str, state: dict[str, Any]) -> None:
         """Execute all steps of *rule* for the given *message*."""
         open_tool_id: str | None = None
 
         for step in rule.steps:
-            rendered = render_step(step, message=message, variables=self._config.variables)
+            rendered = render_step(step, message=message, variables=self._config.variables, state=state)
             open_tool_id = await self._execute_step(
                 session_id=session_id,
                 step=rendered,
@@ -289,6 +311,10 @@ class ConfigurableFakeAcpAgent(Agent):
                 return await self._execute_tool_result(session_id=session_id, step=step, open_tool_id=open_tool_id)
             case "final":
                 return await self._execute_final(session_id=session_id, step=step, open_tool_id=open_tool_id)
+            case "sleep":
+                return await self._execute_sleep(session_id=session_id, step=step, open_tool_id=open_tool_id)
+            case "error":
+                return await self._execute_error(session_id=session_id, step=step, open_tool_id=open_tool_id)
             case _:
                 raise ValueError(f"Unknown step type: {step.type!r}")  # noqa: TRY003
 
@@ -326,6 +352,25 @@ class ConfigurableFakeAcpAgent(Agent):
             await self._send_text(session_id=session_id, text=step.content)
         return open_tool_id
 
+    async def _execute_sleep(self, *, session_id: str, step: Step, open_tool_id: str | None) -> str | None:
+        del session_id
+        if step.sleep_ms > 0:
+            await asyncio.sleep(step.sleep_ms / 1000.0)
+        return open_tool_id
+
+    async def _execute_error(self, *, session_id: str, step: Step, open_tool_id: str | None) -> str | None:
+        # Close any currently open tool as failed first.
+        if open_tool_id is not None:
+            await self._close_tool(session_id=session_id, tool_call_id=open_tool_id, status="failed")
+        # Emit a new tool event that immediately fails.
+        tool_id = str(uuid4())
+        title = step.tool_name or "error"
+        await self._start_tool(session_id=session_id, tool_call_id=tool_id, kind="execute", title=title)
+        if step.content.strip():
+            await self._send_text(session_id=session_id, text=step.content)
+        await self._close_tool(session_id=session_id, tool_call_id=tool_id, status="failed")
+        return None
+
     # ------------------------------------------------------------------
     # Low-level ACP helpers
     # ------------------------------------------------------------------
@@ -334,14 +379,14 @@ class ConfigurableFakeAcpAgent(Agent):
         conn = self._require_conn()
         await conn.session_update(
             session_id=session_id,
-            update=start_tool_call(tool_call_id=tool_call_id, title=title, kind=cast(object, kind)),
+            update=start_tool_call(tool_call_id=tool_call_id, title=title, kind=cast(ToolKind, kind)),
         )
 
     async def _close_tool(self, *, session_id: str, tool_call_id: str, status: str = "completed") -> None:
         conn = self._require_conn()
         await conn.session_update(
             session_id=session_id,
-            update=update_tool_call(tool_call_id=tool_call_id, status=cast(object, status)),
+            update=update_tool_call(tool_call_id=tool_call_id, status=cast(ToolCallStatus, status)),
         )
 
     async def _send_text(self, *, session_id: str, text: str) -> None:
@@ -356,6 +401,14 @@ class ConfigurableFakeAcpAgent(Agent):
         if self._conn is None:
             raise RuntimeError(MISSING_CONNECTION_ERROR)
         return self._conn
+
+    @staticmethod
+    def _build_state(session: _SessionState) -> dict[str, Any]:
+        return {
+            "last_user_message": session.last_user_message,
+            "last_rule": session.last_rule,
+            **session.session_variables,
+        }
 
     @staticmethod
     async def _flush() -> None:
@@ -379,20 +432,26 @@ class ConfigurableFakeAcpAgent(Agent):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run configurable fake ACP agent from a YAML rule file.")
     parser.add_argument(
-        "--rules",
+        "--script",
         type=Path,
         default=Path(__file__).with_name("example_rules.yaml"),
         help="Path to the YAML rules file (default: example_rules.yaml next to this script).",
     )
-    parser.add_argument("--log-level", default="INFO", help="Log level.")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose (DEBUG) logging.",
+    )
+    parser.add_argument("--log-level", default="INFO", help="Log level (overridden by --verbose).")
     return parser.parse_args()
 
 
 async def _main() -> int:
     load_dotenv(override=False)
     args = parse_args()
-    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
-    config = load_rule_config(args.rules)
+    log_level = logging.DEBUG if args.verbose else getattr(logging, str(args.log_level).upper(), logging.INFO)
+    logging.basicConfig(level=log_level)
+    config = load_rule_config(args.script)
     agent = ConfigurableFakeAcpAgent(config)
     await run_agent(agent, use_unstable_protocol=True)
     return 0

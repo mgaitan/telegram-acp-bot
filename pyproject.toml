@@ -90,6 +90,9 @@ addopts = [
     "-ra",                       # Show extra test summary info for all except passed tests
 ]
 
+[tool.ty.environment]
+extra-paths = ["scripts/demo"]
+
 [project.urls]
 Homepage = "https://mgaitan.github.io/telegram-acp-bot"
 Documentation = "https://mgaitan.github.io/telegram-acp-bot"
@@ -102,7 +105,11 @@ Funding = "https://github.com/sponsors/mgaitan"
 telegram-acp-bot = "telegram_acp_bot:main"
 
 [dependency-groups]
+scripts = [
+    "pyyaml>=6.0",
+]
 test = [
+    { include-group = "scripts" },
     "pytest>=9.0.1",
     "pytest-freezer>=0.4.9",
     "pytest-mock>=3.15.0",
@@ -112,6 +119,7 @@ test = [
 lint = ["ruff"]
 qa = [
     { include-group = "lint" },
+    { include-group = "scripts" },
     "ty>=0.0.19",
     "playwright>=1.55.0",
 ]
