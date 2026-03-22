@@ -1,0 +1,80 @@
+# Example rules file for the configurable fake ACP agent.
+#
+# Run with:
+#   uv run scripts/demo/configurable_fake_agent.py --rules scripts/demo/example_rules.yaml
+#
+# Or as an --agent-command when starting the Telegram bot:
+#   telegram-acp-bot \
+#       --agent-command "uv run scripts/demo/configurable_fake_agent.py --rules scripts/demo/example_rules.yaml" \
+#       ...
+
+version: 1
+
+defaults:
+  variables:
+    threshold: 10
+
+rules:
+  # ------------------------------------------------------------------ #
+  # Greeting                                                            #
+  # ------------------------------------------------------------------ #
+  - name: greeting
+    when:
+      message_regex: "(?i)hola|hello|buenas|hi\\b"
+    then:
+      - type: thought
+        content: "The user is greeting us."
+      - type: final
+        content: "Hola. ¿En qué te puedo ayudar?"
+
+  # ------------------------------------------------------------------ #
+  # Search flow                                                         #
+  # ------------------------------------------------------------------ #
+  - name: search-flow
+    when:
+      message_regex: "(?i)buscar|search"
+    then:
+      - type: thought
+        content: "I should search for relevant information."
+      - type: tool_call
+        tool_name: "search"
+        args:
+          query: "{{ message }}"
+      - type: tool_result
+        content: "Fake search result for: {{ message }}"
+      - type: final
+        content: "Encontré un resultado de prueba."
+
+  # ------------------------------------------------------------------ #
+  # Numeric threshold                                                   #
+  # ------------------------------------------------------------------ #
+  - name: numeric-above-threshold
+    when:
+      message_regex: "^\\d+(\\.\\d+)?$"
+      numeric_gt:
+        value_from: message
+        gt: 10
+    then:
+      - type: thought
+        content: "The user sent a number greater than {{ variables.threshold }}."
+      - type: final
+        content: "El número {{ message }} es mayor a {{ variables.threshold }}."
+
+  - name: numeric-below-threshold
+    when:
+      message_regex: "^\\d+(\\.\\d+)?$"
+    then:
+      - type: thought
+        content: "The user sent a small number."
+      - type: final
+        content: "El número {{ message }} es menor o igual a {{ variables.threshold }}."
+
+  # ------------------------------------------------------------------ #
+  # Fallback (no `when` → always matches if nothing else did)          #
+  # ------------------------------------------------------------------ #
+  - name: fallback
+    then:
+      - type: thought
+        content: "I received a message I don't have a specific rule for."
+      - type: final
+        content: "No entendí tu mensaje: «{{ message }}»"
