@@ -1,0 +1,132 @@
+# Example rules file for the configurable fake ACP agent.
+#
+# Run with:
+#   uv run scripts/demo/configurable_fake_agent.py --script scripts/demo/example_rules.yaml
+#
+# Or as an --agent-command when starting the Telegram bot:
+#   telegram-acp-bot \
+#       --agent-command "uv run scripts/demo/configurable_fake_agent.py --script scripts/demo/example_rules.yaml" \
+#       ...
+
+version: 1
+
+defaults:
+  variables:
+    threshold: 10
+
+rules:
+  # ------------------------------------------------------------------ #
+  # Greeting — flat message_regex condition                             #
+  # ------------------------------------------------------------------ #
+  - name: greeting
+    when:
+      message_regex: "(?i)hola|hello|buenas|hi\\b"
+    then:
+      - type: thought
+        content: "The user is greeting us."
+      - type: final
+        content: "Hola. ¿En qué te puedo ayudar?"
+
+  # ------------------------------------------------------------------ #
+  # Search flow — message_contains + tool_call/tool_result             #
+  # ------------------------------------------------------------------ #
+  - name: search-flow
+    when:
+      message_contains: "search"
+    set_variables:
+      last_intent: search
+    then:
+      - type: thought
+        content: "I should search for relevant information."
+      - type: tool_call
+        tool_name: "search"
+        args:
+          query: "{{ message }}"
+      - type: tool_result
+        content: "Fake search result for: {{ message }}"
+      - type: final
+        content: "Encontré un resultado de prueba. Previous turn intent: {{ state.last_intent }}."
+
+  # ------------------------------------------------------------------ #
+  # Big number — compound all condition                                 #
+  # ------------------------------------------------------------------ #
+  - name: numeric-above-threshold
+    when:
+      all:
+        - message_regex: "^\\d+(\\.\\d+)?$"
+        - numeric_gt:
+            value_from: message
+            gt: 10
+    then:
+      - type: thought
+        content: "The user sent a number greater than {{ variables.threshold }}."
+      - type: final
+        content: "El número {{ message }} es mayor a {{ variables.threshold }}."
+
+  # ------------------------------------------------------------------ #
+  # Small number — numeric_lt condition                                 #
+  # ------------------------------------------------------------------ #
+  - name: numeric-below-threshold
+    when:
+      all:
+        - message_regex: "^\\d+(\\.\\d+)?$"
+        - numeric_lt:
+            value_from: message
+            lt: 10
+    then:
+      - type: thought
+        content: "The user sent a small number."
+      - type: final
+        content: "El número {{ message }} es menor que {{ variables.threshold }}."
+
+  # ------------------------------------------------------------------ #
+  # Slow response demo — sleep step type                                #
+  # ------------------------------------------------------------------ #
+  - name: slow-response
+    when:
+      message_contains: "slow"
+    then:
+      - type: thought
+        content: "Taking my time…"
+      - type: sleep
+        sleep_ms: 500
+      - type: final
+        content: "Done (after a short pause)."
+
+  # ------------------------------------------------------------------ #
+  # Error simulation — error step type                                  #
+  # ------------------------------------------------------------------ #
+  - name: error-demo
+    when:
+      message_contains: "fail"
+    then:
+      - type: thought
+        content: "Something is about to go wrong."
+      - type: error
+        tool_name: "risky_operation"
+        content: "Operation failed as expected."
+      - type: final
+        content: "The operation failed. Last rule was: {{ state.last_rule }}."
+
+  # ------------------------------------------------------------------ #
+  # Multi-turn — use state from previous turns                         #
+  # ------------------------------------------------------------------ #
+  - name: repeat-last
+    when:
+      message_contains: "repeat"
+    then:
+      - type: final
+        content: "You last said: «{{ state.last_user_message }}» (matched rule: {{ state.last_rule }})."
+
+  # ------------------------------------------------------------------ #
+  # Explicit default fallback (default: true)                          #
+  # ------------------------------------------------------------------ #
+  - name: fallback
+    when:
+      default: true
+    then:
+      - type: thought
+        content: "I received a message I don't have a specific rule for."
+      - type: final
+        content: "No entendí tu mensaje: «{{ message }}»"
+
