@@ -116,7 +116,19 @@ Restart requested. Re-launching process...
 Session restarted: <session_id> in <workspace>
 ```
 
-Then it exits polling and re-execs the process (or uses `ACP_RESTART_COMMAND` if configured).
+Then it exits polling and re-execs the process using the original command line.
+
+To relaunch with explicit bot CLI args instead, pass them after `/restart`:
+
+```text
+/restart --activity-mode verbose
+```
+
+Or use `--` to make the override form explicit:
+
+```text
+/restart -- --activity-mode verbose
+```
 
 If there is no active session, it replies:
 

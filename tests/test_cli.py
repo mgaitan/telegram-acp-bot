@@ -8,7 +8,8 @@ from importlib import metadata
 
 import pytest
 
-from telegram_acp_bot import get_version, main
+import telegram_acp_bot
+from telegram_acp_bot import get_version, main, validate_restart_cli_args
 from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE
 
@@ -132,11 +133,16 @@ def test_main_reexecs_process_on_restart_request(mocker):
     )
 
 
-def test_main_reexecs_using_restart_command(mocker):
-    """When restart command is configured, main re-execs using that command."""
+def test_main_restart_reuses_original_argv_even_when_restart_command_is_set(mocker):
+    """Plain /restart keeps the original argv even when restart-command is configured."""
     mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)
-    mock_execvp = mocker.patch("telegram_acp_bot.os.execvp", side_effect=OSError("execvp failed"))
-    mock_execv = mocker.patch("telegram_acp_bot.os.execv")
+    mock_execvp = mocker.patch("telegram_acp_bot.os.execvp")
+    mock_execv = mocker.patch("telegram_acp_bot.os.execv", side_effect=OSError("exec failed"))
+    mocker.patch(
+        "telegram_acp_bot.sys.argv",
+        ["telegram-acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent", "--activity-mode", "compact"],
+    )
+    mocker.patch("telegram_acp_bot.sys.executable", "/usr/bin/python3")
 
     assert (
         main(
@@ -151,11 +157,45 @@ def test_main_reexecs_using_restart_command(mocker):
         )
         == 1
     )
-    mock_execvp.assert_called_once_with(
-        "uv",
-        ["uv", "run", "telegram-acp-bot", "--telegram-token", "TOKEN", "--agent-command", "agent"],
+    mock_execvp.assert_not_called()
+    mock_execv.assert_called_once_with(
+        "/usr/bin/python3",
+        [
+            "/usr/bin/python3",
+            "telegram-acp-bot",
+            "--telegram-token",
+            "TOKEN",
+            "--agent-command",
+            "agent",
+            "--activity-mode",
+            "compact",
+        ],
     )
-    mock_execv.assert_not_called()
+
+
+def test_validate_restart_cli_args_rejects_invalid_option():
+    error = validate_restart_cli_args(["--bogus-option"])
+
+    assert error is not None
+    assert "--bogus-option" in error
+
+
+def test_run_bot_loop_reexecs_with_explicit_restart_cli_args(mocker):
+    mocker.patch("telegram_acp_bot.run_polling", return_value=RESTART_EXIT_CODE)
+    mock_execv = mocker.patch("telegram_acp_bot.os.execv", side_effect=OSError("exec failed"))
+    mocker.patch("telegram_acp_bot.sys.argv", ["telegram-acp-bot", "--activity-mode", "compact"])
+    mocker.patch("telegram_acp_bot.sys.executable", "/usr/bin/python3")
+
+    bridge = mocker.Mock()
+    bridge.consume_restart_cli_args.return_value = ["--activity-mode", "verbose"]
+
+    config = mocker.Mock()
+
+    assert telegram_acp_bot._run_bot_loop(config, bridge) == 1
+    mock_execv.assert_called_once_with(
+        "/usr/bin/python3",
+        ["/usr/bin/python3", "telegram-acp-bot", "--activity-mode", "verbose"],
+    )
 
 
 def test_main_uses_env_token(mocker, monkeypatch):

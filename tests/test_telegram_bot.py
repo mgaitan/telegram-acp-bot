@@ -511,6 +511,70 @@ async def test_restart_requests_app_stop():
     assert stop_calls == ["stop"]
 
 
+async def test_restart_with_cli_overrides_requests_app_stop():
+    service = EchoAgentService(SessionRegistry())
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=service,
+    )
+    bridge.set_restart_arg_validator(lambda args: None if args == ["--activity-mode", "verbose"] else "bad")
+    update = make_update(with_message=True)
+    stop_calls: list[str] = []
+    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+    session_id = await service.new_session(chat_id=TEST_CHAT_ID, workspace=Path("/tmp/restart-workspace"))
+
+    await bridge.restart(update, make_context(args=["--activity-mode", "verbose"]))
+
+    assert update.message is not None
+    assert update.message.replies == [
+        "Restart requested. Re-launching process...\n"
+        f"Session restarted: {session_id} in /tmp/restart-workspace\n"
+        "CLI overrides:\n\n--activity-mode verbose"
+    ]
+    assert stop_calls == ["stop"]
+    assert bridge.consume_restart_cli_args() == ["--activity-mode", "verbose"]
+
+
+async def test_restart_with_double_dash_and_no_args_requests_empty_override_restart():
+    service = EchoAgentService(SessionRegistry())
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=service,
+    )
+    bridge.set_restart_arg_validator(lambda args: None if args == [] else "bad")
+    update = make_update(with_message=True)
+    stop_calls: list[str] = []
+    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+    session_id = await service.new_session(chat_id=TEST_CHAT_ID, workspace=Path("/tmp/restart-workspace"))
+
+    await bridge.restart(update, make_context(args=["--"]))
+
+    assert update.message is not None
+    assert update.message.replies == [
+        "Restart requested. Re-launching process...\n"
+        f"Session restarted: {session_id} in /tmp/restart-workspace\n"
+        "CLI overrides:\n\n<none>"
+    ]
+    assert stop_calls == ["stop"]
+    assert bridge.consume_restart_cli_args() == []
+
+
+async def test_restart_with_invalid_cli_overrides_reports_pretty_error():
+    bridge = make_bridge()
+    bridge.set_restart_arg_validator(lambda args: "error: unrecognized arguments: --bogus" if args else None)
+    update = make_update(with_message=True)
+    stop_calls: list[str] = []
+    bridge._app = cast(Application, SimpleNamespace(stop_running=lambda: stop_calls.append("stop")))
+
+    await bridge.restart(update, make_context(args=["--bogus"]))
+
+    assert update.message is not None
+    assert update.message.replies == [
+        "Restart aborted. Invalid CLI arguments.\n\nerror: unrecognized arguments: --bogus"
+    ]
+    assert stop_calls == []
+
+
 async def test_restart_with_index_resumes_selected_candidate():
     service = ResumeService()
     bridge = TelegramBridge(
@@ -535,7 +599,9 @@ async def test_restart_with_workspace_arg_only_reports_usage():
     await bridge.restart(update, make_context(args=["/tmp/ws"]))
 
     assert update.message is not None
-    assert update.message.replies == ["Usage: /restart or /restart N [workspace]"]
+    assert update.message.replies == [
+        "Usage: /restart, /restart N [workspace], /restart -- [bot args...], or /restart --activity-mode verbose"
+    ]
 
 
 async def test_restart_with_too_many_args_reports_usage():
@@ -545,7 +611,9 @@ async def test_restart_with_too_many_args_reports_usage():
     await bridge.restart(update, make_context(args=["1", "/tmp/ws", "extra"]))
 
     assert update.message is not None
-    assert update.message.replies == ["Usage: /restart or /restart N [workspace]"]
+    assert update.message.replies == [
+        "Usage: /restart, /restart N [workspace], /restart -- [bot args...], or /restart --activity-mode verbose"
+    ]
 
 
 async def test_restart_with_zero_index_reports_usage():
@@ -585,7 +653,9 @@ async def test_restart_with_two_indexes_reports_usage():
     await bridge.restart(update, make_context(args=["1", "2"]))
 
     assert update.message is not None
-    assert update.message.replies == ["Usage: /restart or /restart N [workspace]"]
+    assert update.message.replies == [
+        "Usage: /restart, /restart N [workspace], /restart -- [bot args...], or /restart --activity-mode verbose"
+    ]
 
 
 async def test_restart_with_two_workspace_args_reports_usage():
@@ -595,7 +665,9 @@ async def test_restart_with_two_workspace_args_reports_usage():
     await bridge.restart(update, make_context(args=["/tmp/ws1", "/tmp/ws2"]))
 
     assert update.message is not None
-    assert update.message.replies == ["Usage: /restart or /restart N [workspace]"]
+    assert update.message.replies == [
+        "Usage: /restart, /restart N [workspace], /restart -- [bot args...], or /restart --activity-mode verbose"
+    ]
 
 
 async def test_restart_with_index_reports_list_error():

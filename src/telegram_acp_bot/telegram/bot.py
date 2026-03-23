@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import re
+import shlex
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -65,7 +66,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("cancel", "Cancel the current agent operation"),
     ("stop", "Stop the current session"),
     ("clear", "Clear the current session"),
-    ("restart", "Restart the bot [N [workspace]]"),
+    ("restart", "Restart the bot [N [workspace] | -- [args...]]"),
     ("help", "Show available commands"),
 )
 logger = logging.getLogger(__name__)
@@ -130,6 +131,9 @@ class _VerboseActivityMessage:
     kind: str
     title: str
     message_id: int
+
+
+type RestartArgValidator = Callable[[list[str]], str | None]
 
 
 class ChatRequiredError(ValueError):
@@ -202,6 +206,7 @@ class TelegramBridge:
         self._agent_service = agent_service
         self._app: Application | None = None
         self._restart_requested = False
+        self._restart_cli_args: list[str] | None = None
         self._implicit_start_locks_by_chat: dict[int, asyncio.Lock] = {}
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
@@ -215,6 +220,7 @@ class TelegramBridge:
         self._compact_status_tasks: dict[int, asyncio.Task[None]] = {}
         self._verbose_activity_locks: dict[int, asyncio.Lock] = {}
         self._verbose_activity_messages: dict[int, _VerboseActivityMessage] = {}
+        self._restart_arg_validator: RestartArgValidator | None = None
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -380,12 +386,24 @@ class TelegramBridge:
             return
 
         chat_id = self._chat_id(update)
-        parsed_args = self._parse_restart_args(self._context_args(context))
+        raw_args = self._context_args(context)
+        relaunch_args = self._parse_restart_relaunch_args(raw_args)
+        if relaunch_args is not None:
+            error = None
+            if self._restart_arg_validator is not None:
+                error = self._restart_arg_validator(relaunch_args)
+            if error is not None:
+                await self._reply(update, self._format_restart_arg_error(error))
+                return
+            await self._request_process_restart(update=update, chat_id=chat_id, restart_cli_args=relaunch_args)
+            return
+
+        parsed_args = self._parse_restart_args(raw_args)
         if parsed_args is None:
-            await self._reply(update, "Usage: /restart or /restart N [workspace]")
+            await self._reply(update, self._restart_usage())
             return
         if parsed_args.workspace is not None and parsed_args.resume_index is None:
-            await self._reply(update, "Usage: /restart or /restart N [workspace]")
+            await self._reply(update, self._restart_usage())
             return
         if parsed_args.resume_index is not None:
             await self._restart_with_index(
@@ -396,7 +414,7 @@ class TelegramBridge:
             )
             return
 
-        await self._restart_process(update=update, chat_id=chat_id)
+        await self._request_process_restart(update=update, chat_id=chat_id)
 
     async def _restart_with_index(
         self,
@@ -434,7 +452,13 @@ class TelegramBridge:
             include_restart_notice=True,
         )
 
-    async def _restart_process(self, *, update: Update, chat_id: int) -> None:
+    async def _request_process_restart(
+        self,
+        *,
+        update: Update,
+        chat_id: int,
+        restart_cli_args: list[str] | None = None,
+    ) -> None:
         if self._app is None:
             await self._reply(update, "Restart is unavailable: application is not running.")
             return
@@ -443,7 +467,15 @@ class TelegramBridge:
             await self._reply(update, "No active session. Use /new first.")
             return
         session_id, workspace = active_session
-        await self._reply(update, self._format_restart_response(session_id=session_id, workspace=workspace))
+        self._restart_cli_args = restart_cli_args
+        await self._reply(
+            update,
+            self._format_restart_response(
+                session_id=session_id,
+                workspace=workspace,
+                cli_args=restart_cli_args,
+            ),
+        )
         self._restart_requested = True
         self._app.stop_running()
 
@@ -970,8 +1002,25 @@ class TelegramBridge:
         return session_id, workspace
 
     @staticmethod
-    def _format_restart_response(*, session_id: str, workspace: Path) -> str:
-        return f"Restart requested. Re-launching process...\nSession restarted: `{session_id}` in `{workspace}`"
+    def _format_restart_response(*, session_id: str, workspace: Path, cli_args: list[str] | None = None) -> str:
+        response = f"Restart requested. Re-launching process...\nSession restarted: `{session_id}` in `{workspace}`"
+        if cli_args is None:
+            return response
+        if not cli_args:
+            return f"{response}\nCLI overrides:\n```\n<none>\n```"
+        rendered_args = shlex.join(cli_args)
+        return f"{response}\nCLI overrides:\n```\n{rendered_args}\n```"
+
+    @staticmethod
+    def _format_restart_arg_error(error: str) -> str:
+        return f"Restart aborted. Invalid CLI arguments.\n```\n{error.strip()}\n```"
+
+    @staticmethod
+    def _restart_usage() -> str:
+        return (
+            "Usage: /restart, /restart N [workspace], /restart -- [bot args...], "
+            "or /restart --activity-mode verbose"
+        )
 
     def _implicit_start_lock(self, chat_id: int) -> asyncio.Lock:
         lock = self._implicit_start_locks_by_chat.get(chat_id)
@@ -1257,6 +1306,24 @@ class TelegramBridge:
         workspace = self._workspace_from_args([workspace_arg]) if workspace_arg is not None else None
         resume_index = raw_index
         return _RestartArgs(resume_index=resume_index, workspace=workspace)
+
+    @staticmethod
+    def _parse_restart_relaunch_args(args: list[str]) -> list[str] | None:
+        if not args:
+            return None
+        if args[0] == "--":
+            return args[1:]
+        if args[0].startswith("-"):
+            return args
+        return None
+
+    def set_restart_arg_validator(self, validator: RestartArgValidator | None) -> None:
+        self._restart_arg_validator = validator
+
+    def consume_restart_cli_args(self) -> list[str] | None:
+        cli_args = self._restart_cli_args
+        self._restart_cli_args = None
+        return cli_args
 
     @staticmethod
     async def _reply(update: Update, text: str) -> None:

@@ -7,10 +7,12 @@ A Telegram bot that implements Agent Client Protocol to interact with AI agents.
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import os
 import shlex
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from importlib import metadata
 from pathlib import Path
 from typing import cast
@@ -159,10 +161,51 @@ def _resolve_allowed_users(*, parser: argparse.ArgumentParser, opts: argparse.Na
     return allowed_user_ids, allowed_usernames
 
 
+def _validate_runtime_options(*, parser: argparse.ArgumentParser, opts: argparse.Namespace) -> None:
+    if hasattr(opts, "func"):
+        parser.error("restart overrides cannot target a subcommand")
+    if not opts.telegram_token:
+        parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")
+    if not opts.agent_command:
+        parser.error("--agent-command (or ACP_AGENT_COMMAND) is required")
+    if opts.acp_stdio_limit <= 0:
+        parser.error("--acp-stdio-limit must be a positive integer")
+    if opts.acp_connect_timeout <= 0:
+        parser.error("--acp-connect-timeout must be a positive number")
+    _resolve_allowed_users(parser=parser, opts=opts)
+    command_parts = shlex.split(opts.agent_command)
+    if not command_parts:
+        parser.error("--agent-command is empty after parsing")
+
+
+def validate_restart_cli_args(argv: list[str]) -> str | None:
+    """Validate restart override args against the bot CLI.
+
+    Returns a human-readable error string when invalid, otherwise `None`.
+    """
+    load_dotenv(override=False)
+    parser = get_parser()
+    stderr = io.StringIO()
+    stdout = io.StringIO()
+    with redirect_stderr(stderr), redirect_stdout(stdout):
+        try:
+            opts = parser.parse_args(args=argv)
+            _validate_runtime_options(parser=parser, opts=opts)
+        except SystemExit:
+            message = stderr.getvalue().strip() or stdout.getvalue().strip()
+            return message or "invalid restart arguments"
+    return None
+
+
+def _build_restart_argv(cli_args: list[str] | None) -> list[str]:
+    if cli_args is None:
+        return [sys.executable, *sys.argv]
+    return [sys.executable, sys.argv[0], *cli_args]
+
+
 def _run_bot_loop(
     config: BotConfig,
     bridge: TelegramBridge,
-    restart_command_parts: list[str] | None,
 ) -> int:
     """Poll until normal exit; re-exec the process on restart requests."""
     while True:
@@ -170,15 +213,7 @@ def _run_bot_loop(
         if exit_code != RESTART_EXIT_CODE:
             return exit_code
         try:
-            if restart_command_parts is not None:
-                logging.info(
-                    "Restart requested via Telegram command. Re-execing restart command: %s",
-                    restart_command_parts,
-                )
-                os.execvp(restart_command_parts[0], restart_command_parts)
-            # TODO: Drop manual re-exec when uv can natively watch local package code and
-            # restart commands for this workflow. Tracking: astral-sh/uv#9652.
-            argv = [sys.executable, *sys.argv]
+            argv = _build_restart_argv(bridge.consume_restart_cli_args())
             logging.info("Restart requested via Telegram command. Re-execing: %s", argv)
             os.execv(sys.executable, argv)
         except OSError:
@@ -210,20 +245,12 @@ def main(args: list[str] | None = None) -> int:
         close_replaced_handlers=True,
     )
 
-    if not opts.telegram_token:
-        parser.error("--telegram-token (or TELEGRAM_BOT_TOKEN) is required")
-    if not opts.agent_command:
-        parser.error("--agent-command (or ACP_AGENT_COMMAND) is required")
-    if opts.acp_stdio_limit <= 0:
-        parser.error("--acp-stdio-limit must be a positive integer")
-    if opts.acp_connect_timeout <= 0:
-        parser.error("--acp-connect-timeout must be a positive number")
+    _validate_runtime_options(parser=parser, opts=opts)
     allowed_user_ids, allowed_usernames = _resolve_allowed_users(parser=parser, opts=opts)
 
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
         parser.error("--agent-command is empty after parsing")
-    restart_command_parts = shlex.split(opts.restart_command) if opts.restart_command.strip() else None
     channel_state_file = default_state_file(pid=os.getpid())
     mcp_servers = _default_mcp_servers(telegram_token=opts.telegram_token, state_file=channel_state_file)
 
@@ -246,7 +273,8 @@ def main(args: list[str] | None = None) -> int:
         connect_timeout=opts.acp_connect_timeout,
     )
     bridge = TelegramBridge(config=config, agent_service=service)
-    return _run_bot_loop(config, bridge, restart_command_parts)
+    bridge.set_restart_arg_validator(validate_restart_cli_args)
+    return _run_bot_loop(config, bridge)
 
 
 __all__: list[str] = ["get_parser", "main"]

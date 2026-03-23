@@ -18,7 +18,8 @@ The bot entrypoint is `telegram-acp-bot`.
 
 - `--restart-command`
   Default: {term}`ACP_RESTART_COMMAND`.
-  Optional command used by `/restart` to relaunch the process.
+  Deprecated legacy setting for custom relaunch commands.
+  Plain `/restart` now always reuses the original process command line.
 
 - `--allowed-user-id`
   Repeatable allowlist of Telegram user IDs.
@@ -64,8 +65,9 @@ The bot entrypoint is `telegram-acp-bot`.
 ## Notes
 
 - `/restart` behavior:
-  - If {term}`ACP_RESTART_COMMAND` (or `--restart-command`) is set, that command is executed.
-  - Otherwise, the bot re-execs itself using `sys.executable + sys.argv`.
+  - Plain `/restart` re-execs the bot using the original process command line.
+  - `/restart -- [bot args...]` relaunches the bot with explicit CLI args instead of the original ones.
+  - `/restart --activity-mode verbose` is accepted as shorthand for passing explicit bot args directly.
   - It requires an active session and reports session context (`session_id`, `workspace`) in the response.
   - `/restart N [workspace]` selects and loads a resumable session in-process (no process relaunch), but keeps the same restart acknowledgment text for UX consistency.
 - Access control behavior:
