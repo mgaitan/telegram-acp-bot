@@ -149,6 +149,7 @@ class _ActiveToolBlock:
     kind: str
     title: str
     chunks: list[str] = field(default_factory=list)
+    last_emitted_text: str = ""
 
 
 class _AcpClient:
@@ -237,9 +238,9 @@ class _AcpClient:
         if not isinstance(update, AgentMessageChunk):
             return
 
-        self._capture_agent_message(session_id=session_id, update=update)
+        await self._capture_agent_message(session_id=session_id, update=update)
 
-    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:  # noqa: C901
+    async def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:  # noqa: C901
         content = update.content
         text = "<content>"
         is_text_chunk = isinstance(content, TextContentBlock)
@@ -287,12 +288,42 @@ class _AcpClient:
         if target is not None:
             if is_text_chunk:
                 self._append_text_chunk(target, text)
+                await self._emit_incremental_text_block(session_id=session_id)
             else:
                 target.append(text)
             return
 
         assert not is_text_chunk
         self._buffers.setdefault(session_id, []).append(text)
+
+    async def _emit_incremental_text_block(self, *, session_id: str) -> None:
+        active_block = self._active_tool_blocks.get(session_id)
+        if active_block is not None:
+            text = "".join(active_block.chunks).strip()
+            if not text:
+                return
+            active_block.last_emitted_text = text
+            await self._emit_activity_block(
+                session_id=session_id,
+                block=AgentActivityBlock(
+                    kind=active_block.kind,
+                    title=active_block.title,
+                    status="in_progress",
+                    text=text,
+                ),
+            )
+            return
+
+        pending = self._pending_non_tool_text.get(session_id)
+        if not pending:
+            return
+        text = "".join(pending).strip()
+        if not text:
+            return
+        await self._emit_activity_block(
+            session_id=session_id,
+            block=AgentActivityBlock(kind="think", title="", status="in_progress", text=text),
+        )
 
     @staticmethod
     def _append_text_chunk(target: list[str], chunk: str) -> None:
@@ -347,6 +378,21 @@ class _AcpClient:
         if is_prompt_end and active_block.kind != "think" and block_text:
             self._buffers.setdefault(session_id, []).append(block_text)
             block_text = ""
+        if (
+            normalized_status == "in_progress"
+            and block_text
+            and block_text == active_block.last_emitted_text
+        ):
+            self._completed_tool_blocks.setdefault(session_id, []).append(
+                AgentActivityBlock(
+                    kind=active_block.kind,
+                    title=active_block.title,
+                    status=cast(ToolCallStatus, normalized_status),
+                    text=block_text,
+                )
+            )
+            self._active_tool_blocks[session_id] = None
+            return
         block = AgentActivityBlock(
             kind=active_block.kind,
             title=active_block.title,

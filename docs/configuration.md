@@ -60,7 +60,9 @@ ACP_LOG_FORMAT
 ACP_ACTIVITY_MODE
   Controls how intermediate agent activity events are shown in Telegram.
   Allowed values: `verbose`, `compact`.
-  `verbose` (default) emits each agent event as its own message.
+  `verbose` (default) keeps the full runtime flow visible and updates the
+  current activity message in place while new thinking text or tool output
+  arrives.
   `compact` collapses all events into a single in-place status message
   that is replaced by the final answer when the agent responds.
   While work is in progress, that same compact message keeps the normal

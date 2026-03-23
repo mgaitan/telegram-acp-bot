@@ -51,6 +51,9 @@ The bot entrypoint is `telegram-acp-bot`.
 - `--activity-mode`
   Default: {term}`ACP_ACTIVITY_MODE`.
   Allowed values: `verbose`, `compact`.
+  In `verbose`, the bot keeps the full runtime flow visible and updates the
+  current activity message in place as more thinking text or tool output
+  arrives.
   In `compact`, the bot keeps a single in-progress reply message per prompt,
   updates that message in place, and keeps the normal activity emoji in the
   message text while work is in progress.

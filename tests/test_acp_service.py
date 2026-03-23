@@ -514,6 +514,40 @@ async def test_acp_client_emits_live_activity_blocks():
     assert events[1] == AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="")
 
 
+async def test_acp_client_emits_incremental_updates_for_active_tool_text():
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-incremental-tool"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=ToolCallStart(title="Run command", tool_call_id="tool-exec", kind="execute", session_update="tool_call"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("first line"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block(" second line"), session_update="agent_message_chunk"),
+    )
+
+    assert events == [
+        AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text=""),
+        AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="first line"),
+        AgentActivityBlock(kind="execute", title="Run command", status="in_progress", text="first line second line"),
+    ]
+
+
 async def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
     events: list[AgentActivityBlock] = []
 
@@ -551,9 +585,39 @@ async def test_acp_client_flushes_non_tool_text_as_thinking_before_next_tool():
     )
 
     reply = await client.finish_capture(session_id)
-    assert events[0] == AgentActivityBlock(kind="think", title="", status="completed", text="first thought")
-    assert events[1] == AgentActivityBlock(kind="execute", title="Run git log", status="in_progress", text="")
+    assert events[0] == AgentActivityBlock(kind="think", title="", status="in_progress", text="first thought")
+    assert events[1] == AgentActivityBlock(kind="think", title="", status="completed", text="first thought")
+    assert events[2] == AgentActivityBlock(kind="execute", title="Run git log", status="in_progress", text="")
     assert reply.text == "final output"
+
+
+async def test_acp_client_emits_incremental_updates_for_pending_thinking():
+    events: list[AgentActivityBlock] = []
+
+    async def allow_first(_: str, options: list[PermissionOption], tool_call: ToolCall) -> RequestPermissionResponse:
+        del options, tool_call
+        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+    async def capture_event(_: str, block: AgentActivityBlock) -> None:
+        events.append(block)
+
+    client = _AcpClient(permission_decider=allow_first, activity_reporter=capture_event)
+    session_id = "s-incremental-think"
+    client.start_capture(session_id)
+
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block("first thought"), session_update="agent_message_chunk"),
+    )
+    await client.session_update(
+        session_id=session_id,
+        update=AgentMessageChunk(content=text_block(" continues"), session_update="agent_message_chunk"),
+    )
+
+    assert events == [
+        AgentActivityBlock(kind="think", title="", status="in_progress", text="first thought"),
+        AgentActivityBlock(kind="think", title="", status="in_progress", text="first thought continues"),
+    ]
 
 
 async def test_acp_client_drops_empty_non_tool_text_when_flushing():

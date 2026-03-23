@@ -123,6 +123,15 @@ class _PendingPrompt:
     notify_msg_id: int | None = field(default=None)
 
 
+@dataclass(slots=True, frozen=True)
+class _VerboseActivityMessage:
+    """Tracks the editable Telegram message for the active verbose block."""
+
+    kind: str
+    title: str
+    message_id: int
+
+
 class ChatRequiredError(ValueError):
     """Raised when a Telegram update does not include a chat object."""
 
@@ -204,6 +213,8 @@ class TelegramBridge:
         self._compact_status_label: dict[int, str] = {}
         # Background animation task per chat for `. .. ...` progress.
         self._compact_status_tasks: dict[int, asyncio.Task[None]] = {}
+        self._verbose_activity_locks: dict[int, asyncio.Lock] = {}
+        self._verbose_activity_messages: dict[int, _VerboseActivityMessage] = {}
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -503,7 +514,35 @@ class TelegramBridge:
 
         workspace = self._activity_workspace(chat_id=chat_id)
         text = self._format_activity_block(block, workspace=workspace)
-        await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+        lock = self._verbose_activity_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            active = self._verbose_activity_messages.get(chat_id)
+            same_block = active is not None and active.kind == block.kind and active.title == block.title
+            if same_block:
+                assert active is not None
+                edited = await TelegramBridge._edit_markdown_in_chat(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=active.message_id,
+                    text=text,
+                )
+                if edited:
+                    if block.status != "in_progress":
+                        self._clear_verbose_activity_state(chat_id)
+                    return
+                self._clear_verbose_activity_state(chat_id)
+
+            sent = await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+            if sent is None:
+                return
+            if block.status == "in_progress":
+                self._verbose_activity_messages[chat_id] = _VerboseActivityMessage(
+                    kind=block.kind,
+                    title=block.title,
+                    message_id=sent.message_id,
+                )
+            else:
+                self._clear_verbose_activity_state(chat_id)
 
     async def _edit_permission_decision_message(self, query: CallbackQuery, *, decision_label: str) -> None:
         try:
@@ -767,6 +806,8 @@ class TelegramBridge:
                     logger.info("Prompt cycle completed")
             elif self._config.compact_activity:
                 await self._clear_compact_status(chat_id)
+            else:
+                self._clear_verbose_activity_state(chat_id)
 
             if pending is None:
                 return
@@ -782,6 +823,7 @@ class TelegramBridge:
             for block in reply.activity_blocks:
                 await self._reply_activity_block(update, block, workspace=workspace)
         await self._send_attachments(update, reply)
+        self._clear_verbose_activity_state(chat_id)
         if reply.text.strip():
             if self._config.compact_activity and self._app is not None:
                 await self._finalize_compact_reply(chat_id=chat_id, update=update, text=reply.text)
@@ -826,6 +868,9 @@ class TelegramBridge:
         task = self._compact_status_tasks.pop(chat_id, None)
         if task is not None:
             task.cancel()
+
+    def _clear_verbose_activity_state(self, chat_id: int) -> None:
+        self._verbose_activity_messages.pop(chat_id, None)
 
     def _ensure_compact_animation(self, *, chat_id: int, message_id: int) -> None:
         task = self._compact_status_tasks.get(chat_id)

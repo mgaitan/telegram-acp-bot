@@ -49,6 +49,7 @@ EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
 EXPECTED_BUSY_NOTIFY_MESSAGES_AFTER_REPLACE = 2
 QUEUED_MESSAGE_ID = 22
 COMPACT_STATUS_MSG_ID = 42
+EXPECTED_VERBOSE_STREAM_EDITS = 2
 
 
 class MarkdownFailureError(TelegramError):
@@ -1468,6 +1469,43 @@ async def test_on_activity_event_markdown_fallback():
 
     assert failing_bot.sent_messages
     assert "parse_mode" not in failing_bot.sent_messages[-1]
+
+
+async def test_verbose_on_activity_event_edits_existing_message_for_same_block():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="first chunk")
+
+    await bridge.on_activity_event(TEST_CHAT_ID, block)
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="think", title="", status="in_progress", text="first chunk second chunk"),
+    )
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert cast(str, bot.edited_messages[0]["text"]).endswith("first chunk second chunk")
+
+
+async def test_verbose_on_activity_event_terminal_update_edits_and_clears_active_message():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="execute", title="Run ls", status="in_progress", text="partial output"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="execute", title="Run ls", status="completed", text="final output"),
+    )
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert "final output" in cast(str, bot.edited_messages[0]["text"])
+    assert TEST_CHAT_ID not in bridge._verbose_activity_messages
 
 
 async def test_resume_keyboard_limits_to_ten_entries():
@@ -3549,3 +3587,39 @@ async def test_compact_live_activity_full_flow_multi_activity():
     assert "Done!" in cast(str, bot.edited_messages[-1]["text"])
     assert bot.reactions == []
     assert TEST_CHAT_ID not in bridge._compact_status_tasks
+
+
+async def test_verbose_live_activity_full_flow_streams_same_block_in_place():
+    class StreamingVerboseService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del text, images, files
+            assert self._activity_handler is not None
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="think", title="", status="in_progress", text="Inspecting"),
+            )
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="think", title="", status="in_progress", text="Inspecting history"),
+            )
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="think", title="", status="completed", text="Inspecting history"),
+            )
+            return AgentReply(text="Final response.")
+
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, StreamingVerboseService()))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == EXPECTED_VERBOSE_STREAM_EDITS
+    assert "Inspecting history" in cast(str, bot.edited_messages[-1]["text"])
+    assert update.message is not None
+    assert "Final response." in update.message.replies[-1]
