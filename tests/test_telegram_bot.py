@@ -449,6 +449,11 @@ def make_compact_bridge() -> TelegramBridge:
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
+def make_verbose_bridge() -> TelegramBridge:
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="verbose")
+    return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+
+
 async def test_make_config():
     config = make_config(token="T", allowed_user_ids=[1, 2, 2], workspace="~/tmp")
     assert config.token == "T"
@@ -3435,6 +3440,39 @@ async def test_edit_markdown_in_chat_convert_error_returns_false_when_edit_fails
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
     )
     assert result is False
+
+
+async def test_verbose_final_reply_replaces_streamed_reply_preview_when_markdown_finishes():
+
+    class StreamingMarkdownReplyService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del text, images, files
+            assert self._activity_handler is not None
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="reply", title="", status="in_progress", text="**bold", activity_id="reply"),
+            )
+            return AgentReply(text="**bold**")
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="verbose"),
+        agent_service=cast(AgentService, StreamingMarkdownReplyService()),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert cast(int, bot.edited_messages[0]["message_id"]) == 1
+    assert cast(str, bot.edited_messages[0]["text"]) == "bold"
+    assert bot.edited_messages[0]["entities"]
+    assert update.message is not None
+    assert update.message.replies == []
 
 
 async def test_compact_stale_status_cleared_when_reply_is_none():

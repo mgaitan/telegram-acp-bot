@@ -425,8 +425,6 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
             self._clear_message(chat_id=chat_id, slot_key="activity:reply")
             if not text:
                 return True
-            if active.source_text and not text.startswith(active.source_text):
-                return False
             chunks = TelegramBridge._render_markdown_chunks(text)
             if not chunks:
                 return True
