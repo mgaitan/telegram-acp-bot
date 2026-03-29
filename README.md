@@ -53,7 +53,7 @@ Message flow:
   - `normal`: separate activity messages, no streaming edits.
   - `compact`: one in-progress status message that becomes the final answer.
   - `verbose`: append-only in-place streaming for active reply text and tool activity.
-- Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, `🔎 Querying project`, and fallback `🔎 Querying`.
+- Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, and `🔎 Querying`.
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
 - In `normal`, the final answer is sent as a separate message after activity blocks.
 - If the final text is empty, no dummy "(no text response)" message is sent.
