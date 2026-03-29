@@ -110,19 +110,21 @@ def _launch_context(
     headless: bool,
 ) -> BrowserContext:
     profile_dir.mkdir(parents=True, exist_ok=True)
-    video_kwargs: dict[str, object] = {}
     if video_dir is not None:
         video_dir.mkdir(parents=True, exist_ok=True)
-        video_kwargs = {
-            "record_video_dir": str(video_dir),
-            "record_video_size": {"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
-        }
+        return playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=headless,
+            viewport={"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
+            args=["--app=https://web.telegram.org/k/", f"--window-size={MOBILE_WIDTH},{MOBILE_HEIGHT}"],
+            record_video_dir=str(video_dir),
+            record_video_size={"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
+        )
     return playwright.chromium.launch_persistent_context(
         user_data_dir=str(profile_dir),
         headless=headless,
         viewport={"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT},
         args=["--app=https://web.telegram.org/k/", f"--window-size={MOBILE_WIDTH},{MOBILE_HEIGHT}"],
-        **video_kwargs,  # type: ignore[arg-type]
     )
 
 
