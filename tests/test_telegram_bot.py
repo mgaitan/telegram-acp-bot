@@ -719,6 +719,28 @@ async def test_restart_with_index_resumes_selected_candidate():
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
+    assert update.message.replies == ["Session resumed: s-resume-1 in /tmp/ws1"]
+
+
+async def test_resume_candidate_with_restart_notice_keeps_relaunch_copy():
+    service = ResumeService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
+    candidate = service.items[0]
+
+    resumed = await bridge._resume_candidate(
+        update=cast(Update, update),
+        chat_id=TEST_CHAT_ID,
+        candidate=candidate,
+        success_label="Session restarted",
+        include_restart_notice=True,
+    )
+
+    assert resumed is True
+    assert update.message is not None
     assert update.message.replies == [
         "Restart requested. Re-launching process...\nSession restarted: s-resume-1 in /tmp/ws1"
     ]
@@ -744,7 +766,7 @@ async def test_restart_with_too_many_args_reports_usage():
     assert update.message.replies == ["Usage: /restart or /restart N [workspace]"]
 
 
-async def test_restart_with_zero_index_reports_usage():
+async def test_restart_with_zero_index_resumes_first_candidate():
     service = ResumeService()
     bridge = TelegramBridge(
         config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
@@ -756,9 +778,7 @@ async def test_restart_with_zero_index_reports_usage():
 
     assert service.loaded == (TEST_CHAT_ID, "s-resume-1", Path("/tmp/ws1"))
     assert update.message is not None
-    assert update.message.replies == [
-        "Restart requested. Re-launching process...\nSession restarted: s-resume-1 in /tmp/ws1"
-    ]
+    assert update.message.replies == ["Session resumed: s-resume-1 in /tmp/ws1"]
 
 
 async def test_restart_with_running_app_and_no_active_session_reports_missing_session():

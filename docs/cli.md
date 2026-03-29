@@ -68,7 +68,7 @@ The bot entrypoint is `telegram-acp-bot`.
   - If {term}`ACP_RESTART_COMMAND` (or `--restart-command`) is set, that command is executed.
   - Otherwise, the bot re-execs itself using `sys.executable + sys.argv`.
   - It requires an active session and reports session context (`session_id`, `workspace`) in the response.
-  - `/restart N [workspace]` selects and loads a resumable session in-process (no process relaunch), but keeps the same restart acknowledgment text for UX consistency.
+  - `/restart N [workspace]` selects and loads a resumable session in-process (no process relaunch) and replies with a resume acknowledgment instead of a relaunch message.
 - Access control behavior:
   - Configure at least one allowlist entry via `--allowed-user-id`, `--allowed-username`,
     {term}`TELEGRAM_ALLOWED_USER_IDS`, or {term}`TELEGRAM_ALLOWED_USERNAMES`.

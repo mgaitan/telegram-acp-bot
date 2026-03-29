@@ -849,8 +849,7 @@ class TelegramBridge:
             update=update,
             chat_id=chat_id,
             candidate=candidates[resume_index],
-            success_label="Session restarted",
-            include_restart_notice=True,
+            success_label="Session resumed",
         )
 
     async def _restart_process(self, *, update: Update, chat_id: int) -> None:
