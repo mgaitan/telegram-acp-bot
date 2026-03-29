@@ -19,7 +19,7 @@ from acp.schema import EnvVariable, McpServerStdio
 from dotenv import load_dotenv
 
 from telegram_acp_bot.acp_app.acp_service import AcpAgentService
-from telegram_acp_bot.acp_app.models import PermissionEventOutput, PermissionMode
+from telegram_acp_bot.acp_app.models import ActivityMode, PermissionEventOutput, PermissionMode
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import configure_logging
 from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
@@ -106,13 +106,14 @@ def get_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--activity-mode",
-        default=os.getenv("ACP_ACTIVITY_MODE", "verbose"),
-        choices=["verbose", "compact"],
+        default=os.getenv("ACP_ACTIVITY_MODE", "normal"),
+        choices=["compact", "normal", "verbose"],
         help=(
             "Activity display mode. "
-            "'verbose' (default) emits each agent event as its own message. "
+            "'normal' (default) emits each activity event as its own message. "
             "'compact' collapses all intermediate events into a single in-place status message "
-            "that is replaced by the final answer when the agent responds."
+            "that is replaced by the final answer when the agent responds. "
+            "'verbose' streams append-only updates for active reply and tool activity."
         ),
     )
     return parser
@@ -232,7 +233,7 @@ def main(args: list[str] | None = None) -> int:
         allowed_user_ids=allowed_user_ids,
         allowed_usernames=allowed_usernames,
         workspace=opts.workspace,
-        compact_activity=opts.activity_mode == "compact",
+        activity_mode=cast(ActivityMode, opts.activity_mode),
     )
     service = AcpAgentService(
         SessionRegistry(),

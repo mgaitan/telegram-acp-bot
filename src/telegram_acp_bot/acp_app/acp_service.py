@@ -74,6 +74,9 @@ logger = logging.getLogger(__name__)
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
 MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
+INCREMENTAL_TEXT_MIN_INTERVAL_SECONDS = 0.35
+INCREMENTAL_TEXT_MIN_DELTA_CHARS = 24
+INCREMENTAL_TEXT_BOUNDARY_CHARS = ("\n", ".", "!", "?", ":", ";")
 PromptContentBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
 )
@@ -149,6 +152,16 @@ class _ActiveToolBlock:
     kind: str
     title: str
     chunks: list[str] = field(default_factory=list)
+    last_emitted_text: str = ""
+    last_emit_monotonic: float = 0.0
+
+
+@dataclass(slots=True)
+class _PendingTextState:
+    """Tracks incremental emission state for streamed non-tool text."""
+
+    last_emitted_text: str = ""
+    last_emit_monotonic: float = 0.0
 
 
 class _AcpClient:
@@ -166,6 +179,7 @@ class _AcpClient:
         self._activity_reporter = activity_reporter
         self._buffers: dict[str, list[str]] = {}
         self._pending_non_tool_text: dict[str, list[str]] = {}
+        self._pending_non_tool_state: dict[str, _PendingTextState] = {}
         self._images: dict[str, list[ImagePayload]] = {}
         self._files: dict[str, list[FilePayload]] = {}
         self._active_tool_blocks: dict[str, _ActiveToolBlock | None] = {}
@@ -174,6 +188,7 @@ class _AcpClient:
     def start_capture(self, session_id: str) -> None:
         self._buffers[session_id] = []
         self._pending_non_tool_text[session_id] = []
+        self._pending_non_tool_state[session_id] = _PendingTextState()
         self._images[session_id] = []
         self._files[session_id] = []
         self._active_tool_blocks[session_id] = None
@@ -183,6 +198,7 @@ class _AcpClient:
         await self._close_active_tool_block(session_id=session_id, status="in_progress", is_prompt_end=True)
         chunks = self._buffers.pop(session_id, [])
         pending_text = self._pending_non_tool_text.pop(session_id, [])
+        self._pending_non_tool_state.pop(session_id, None)
         images = tuple(self._images.pop(session_id, []))
         files = tuple(self._files.pop(session_id, []))
         activity_blocks = tuple(self._completed_tool_blocks.pop(session_id, []))
@@ -221,7 +237,12 @@ class _AcpClient:
             if label != "think":
                 await self._emit_activity_block(
                     session_id=session_id,
-                    block=AgentActivityBlock(kind=label, title=update.title, status="in_progress"),
+                    block=AgentActivityBlock(
+                        kind=label,
+                        title=update.title,
+                        status="in_progress",
+                        activity_id=update.tool_call_id,
+                    ),
                 )
             return
         if isinstance(update, ToolCallProgress):
@@ -237,9 +258,9 @@ class _AcpClient:
         if not isinstance(update, AgentMessageChunk):
             return
 
-        self._capture_agent_message(session_id=session_id, update=update)
+        await self._capture_agent_message(session_id=session_id, update=update)
 
-    def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:  # noqa: C901
+    async def _capture_agent_message(self, *, session_id: str, update: AgentMessageChunk) -> None:  # noqa: C901
         content = update.content
         text = "<content>"
         is_text_chunk = isinstance(content, TextContentBlock)
@@ -287,12 +308,73 @@ class _AcpClient:
         if target is not None:
             if is_text_chunk:
                 self._append_text_chunk(target, text)
+                await self._emit_incremental_text_block(session_id=session_id)
             else:
                 target.append(text)
             return
 
         assert not is_text_chunk
         self._buffers.setdefault(session_id, []).append(text)
+
+    async def _emit_incremental_text_block(self, *, session_id: str) -> None:
+        active_block = self._active_tool_blocks.get(session_id)
+        if active_block is not None:
+            text = "".join(active_block.chunks).strip()
+            if not text:
+                return
+            if not self._should_emit_incremental_text(
+                previous_text=active_block.last_emitted_text,
+                last_emit_monotonic=active_block.last_emit_monotonic,
+                text=text,
+            ):
+                return
+            active_block.last_emitted_text = text
+            active_block.last_emit_monotonic = asyncio.get_running_loop().time()
+            await self._emit_activity_block(
+                session_id=session_id,
+                block=AgentActivityBlock(
+                    kind=active_block.kind,
+                    title=active_block.title,
+                    status="in_progress",
+                    text=text,
+                    activity_id=active_block.tool_call_id,
+                ),
+            )
+            return
+
+        pending = self._pending_non_tool_text.get(session_id)
+        if not pending:
+            return
+        text = "".join(pending).strip()
+        if not text:
+            return
+        state = self._pending_non_tool_state.setdefault(session_id, _PendingTextState())
+        if not self._should_emit_incremental_text(
+            previous_text=state.last_emitted_text,
+            last_emit_monotonic=state.last_emit_monotonic,
+            text=text,
+        ):
+            return
+        state.last_emitted_text = text
+        state.last_emit_monotonic = asyncio.get_running_loop().time()
+        await self._emit_activity_block(
+            session_id=session_id,
+            block=AgentActivityBlock(kind="reply", title="", status="in_progress", text=text, activity_id="reply"),
+        )
+
+    @staticmethod
+    def _should_emit_incremental_text(*, previous_text: str, last_emit_monotonic: float, text: str) -> bool:
+        if text == previous_text:
+            return False
+        if not previous_text:
+            return True
+        if "\n" in text[len(previous_text) :]:
+            return True
+        if len(text) - len(previous_text) >= INCREMENTAL_TEXT_MIN_DELTA_CHARS:
+            return True
+        if text.endswith(INCREMENTAL_TEXT_BOUNDARY_CHARS):
+            return True
+        return (asyncio.get_running_loop().time() - last_emit_monotonic) >= INCREMENTAL_TEXT_MIN_INTERVAL_SECONDS
 
     @staticmethod
     def _append_text_chunk(target: list[str], chunk: str) -> None:
@@ -352,6 +434,7 @@ class _AcpClient:
             title=active_block.title,
             status=cast(ToolCallStatus, normalized_status),
             text=block_text,
+            activity_id=active_block.tool_call_id,
         )
         self._completed_tool_blocks.setdefault(session_id, []).append(block)
         self._active_tool_blocks[session_id] = None
@@ -372,12 +455,15 @@ class _AcpClient:
         if not pending:
             return
         text = "".join(pending).strip()
+        emitted_text = self._pending_non_tool_state.get(session_id, _PendingTextState()).last_emitted_text.strip()
         pending.clear()
+        self._pending_non_tool_state[session_id] = _PendingTextState()
         if not text:
             return
         block = AgentActivityBlock(kind="think", title="", status="completed", text=text)
         self._completed_tool_blocks.setdefault(session_id, []).append(block)
-        await self._emit_activity_block(session_id=session_id, block=block)
+        if emitted_text != text:
+            await self._emit_activity_block(session_id=session_id, block=block)
 
     async def write_text_file(
         self, content: str, path: str, session_id: str, **kwargs: object

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+ActivityMode = Literal["compact", "normal", "verbose"]
 PermissionMode = Literal["deny", "approve", "ask"]
 PermissionDecisionAction = Literal["once", "always", "deny"]
 PermissionEventOutput = Literal["stdout", "off"]
@@ -28,6 +29,7 @@ class AgentActivityBlock:
     title: str
     status: ToolCallStatus
     text: str = ""
+    activity_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
