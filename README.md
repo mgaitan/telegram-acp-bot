@@ -40,18 +40,22 @@ uvx telegram-acp-bot
 
 Current interaction capabilities:
 - `/new [workspace]`, `/resume [N|workspace]`, `/session`, `/cancel`, `/stop`, `/clear`, `/restart [N [workspace]]`
+- `/mode [normal|compact|verbose]` to switch the activity display per chat
 - Interactive permission prompts with inline buttons (`Always`, `This time`, `Deny`)
 - Plain text prompts
-- Tool activity updates are sent as separate messages per ACP tool kind
 - Image and document attachments from Telegram messages
 - ACP `file://` resources are sent as attachments when they resolve to files inside the active workspace
 - Agent markdown output (with fallback to plain text when Telegram rejects entities)
 
 Message flow:
 - The bot sends activity blocks while the prompt is running.
+- Activity display modes:
+  - `normal`: separate activity messages, no streaming edits.
+  - `compact`: one in-progress status message that becomes the final answer.
+  - `verbose`: append-only in-place streaming for active reply text and tool activity.
 - Common labels are `💡 Thinking`, `⚙️ Running`, `📖 Reading`, `✏️ Editing`, `✍️ Writing`, `🌐 Searching web`, `🔎 Querying project`, and fallback `🔎 Querying`.
 - Permission prompts for risky actions are sent as independent messages with inline buttons.
-- The final answer is sent as a separate message after activity blocks.
+- In `normal`, the final answer is sent as a separate message after activity blocks.
 - If the final text is empty, no dummy "(no text response)" message is sent.
 
 For development, `/restart` stops polling and relaunches the process.

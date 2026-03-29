@@ -48,12 +48,16 @@ The bot entrypoint is `telegram-acp-bot`.
   Default: {term}`ACP_CONNECT_TIMEOUT`.
   Timeout in seconds for ACP `initialize` + `new_session` handshake.
 
-- `--activity-mode`
+- `-m`, `--activity-mode`
   Default: {term}`ACP_ACTIVITY_MODE`.
-  Allowed values: `verbose`, `compact`.
+  Allowed values: `normal`, `compact`, `verbose`.
+  In `normal`, the bot sends activity/tool updates as separate messages without
+  streaming edits.
   In `compact`, the bot keeps a single in-progress reply message per prompt,
   updates that message in place, and keeps the normal activity emoji in the
   message text while work is in progress.
+  In `verbose`, the bot streams append-only updates in place for active reply
+  text and tool activity, then finalizes the same message when possible.
 
 - `-V`, `--version`
   Print CLI version and exit.

@@ -88,7 +88,29 @@ Clear current session:
 /clear
 ```
 
-## 6. Busy-state handling
+## 6. Switch activity mode
+
+Show the current mode:
+
+```text
+/mode
+```
+
+Set the mode explicitly:
+
+```text
+/mode normal
+/mode compact
+/mode verbose
+```
+
+The available modes are:
+
+- `normal`: separate activity messages, no streaming edits.
+- `compact`: one in-progress status message that becomes the final answer.
+- `verbose`: in-place append-only streaming for reply text and active tool output.
+
+## 7. Busy-state handling
 
 When you send a message while the agent is already processing a previous prompt, the bot:
 
@@ -103,7 +125,7 @@ The queued notice is updated to `✅ Sent.` so chat state matches what happened.
 
 If the current task finishes naturally before you press the button, your queued message runs automatically and the button is removed (pressing it after that shows "Already sent." with no side effects).
 
-## 7. Restart bot process (dev workflow)
+## 8. Restart bot process (dev workflow)
 
 ```text
 /restart
@@ -142,6 +164,7 @@ You can combine index and workspace filter:
 - The first prompt creates a session implicitly when none is active (including after `/restart`).
 - `/new` replaces the active session for that chat and is intended for explicitly switching to another workspace/session.
 - `/resume` is ACP-native (`session/list` + `session/load`) and depends on agent capabilities.
+- `/mode` is stored per Telegram chat, so different chats can use different activity modes.
 
 ## Logging and traceability
 

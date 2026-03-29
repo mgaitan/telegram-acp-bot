@@ -295,21 +295,20 @@ def test_get_version_package_not_found(mocker):
     assert get_version() == "unknown"
 
 
-def test_main_activity_mode_defaults_to_verbose(mocker):
-    """Default activity mode is verbose (compact_activity=False)."""
+def test_main_activity_mode_defaults_to_normal(mocker):
+    """Default activity mode is normal."""
     mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
     assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
     assert mock_run_polling.call_args is not None
     config = mock_run_polling.call_args.args[0]
+    assert config.activity_mode == "normal"
     assert config.compact_activity is False
 
 
 def test_main_compact_activity_mode_sets_flag(mocker):
     """--activity-mode compact sets compact_activity=True on the config."""
     mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
-    assert (
-        main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--activity-mode", "compact"]) == 0
-    )
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--activity-mode", "compact"]) == 0
     assert mock_run_polling.call_args is not None
     config = mock_run_polling.call_args.args[0]
     assert config.compact_activity is True
@@ -323,3 +322,21 @@ def test_main_activity_mode_env_var_compact(mocker, monkeypatch):
     assert mock_run_polling.call_args is not None
     config = mock_run_polling.call_args.args[0]
     assert config.compact_activity is True
+
+
+def test_main_verbose_activity_mode_sets_flag(mocker):
+    """--activity-mode verbose keeps the verbose activity mode on the config."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent", "--activity-mode", "verbose"]) == 0
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.activity_mode == "verbose"
+
+
+def test_main_activity_mode_short_alias_sets_flag(mocker):
+    """-m verbose is accepted as shorthand for --activity-mode verbose."""
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent", "-m", "verbose"]) == 0
+    assert mock_run_polling.call_args is not None
+    config = mock_run_polling.call_args.args[0]
+    assert config.activity_mode == "verbose"

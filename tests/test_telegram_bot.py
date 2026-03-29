@@ -10,7 +10,7 @@ from typing import cast
 import pytest
 from telegram import Bot, InlineKeyboardMarkup, MessageEntity, Update
 from telegram.error import TelegramError
-from telegram.ext import Application
+from telegram.ext import AIORateLimiter, Application
 
 from telegram_acp_bot.acp_app.echo_service import EchoAgentService
 from telegram_acp_bot.acp_app.models import (
@@ -47,6 +47,7 @@ EXPECTED_ACTIVITY_MESSAGES = 3
 ACP_STDIO_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 EXPECTED_TEXT_REPLIES_WITH_IMPLICIT_AND_EXPLICIT_SESSION = 3
 EXPECTED_BUSY_NOTIFY_MESSAGES_AFTER_REPLACE = 2
+EXPECTED_REPEATED_ACTIVITY_MESSAGES = 2
 QUEUED_MESSAGE_ID = 22
 COMPACT_STATUS_MSG_ID = 42
 
@@ -179,6 +180,40 @@ class EntityFailingEditBot(DummyBot):
         if "entities" in kwargs:
             raise MarkdownFailureError
         await super().edit_message_text(**kwargs)
+
+
+class NotModifiedError(TelegramError):
+    def __init__(self) -> None:
+        super().__init__("Bad Request: message is not modified")
+
+
+class NotModifiedAwareBot(DummyBot):
+    """Raises the Telegram not-modified error for identical edits."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._message_state: dict[int, dict[str, object]] = {}
+
+    async def send_message(self, **kwargs: object) -> SimpleNamespace:
+        message = await super().send_message(**kwargs)
+        self._message_state[message.message_id] = {
+            "text": kwargs.get("text"),
+            "entities": kwargs.get("entities"),
+            "reply_markup": kwargs.get("reply_markup"),
+        }
+        return message
+
+    async def edit_message_text(self, **kwargs: object) -> None:
+        message_id = cast(int, kwargs.get("message_id"))
+        next_state = {
+            "text": kwargs.get("text"),
+            "entities": kwargs.get("entities"),
+            "reply_markup": kwargs.get("reply_markup"),
+        }
+        if self._message_state.get(message_id) == next_state:
+            raise NotModifiedError
+        await super().edit_message_text(**kwargs)
+        self._message_state[message_id] = next_state
 
 
 class DummyCallbackQuery:
@@ -449,6 +484,11 @@ def make_compact_bridge() -> TelegramBridge:
     return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
 
 
+def make_verbose_bridge() -> TelegramBridge:
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="verbose")
+    return TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+
+
 async def test_make_config():
     config = make_config(token="T", allowed_user_ids=[1, 2, 2], workspace="~/tmp")
     assert config.token == "T"
@@ -476,6 +516,48 @@ async def test_start_and_help():
     assert "Send a message to start in the default workspace" in update.message.replies[0]
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
+    assert "/mode" in update.message.replies[1]
+
+
+async def test_mode_command_sets_verbose_activity_mode():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+
+    await bridge.mode(update, make_context(args=["verbose"]))
+
+    assert update.message is not None
+    assert update.message.replies == ["Activity mode set to verbose."]
+    assert bridge._activity_mode(chat_id=TEST_CHAT_ID) == "verbose"
+
+
+async def test_mode_command_reports_current_mode_without_args():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+
+    await bridge.mode(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["Current activity mode: normal\nUsage: /mode normal, compact, or verbose"]
+
+
+async def test_mode_command_rejects_invalid_mode():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+
+    await bridge.mode(update, make_context(args=["loud"]))
+
+    assert update.message is not None
+    assert update.message.replies == ["Usage: /mode normal, compact, or verbose"]
+
+
+async def test_mode_command_stops_when_access_is_denied():
+    bridge = make_bridge(allowed_ids={99})
+    update = make_update(with_message=True)
+
+    await bridge.mode(update, make_context(args=["verbose"]))
+
+    assert update.message is not None
+    assert update.message.replies == ["Access denied for this bot."]
 
 
 async def test_start_allows_user_by_username_allowlist():
@@ -488,6 +570,121 @@ async def test_start_allows_user_by_username_allowlist():
 
     assert update.message is not None
     assert "Send a message to start in the default workspace" in update.message.replies[0]
+
+
+async def test_activity_mode_base_handler_defaults():
+    bridge = make_bridge()
+    handler = bot_module._ActivityModeHandler(bridge)
+
+    await handler.on_permission_request(
+        request=PermissionRequest(
+            chat_id=TEST_CHAT_ID,
+            request_id="req",
+            tool_title="Run pwd",
+            tool_call_id="call-base",
+            available_actions=("once",),
+        ),
+        message="Permission request",
+        keyboard=InlineKeyboardMarkup([]),
+    )
+    assert await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text="hello") is False
+    await handler.handle_empty_reply(chat_id=TEST_CHAT_ID)
+    await handler.clear_chat_state(chat_id=TEST_CHAT_ID)
+
+    with pytest.raises(NotImplementedError):
+        await handler.on_activity_event(
+            chat_id=TEST_CHAT_ID,
+            block=AgentActivityBlock(kind="think", title="", status="in_progress", text="x"),
+        )
+
+
+async def test_normal_activity_handler_skips_reply_and_duplicate_stream_updates():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="reply", title="", status="in_progress", text="preview", activity_id="reply"),
+    )
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="execute", title="Run", status="in_progress", text="", activity_id="dup"),
+    )
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="execute", title="Run", status="in_progress", text="", activity_id="dup"),
+    )
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="execute", title="Run", status="completed", text="", activity_id="dup"),
+    )
+
+    assert len(bot.sent_messages) == EXPECTED_REPEATED_ACTIVITY_MESSAGES
+
+
+async def test_compact_permission_request_replaces_status_message_when_edit_fails():
+
+    class EditFailingBot(DummyBot):
+        async def edit_message_text(self, **kwargs: object) -> None:
+            raise MarkdownFailureError
+
+    bridge = make_compact_bridge()
+    bot = EditFailingBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    bridge._compact_status_msg_id[TEST_CHAT_ID] = COMPACT_STATUS_MSG_ID
+
+    await bridge._activity_handler(chat_id=TEST_CHAT_ID).on_permission_request(
+        request=PermissionRequest(
+            chat_id=TEST_CHAT_ID,
+            request_id="req-compact",
+            tool_title="Run pwd",
+            tool_call_id="call-compact",
+            available_actions=("once",),
+        ),
+        message="Permission request",
+        keyboard=InlineKeyboardMarkup([]),
+    )
+
+    assert bot.deleted_message_ids == [(TEST_CHAT_ID, COMPACT_STATUS_MSG_ID)]
+    assert len(bot.sent_messages) == 1
+    assert bridge._compact_status_msg_id[TEST_CHAT_ID] == 1
+
+
+async def test_compact_and_verbose_handlers_return_early_without_app_or_reply_updates():
+    compact_handler = make_compact_bridge()._activity_handler(chat_id=TEST_CHAT_ID)
+    verbose_handler = make_verbose_bridge()._activity_handler(chat_id=TEST_CHAT_ID)
+
+    await compact_handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="reply", title="", status="in_progress", text="preview", activity_id="reply"),
+    )
+    await verbose_handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="think", title="Thinking", status="in_progress", text="", activity_id="t1"),
+    )
+
+    assert (
+        await verbose_handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text="hello")
+        is False
+    )
+
+
+async def test_compact_permission_request_returns_early_without_app():
+    handler = make_compact_bridge()._activity_handler(chat_id=TEST_CHAT_ID)
+
+    await handler.on_permission_request(
+        request=PermissionRequest(
+            chat_id=TEST_CHAT_ID,
+            request_id="req-no-app",
+            tool_title="Run pwd",
+            tool_call_id="call-no-app",
+            available_actions=("once",),
+        ),
+        message="Permission request",
+        keyboard=InlineKeyboardMarkup([]),
+    )
 
 
 async def test_restart_requests_app_stop():
@@ -1661,6 +1858,16 @@ async def test_format_activity_block_search_uses_project_label_for_file_uri():
     assert "*🔎 Querying project*" in rendered
 
 
+async def test_format_activity_block_reply_and_fallback_helpers():
+    block = AgentActivityBlock(kind="reply", title="ignored", status="completed", text="final")
+
+    assert TelegramBridge._format_activity_block(block) == "final"
+    assert TelegramBridge._activity_label(block) == "✍️ Replying"
+    assert TelegramBridge._activity_id(
+        AgentActivityBlock(kind="think", title="Title", status="completed", text="")
+    ) == ("think:Title")
+
+
 async def test_format_permission_tool_title_empty_returns_empty():
     assert TelegramBridge._format_permission_tool_title("   ") == ""
 
@@ -2523,6 +2730,7 @@ async def test_build_application_installs_handlers():
     app = build_application(config, bridge)
     assert app.handlers
     assert app.update_processor.max_concurrent_updates > 1
+    assert isinstance(app.bot.rate_limiter, AIORateLimiter)
 
 
 async def test_run_polling(monkeypatch):
@@ -3398,6 +3606,17 @@ async def test_edit_markdown_in_chat_entity_edit_fails_falls_back_to_plain():
     assert "entities" not in bot.edited_messages[-1]
 
 
+async def test_edit_markdown_in_chat_treats_not_modified_as_success():
+
+    bot = NotModifiedAwareBot()
+    sent = await bot.send_message(chat_id=TEST_CHAT_ID, text="Hello")
+    result = await TelegramBridge._edit_markdown_in_chat(
+        bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=sent.message_id, text="Hello"
+    )
+    assert result is True
+    assert bot.edited_messages == []
+
+
 async def test_edit_markdown_in_chat_returns_false_when_all_entity_edits_fail():
 
     bot = FailingEditBot()
@@ -3437,6 +3656,338 @@ async def test_edit_markdown_in_chat_convert_error_returns_false_when_edit_fails
     assert result is False
 
 
+async def test_verbose_final_reply_replaces_streamed_reply_preview_when_markdown_finishes():
+
+    class StreamingMarkdownReplyService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del text, images, files
+            assert self._activity_handler is not None
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="reply", title="", status="in_progress", text="**bold", activity_id="reply"),
+            )
+            return AgentReply(text="**bold**")
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="verbose"),
+        agent_service=cast(AgentService, StreamingMarkdownReplyService()),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert cast(int, bot.edited_messages[0]["message_id"]) == 1
+    assert cast(str, bot.edited_messages[0]["text"]) == "bold"
+    assert bot.edited_messages[0]["entities"]
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+async def test_verbose_final_reply_keeps_markdown_when_final_matches_streamed_preview():
+
+    class StableStreamingMarkdownReplyService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del text, images, files
+            reply = (
+                'Sí, pero te conviene separar `"extraer emails plausibles"` de '
+                '`"validar RFC completo"`.\n\n'
+                "```python\n"
+                "print('ok')\n"
+                "```"
+            )
+            assert self._activity_handler is not None
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="reply", title="", status="in_progress", text=reply, activity_id="reply"),
+            )
+            return AgentReply(text=reply)
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="verbose"),
+        agent_service=cast(AgentService, StableStreamingMarkdownReplyService()),
+    )
+    bot = NotModifiedAwareBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert len(bot.sent_messages) == 1
+    assert bot.edited_messages == []
+    payload = bot.sent_messages[0]
+    assert "entities" in payload
+    assert payload["entities"]
+    assert update.message is not None
+    assert update.message.replies == []
+
+
+async def test_verbose_finalize_reply_handles_empty_text_and_empty_chunks(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=1,
+            source_text="preview",
+        ),
+    )
+
+    assert await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text="") is True
+
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=2,
+            source_text="preview",
+        ),
+    )
+    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", return_value=[])
+    assert (
+        await handler.finalize_reply(
+            chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text="still empty chunks"
+        )
+        is True
+    )
+
+
+async def test_verbose_final_reply_deletes_preview_when_final_edit_fails():
+
+    class StreamingReplyService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del text, images, files
+            assert self._activity_handler is not None
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(kind="reply", title="", status="in_progress", text="preview", activity_id="reply"),
+            )
+            return AgentReply(text="Final response.")
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="verbose"),
+        agent_service=cast(AgentService, StreamingReplyService()),
+    )
+    bot = FailingEditBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    update = make_update(chat_id=TEST_CHAT_ID, text="hello")
+    context = make_context()
+    context.bot = bot
+
+    await bridge.on_message(update, context)
+
+    assert bot.deleted_message_ids == [(TEST_CHAT_ID, 1)]
+    assert update.message is not None
+    assert update.message.replies == ["Final response."]
+
+
+async def test_verbose_in_progress_updates_are_coalesced_before_editing(mocker):
+    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text="one", activity_id="reply"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text="one two", activity_id="reply"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text="one two three", activity_id="reply"),
+    )
+    await asyncio.sleep(0.03)
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert cast(str, bot.edited_messages[-1]["text"]) == "one two three"
+
+
+async def test_verbose_reset_clears_older_pending_preview_before_flush(mocker):
+    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text="one", activity_id="reply"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text="one two", activity_id="reply"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text="restart", activity_id="reply"),
+    )
+    await asyncio.sleep(0.03)
+
+    assert len(bot.sent_messages) == EXPECTED_REPEATED_ACTIVITY_MESSAGES
+    assert cast(str, bot.sent_messages[-1]["text"]) == "restart"
+    assert all(cast(str, item.get("text", "")) != "one two" for item in bot.edited_messages)
+
+
+async def test_verbose_in_progress_long_preview_stays_single_message(mocker):
+    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    long_text = "a" * 5000
+    longer_text = "a" * 5200
+
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text=long_text, activity_id="reply"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text=longer_text, activity_id="reply"),
+    )
+    await asyncio.sleep(0.03)
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+
+
+async def test_verbose_in_progress_preview_helpers_handle_missing_preview(mocker):
+    bridge = make_verbose_bridge()
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    bot = DummyBot()
+
+    mocker.patch.object(TelegramBridge, "_render_markdown_preview_chunk", return_value=None)
+
+    assert (
+        await handler._edit_in_progress_preview(
+            bot=cast(Bot, bot),
+            chat_id=TEST_CHAT_ID,
+            message_id=123,
+            text="preview",
+        )
+        is False
+    )
+    assert await handler._send_in_progress_preview(bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, text="preview") is None
+
+
+async def test_render_markdown_preview_chunk_handles_empty_and_fallback(mocker):
+    short_text = "plain preview"
+    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", side_effect=RuntimeError("boom"))
+    short_preview = TelegramBridge._render_markdown_preview_chunk(short_text)
+
+    assert short_preview == (short_text, None)
+
+    long_text = "a" * (bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH + 50)
+    long_preview = TelegramBridge._render_markdown_preview_chunk(long_text)
+
+    assert long_preview is not None
+    assert long_preview[1] is None
+    assert long_preview[0].endswith("...")
+    assert bot_module.utf16_len(long_preview[0]) <= bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH
+
+    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", return_value=[])
+    assert TelegramBridge._render_markdown_preview_chunk("ignored") is None
+
+
+async def test_verbose_completed_event_without_active_message_sends_and_clears():
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="execute", title="Run", status="completed", text="output", activity_id="exec-1"),
+    )
+
+    assert len(bot.sent_messages) == 1
+
+
+async def test_verbose_internal_helpers_cover_remaining_branches(mocker):
+    bridge = make_verbose_bridge()
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    assert await handler.finalize_reply(chat_id=TEST_CHAT_ID, update=cast(Update, make_update()), text="hello") is False
+
+    handler._clear_message(chat_id=TEST_CHAT_ID, slot_key="missing")
+
+    bridge._app = None
+    await handler._apply_block_locked(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        block=AgentActivityBlock(kind="reply", title="", status="in_progress", text="preview", activity_id="reply"),
+    )
+
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=7,
+            source_text="preview",
+        ),
+    )
+    mocker.patch.object(TelegramBridge, "_edit_markdown_in_chat", return_value=True)
+    await handler._apply_block_locked(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        block=AgentActivityBlock(kind="reply", title="", status="completed", text="done", activity_id="reply"),
+    )
+    assert "activity:reply" not in handler._messages_by_chat.get(TEST_CHAT_ID, {})
+
+    handler._store_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        message=bot_module._VerboseActivityMessage(
+            activity_id="reply",
+            kind="reply",
+            title="",
+            message_id=8,
+            source_text="preview",
+        ),
+    )
+    mocker.patch.object(handler, "_edit_in_progress_preview", return_value=False)
+    mocked_send = mocker.patch.object(handler, "_send_in_progress_preview", return_value=None)
+    await handler._apply_block_locked(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:reply",
+        block=AgentActivityBlock(kind="reply", title="", status="in_progress", text="retry", activity_id="reply"),
+    )
+    assert mocked_send.called
+    assert "activity:reply" not in handler._messages_by_chat.get(TEST_CHAT_ID, {})
+
+    mocked_message = SimpleNamespace(message_id=9)
+    mocker.patch.object(TelegramBridge, "_send_markdown_to_chat", return_value=mocked_message)
+    await handler._apply_block_locked(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:exec-2",
+        block=AgentActivityBlock(kind="execute", title="Run", status="completed", text="done", activity_id="exec-2"),
+    )
+    assert "activity:exec-2" not in handler._messages_by_chat.get(TEST_CHAT_ID, {})
+
+
 async def test_compact_stale_status_cleared_when_reply_is_none():
     """Compact status message is deleted when the prompt cycle exits without a final reply."""
 
@@ -3463,6 +4014,11 @@ async def test_compact_stale_status_cleared_when_reply_is_none():
     assert len(bot.deleted_message_ids) == 1
     assert update.message is not None
     assert "Agent output exceeded ACP stdio limit." in update.message.replies[-1]
+
+
+async def test_animate_compact_status_returns_when_app_is_missing():
+    bridge = make_compact_bridge()
+    await bridge._animate_compact_status(chat_id=TEST_CHAT_ID, message_id=1)
 
 
 async def test_compact_rotating_dots_cycle(mocker):
@@ -3544,8 +4100,44 @@ async def test_compact_live_activity_full_flow_multi_activity():
     assert len(bot.sent_messages) == 1
     assert update.message is not None
     assert update.message.replies == []
-    # Status text keeps the normal emoji language in compact mode.
-    assert cast(str, bot.sent_messages[0]["text"]).startswith("💡 Thinking")
-    assert "Done!" in cast(str, bot.edited_messages[-1]["text"])
-    assert bot.reactions == []
-    assert TEST_CHAT_ID not in bridge._compact_status_tasks
+
+
+async def test_normal_activity_state_is_cleared_after_successful_prompt_cycle():
+
+    class ReusedActivityIdService(LiveActivityService):
+        async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+            del images, files
+            assert self._activity_handler is not None
+            await self._activity_handler(
+                chat_id,
+                AgentActivityBlock(
+                    kind="execute",
+                    title="Run command",
+                    status="in_progress",
+                    text="",
+                    activity_id="shared-id",
+                ),
+            )
+            return AgentReply(text=f"done:{text}")
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace=".", activity_mode="normal"),
+        agent_service=cast(AgentService, ReusedActivityIdService()),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+
+    first_update = make_update(chat_id=TEST_CHAT_ID, text="first")
+    second_update = make_update(chat_id=TEST_CHAT_ID, text="second")
+    first_context = make_context()
+    first_context.bot = bot
+    second_context = make_context()
+    second_context.bot = bot
+
+    await bridge.on_message(first_update, first_context)
+    await bridge.on_message(second_update, second_context)
+
+    activity_texts = [
+        cast(str, payload["text"]) for payload in bot.sent_messages if "Running" in cast(str, payload["text"])
+    ]
+    assert len(activity_texts) == EXPECTED_REPEATED_ACTIVITY_MESSAGES

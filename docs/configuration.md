@@ -59,13 +59,15 @@ ACP_LOG_FORMAT
 
 ACP_ACTIVITY_MODE
   Controls how intermediate agent activity events are shown in Telegram.
-  Allowed values: `verbose`, `compact`.
-  `verbose` (default) emits each agent event as its own message.
+  Allowed values: `normal`, `compact`, `verbose`.
+  `normal` (default) emits each visible activity event as its own message.
   `compact` collapses all events into a single in-place status message
   that is replaced by the final answer when the agent responds.
   While work is in progress, that same compact message keeps the normal
   activity emoji in the message text (for example `⚙️`, `🌐`, `📖`) and
   rotates the trailing dots to show progress.
+  `verbose` streams append-only updates in place for active reply text and
+  tool activity, and then finalizes those messages when the prompt completes.
   Maps to `--activity-mode`.
 
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
@@ -95,7 +97,7 @@ ACP_STDIO_LIMIT=8388608
 ACP_CONNECT_TIMEOUT=30
 ACP_LOG_LEVEL=INFO
 ACP_LOG_FORMAT=text
-ACP_ACTIVITY_MODE=verbose
+ACP_ACTIVITY_MODE=normal
 ```
 
 ## MCP behavior

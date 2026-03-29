@@ -25,11 +25,20 @@ from telegram import (
 )
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    AIORateLimiter,
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 from telegramify_markdown import MessageEntity as MarkdownMessageEntity
-from telegramify_markdown import convert, split_entities
+from telegramify_markdown import convert, split_entities, utf16_len
 
 from telegram_acp_bot.acp_app.models import (
+    ActivityMode,
     AgentActivityBlock,
     AgentOutputLimitExceededError,
     AgentReply,
@@ -61,6 +70,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "Start or resume in the default workspace"),
     ("new", "Create a new agent session [workspace]"),
     ("resume", "Resume a previous session [N|workspace]"),
+    ("mode", "Show or set activity mode [normal|compact|verbose]"),
     ("session", "Show the active session workspace"),
     ("cancel", "Cancel the current agent operation"),
     ("stop", "Stop the current session"),
@@ -79,6 +89,10 @@ KIND_LABELS = {
 SEARCH_LABEL_WEB = "🌐 Searching web"
 SEARCH_LABEL_LOCAL = "🔎 Querying project"
 SEARCH_LABEL_NEUTRAL = "🔎 Querying"
+REPLY_LABEL = "✍️ Replying"
+ACTIVITY_MODE_CHOICES: tuple[ActivityMode, ...] = ("normal", "compact", "verbose")
+ACTIVITY_MODE_HELP = "normal, compact, or verbose"
+VERBOSE_STREAM_TICK_SECONDS = 0.12
 
 
 @dataclass(slots=True, frozen=True)
@@ -89,7 +103,11 @@ class BotConfig:
     allowed_user_ids: set[int]
     allowed_usernames: set[str]
     default_workspace: Path
-    compact_activity: bool = False
+    activity_mode: ActivityMode = "normal"
+
+    @property
+    def compact_activity(self) -> bool:
+        return self.activity_mode == "compact"
 
 
 @dataclass(slots=True, frozen=True)
@@ -121,6 +139,26 @@ class _PendingPrompt:
     update: Update
     token: str
     notify_msg_id: int | None = field(default=None)
+
+
+@dataclass(slots=True, frozen=True)
+class _VerboseActivityMessage:
+    """Tracked editable message for one verbose activity stream."""
+
+    activity_id: str
+    kind: str
+    title: str
+    message_id: int
+    source_text: str
+
+
+@dataclass(slots=True, frozen=True)
+class _QueuedVerboseBlock:
+    """Latest queued in-progress block waiting for the next coalesced flush."""
+
+    chat_id: int
+    slot_key: str
+    block: AgentActivityBlock
 
 
 class ChatRequiredError(ValueError):
@@ -185,6 +223,373 @@ class AgentService(Protocol):
     ) -> bool: ...
 
 
+class _ActivityModeHandler:
+    """Behavioral strategy for one Telegram activity mode."""
+
+    def __init__(self, bridge: TelegramBridge) -> None:
+        self._bridge = bridge
+
+    async def on_permission_request(
+        self,
+        *,
+        request: PermissionRequest,
+        message: str,
+        keyboard: InlineKeyboardMarkup,
+    ) -> None:
+        app = self._bridge._app
+        if app is None:
+            return
+        await TelegramBridge._send_markdown_to_chat(
+            bot=app.bot,
+            chat_id=request.chat_id,
+            text=message,
+            reply_markup=keyboard,
+        )
+
+    async def on_activity_event(self, *, chat_id: int, block: AgentActivityBlock) -> None:
+        raise NotImplementedError
+
+    async def finalize_reply(self, *, chat_id: int, update: Update, text: str) -> bool:
+        del chat_id, update, text
+        return False
+
+    async def handle_empty_reply(self, *, chat_id: int) -> None:
+        del chat_id
+
+    async def clear_chat_state(self, *, chat_id: int) -> None:
+        del chat_id
+
+
+class _NormalActivityModeHandler(_ActivityModeHandler):
+    """Preserve the legacy per-event activity UX without streaming edits."""
+
+    def __init__(self, bridge: TelegramBridge) -> None:
+        super().__init__(bridge)
+        self._seen_streams_by_chat: dict[int, set[str]] = {}
+
+    async def on_activity_event(self, *, chat_id: int, block: AgentActivityBlock) -> None:
+        app = self._bridge._app
+        if app is None or block.kind == "reply":
+            return
+        if block.activity_id:
+            if block.status == "in_progress":
+                seen = self._seen_streams_by_chat.setdefault(chat_id, set())
+                if block.activity_id in seen:
+                    return
+                seen.add(block.activity_id)
+            else:
+                self._seen_streams_by_chat.get(chat_id, set()).discard(block.activity_id)
+        workspace = self._bridge._activity_workspace(chat_id=chat_id)
+        text = self._bridge._format_activity_block(block, workspace=workspace)
+        await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+
+    async def clear_chat_state(self, *, chat_id: int) -> None:
+        self._seen_streams_by_chat.pop(chat_id, None)
+
+
+class _CompactActivityModeHandler(_ActivityModeHandler):
+    """Single in-place status message during prompt execution."""
+
+    async def on_permission_request(
+        self,
+        *,
+        request: PermissionRequest,
+        message: str,
+        keyboard: InlineKeyboardMarkup,
+    ) -> None:
+        app = self._bridge._app
+        if app is None:
+            return
+        lock = self._bridge._compact_status_locks.setdefault(request.chat_id, asyncio.Lock())
+        async with lock:
+            status_msg_id = self._bridge._compact_status_msg_id.get(request.chat_id)
+            self._bridge._cancel_compact_animation(request.chat_id)
+            if status_msg_id is not None:
+                edited = await TelegramBridge._edit_markdown_in_chat(
+                    bot=app.bot,
+                    chat_id=request.chat_id,
+                    message_id=status_msg_id,
+                    text=message,
+                    reply_markup=keyboard,
+                )
+                if edited:
+                    return
+                with suppress(TelegramError):
+                    await app.bot.delete_message(chat_id=request.chat_id, message_id=status_msg_id)
+
+            sent = await TelegramBridge._send_markdown_to_chat(
+                bot=app.bot,
+                chat_id=request.chat_id,
+                text=message,
+                reply_markup=keyboard,
+            )
+            if sent is not None:
+                self._bridge._compact_status_msg_id[request.chat_id] = sent.message_id
+
+    async def on_activity_event(self, *, chat_id: int, block: AgentActivityBlock) -> None:
+        app = self._bridge._app
+        if app is None or block.kind == "reply":
+            return
+        label = TelegramBridge._activity_label(block)
+        lock = self._bridge._compact_status_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            self._bridge._compact_status_label[chat_id] = label
+            status_text = f"{label}."
+            existing_msg_id = self._bridge._compact_status_msg_id.get(chat_id)
+            if existing_msg_id is None:
+                with suppress(TelegramError):
+                    msg = await app.bot.send_message(chat_id=chat_id, text=status_text)
+                    existing_msg_id = msg.message_id
+                    self._bridge._compact_status_msg_id[chat_id] = existing_msg_id
+            else:
+                with suppress(TelegramError):
+                    await app.bot.edit_message_text(chat_id=chat_id, message_id=existing_msg_id, text=status_text)
+            if existing_msg_id is not None:
+                self._bridge._ensure_compact_animation(chat_id=chat_id, message_id=existing_msg_id)
+
+    async def finalize_reply(self, *, chat_id: int, update: Update, text: str) -> bool:
+        if self._bridge._app is None or chat_id not in self._bridge._compact_status_msg_id:
+            return False
+        await self._bridge._finalize_compact_reply(chat_id=chat_id, update=update, text=text)
+        return True
+
+    async def handle_empty_reply(self, *, chat_id: int) -> None:
+        await self._bridge._clear_compact_status(chat_id)
+
+    async def clear_chat_state(self, *, chat_id: int) -> None:
+        await self._bridge._clear_compact_status(chat_id)
+
+
+class _VerboseActivityModeHandler(_ActivityModeHandler):
+    """Track each live activity stream independently and edit it in place."""
+
+    def __init__(self, bridge: TelegramBridge) -> None:
+        super().__init__(bridge)
+        self._locks: dict[int, asyncio.Lock] = {}
+        self._messages_by_chat: dict[int, dict[str, _VerboseActivityMessage]] = {}
+        self._pending_by_chat: dict[int, dict[str, _QueuedVerboseBlock]] = {}
+        self._flush_tasks_by_chat: dict[int, asyncio.Task[None]] = {}
+
+    async def on_activity_event(self, *, chat_id: int, block: AgentActivityBlock) -> None:
+        app = self._bridge._app
+        if app is None:
+            return
+        slot_key = self._slot_key(block)
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
+            if active is not None and block.text and not block.text.startswith(active.source_text):
+                self._clear_message(chat_id=chat_id, slot_key=slot_key)
+                self._clear_pending(chat_id=chat_id, slot_key=slot_key)
+                active = None
+            if block.status == "in_progress":
+                if active is None:
+                    await self._apply_block_locked(chat_id=chat_id, slot_key=slot_key, block=block)
+                    return
+                self._pending_by_chat.setdefault(chat_id, {})[slot_key] = _QueuedVerboseBlock(
+                    chat_id=chat_id,
+                    slot_key=slot_key,
+                    block=block,
+                )
+                self._ensure_flush_task(chat_id=chat_id)
+                return
+            self._clear_pending(chat_id=chat_id, slot_key=slot_key)
+            await self._apply_block_locked(chat_id=chat_id, slot_key=slot_key, block=block)
+
+    async def finalize_reply(self, *, chat_id: int, update: Update, text: str) -> bool:
+        del update
+        app = self._bridge._app
+        if app is None:
+            return False
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            self._clear_pending(chat_id=chat_id, slot_key="activity:reply")
+            active = self._messages_by_chat.get(chat_id, {}).get("activity:reply")
+            if active is None:
+                return False
+            self._clear_message(chat_id=chat_id, slot_key="activity:reply")
+            if not text:
+                return True
+            chunks = TelegramBridge._render_markdown_chunks(text)
+            if not chunks:
+                return True
+            first_text, first_entities = chunks[0]
+            edited = await TelegramBridge._edit_rendered_chunk_in_chat(
+                bot=app.bot,
+                chat_id=chat_id,
+                message_id=active.message_id,
+                text=first_text,
+                entities=first_entities,
+            )
+            if edited:
+                await TelegramBridge._send_rendered_chunks_to_chat(bot=app.bot, chat_id=chat_id, chunks=chunks[1:])
+                return True
+            with suppress(TelegramError):
+                await app.bot.delete_message(chat_id=chat_id, message_id=active.message_id)
+            return False
+
+    async def clear_chat_state(self, *, chat_id: int) -> None:
+        self._cancel_flush_task(chat_id)
+        self._pending_by_chat.pop(chat_id, None)
+        self._messages_by_chat.pop(chat_id, None)
+
+    def _slot_key(self, block: AgentActivityBlock) -> str:
+        return f"activity:{self._bridge._activity_id(block)}"
+
+    def _store_message(self, *, chat_id: int, slot_key: str, message: _VerboseActivityMessage) -> None:
+        self._messages_by_chat.setdefault(chat_id, {})[slot_key] = message
+
+    def _clear_message(self, *, chat_id: int, slot_key: str) -> None:
+        messages = self._messages_by_chat.get(chat_id)
+        if messages is None:
+            return
+        messages.pop(slot_key, None)
+        if not messages:
+            self._messages_by_chat.pop(chat_id, None)
+
+    def _clear_pending(self, *, chat_id: int, slot_key: str) -> None:
+        pending = self._pending_by_chat.get(chat_id)
+        if pending is None:
+            return
+        pending.pop(slot_key, None)
+        if not pending:
+            self._pending_by_chat.pop(chat_id, None)
+            self._cancel_flush_task(chat_id)
+
+    def _cancel_flush_task(self, chat_id: int) -> None:
+        task = self._flush_tasks_by_chat.pop(chat_id, None)
+        if task is not None:
+            task.cancel()
+
+    def _ensure_flush_task(self, *, chat_id: int) -> None:
+        task = self._flush_tasks_by_chat.get(chat_id)
+        if task is not None and not task.done():
+            return
+        self._flush_tasks_by_chat[chat_id] = asyncio.create_task(self._run_flush_loop(chat_id=chat_id))
+
+    async def _run_flush_loop(self, *, chat_id: int) -> None:
+        try:
+            while True:
+                await asyncio.sleep(VERBOSE_STREAM_TICK_SECONDS)
+                lock = self._locks.setdefault(chat_id, asyncio.Lock())
+                async with lock:
+                    pending = self._pending_by_chat.get(chat_id)
+                    if not pending:
+                        self._pending_by_chat.pop(chat_id, None)
+                        return
+                    queued_blocks = list(pending.values())
+                    self._pending_by_chat.pop(chat_id, None)
+                    for queued in queued_blocks:
+                        await self._apply_block_locked(
+                            chat_id=queued.chat_id,
+                            slot_key=queued.slot_key,
+                            block=queued.block,
+                        )
+        finally:
+            current = asyncio.current_task()
+            task = self._flush_tasks_by_chat.get(chat_id)
+            if task is current:
+                self._flush_tasks_by_chat.pop(chat_id, None)
+
+    @staticmethod
+    async def _edit_in_progress_preview(
+        *,
+        bot: Bot,
+        chat_id: int,
+        message_id: int,
+        text: str,
+    ) -> bool:
+        preview = TelegramBridge._render_markdown_preview_chunk(text)
+        if preview is None:
+            return False
+        preview_text, preview_entities = preview
+        return await TelegramBridge._edit_rendered_chunk_in_chat(
+            bot=bot,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=preview_text,
+            entities=preview_entities,
+        )
+
+    @staticmethod
+    async def _send_in_progress_preview(*, bot: Bot, chat_id: int, text: str) -> Message | None:
+        preview = TelegramBridge._render_markdown_preview_chunk(text)
+        if preview is None:
+            return None
+        return await TelegramBridge._send_rendered_chunks_to_chat(bot=bot, chat_id=chat_id, chunks=[preview])
+
+    async def _apply_block_locked(self, *, chat_id: int, slot_key: str, block: AgentActivityBlock) -> None:
+        app = self._bridge._app
+        if app is None:
+            return
+        text = (
+            block.text
+            if block.kind == "reply"
+            else self._bridge._format_activity_block(
+                block,
+                workspace=self._bridge._activity_workspace(chat_id=chat_id),
+            )
+        )
+        active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
+        if active is not None:
+            if block.status == "in_progress":
+                edited = await self._edit_in_progress_preview(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=active.message_id,
+                    text=text,
+                )
+            else:
+                edited = await TelegramBridge._edit_markdown_in_chat(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=active.message_id,
+                    text=text,
+                )
+            if edited:
+                if block.status == "in_progress":
+                    self._store_message(
+                        chat_id=chat_id,
+                        slot_key=slot_key,
+                        message=_VerboseActivityMessage(
+                            activity_id=active.activity_id,
+                            kind=block.kind,
+                            title=block.title,
+                            message_id=active.message_id,
+                            source_text=block.text,
+                        ),
+                    )
+                else:
+                    self._clear_message(chat_id=chat_id, slot_key=slot_key)
+                return
+            self._clear_message(chat_id=chat_id, slot_key=slot_key)
+
+        if block.status == "in_progress":
+            sent = await self._send_in_progress_preview(
+                bot=app.bot,
+                chat_id=chat_id,
+                text=text,
+            )
+        else:
+            sent = await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+        if sent is None:
+            return
+        if block.status == "in_progress":
+            self._store_message(
+                chat_id=chat_id,
+                slot_key=slot_key,
+                message=_VerboseActivityMessage(
+                    activity_id=self._bridge._activity_id(block),
+                    kind=block.kind,
+                    title=block.title,
+                    message_id=sent.message_id,
+                    source_text=block.text,
+                ),
+            )
+            return
+        self._clear_message(chat_id=chat_id, slot_key=slot_key)
+
+
 class TelegramBridge:
     """Telegram command and message handlers for the MVP bot."""
 
@@ -193,6 +598,7 @@ class TelegramBridge:
         self._agent_service = agent_service
         self._app: Application | None = None
         self._restart_requested = False
+        self._activity_mode_by_chat: dict[int, ActivityMode] = {}
         self._implicit_start_locks_by_chat: dict[int, asyncio.Lock] = {}
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
@@ -204,6 +610,11 @@ class TelegramBridge:
         self._compact_status_label: dict[int, str] = {}
         # Background animation task per chat for `. .. ...` progress.
         self._compact_status_tasks: dict[int, asyncio.Task[None]] = {}
+        self._activity_handlers: dict[ActivityMode, _ActivityModeHandler] = {
+            "normal": _NormalActivityModeHandler(self),
+            "compact": _CompactActivityModeHandler(self),
+            "verbose": _VerboseActivityModeHandler(self),
+        }
         if hasattr(self._agent_service, "set_permission_request_handler"):
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
@@ -215,6 +626,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("help", self.help))
         app.add_handler(CommandHandler("new", self.new_session))
         app.add_handler(CommandHandler("resume", self.resume_session))
+        app.add_handler(CommandHandler("mode", self.mode))
         app.add_handler(CommandHandler("session", self.session))
         app.add_handler(CommandHandler("cancel", self.cancel))
         app.add_handler(CommandHandler("stop", self.stop))
@@ -242,9 +654,27 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /resume [N|workspace], /session, "
+            "Commands: /new [workspace], /resume [N|workspace], /mode [normal|compact|verbose], /session, "
             "/cancel, /stop, /clear, /restart [N [workspace]], /help",
         )
+
+    async def mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._require_access(update):
+            return
+        chat_id = self._chat_id(update)
+        args = self._context_args(context)
+        if not args:
+            await self._reply(
+                update,
+                f"Current activity mode: `{self._activity_mode(chat_id=chat_id)}`\nUsage: `/mode {ACTIVITY_MODE_HELP}`",
+            )
+            return
+        if len(args) != 1 or args[0] not in ACTIVITY_MODE_CHOICES:
+            await self._reply(update, f"Usage: `/mode {ACTIVITY_MODE_HELP}`")
+            return
+        mode = cast(ActivityMode, args[0])
+        await self._set_activity_mode(chat_id=chat_id, mode=mode)
+        await self._reply(update, f"Activity mode set to `{mode}`.")
 
     async def new_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -442,68 +872,16 @@ class TelegramBridge:
 
         keyboard = self._permission_keyboard(request)
         message = TelegramBridge._format_permission_request_text(request.tool_title)
-        if self._config.compact_activity:
-            lock = self._compact_status_locks.setdefault(request.chat_id, asyncio.Lock())
-            async with lock:
-                status_msg_id = self._compact_status_msg_id.get(request.chat_id)
-                self._cancel_compact_animation(request.chat_id)
-                if status_msg_id is not None:
-                    edited = await TelegramBridge._edit_markdown_in_chat(
-                        bot=self._app.bot,
-                        chat_id=request.chat_id,
-                        message_id=status_msg_id,
-                        text=message,
-                        reply_markup=keyboard,
-                    )
-                    if edited:
-                        return
-                    with suppress(TelegramError):
-                        await self._app.bot.delete_message(chat_id=request.chat_id, message_id=status_msg_id)
-
-                sent = await TelegramBridge._send_markdown_to_chat(
-                    bot=self._app.bot,
-                    chat_id=request.chat_id,
-                    text=message,
-                    reply_markup=keyboard,
-                )
-                if sent is not None:
-                    self._compact_status_msg_id[request.chat_id] = sent.message_id
-            return
-
-        await TelegramBridge._send_markdown_to_chat(
-            bot=self._app.bot, chat_id=request.chat_id, text=message, reply_markup=keyboard
+        await self._activity_handler(chat_id=request.chat_id).on_permission_request(
+            request=request,
+            message=message,
+            keyboard=keyboard,
         )
 
     async def on_activity_event(self, chat_id: int, block: AgentActivityBlock) -> None:
-        app = self._app
-        if app is None:
+        if self._app is None:
             return
-
-        if self._config.compact_activity:
-            label = TelegramBridge._activity_label(block)
-            # Acquire per-chat lock to prevent concurrent sends from creating multiple
-            # status messages when the agent fires several events before the first
-            # send_message call completes.
-            lock = self._compact_status_locks.setdefault(chat_id, asyncio.Lock())
-            async with lock:
-                self._compact_status_label[chat_id] = label
-                status_text = f"{label}."
-                existing_msg_id = self._compact_status_msg_id.get(chat_id)
-                if existing_msg_id is None:
-                    with suppress(TelegramError):
-                        msg = await app.bot.send_message(chat_id=chat_id, text=status_text)
-                        existing_msg_id = msg.message_id
-                        self._compact_status_msg_id[chat_id] = existing_msg_id
-                else:
-                    with suppress(TelegramError):
-                        await app.bot.edit_message_text(chat_id=chat_id, message_id=existing_msg_id, text=status_text)
-                if existing_msg_id is not None:
-                    self._ensure_compact_animation(chat_id=chat_id, message_id=existing_msg_id)
-            return
-
-        workspace = self._activity_workspace(chat_id=chat_id)
-        text = self._format_activity_block(block, workspace=workspace)
-        await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+        await self._activity_handler(chat_id=chat_id).on_activity_event(chat_id=chat_id, block=block)
 
     async def _edit_permission_decision_message(self, query: CallbackQuery, *, decision_label: str) -> None:
         try:
@@ -765,8 +1143,7 @@ class TelegramBridge:
                 await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
                 with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
                     logger.info("Prompt cycle completed")
-            elif self._config.compact_activity:
-                await self._clear_compact_status(chat_id)
+            await self._activity_handler(chat_id=chat_id).clear_chat_state(chat_id=chat_id)
 
             if pending is None:
                 return
@@ -783,12 +1160,15 @@ class TelegramBridge:
                 await self._reply_activity_block(update, block, workspace=workspace)
         await self._send_attachments(update, reply)
         if reply.text.strip():
-            if self._config.compact_activity and self._app is not None:
-                await self._finalize_compact_reply(chat_id=chat_id, update=update, text=reply.text)
-            else:
+            handled = await self._activity_handler(chat_id=chat_id).finalize_reply(
+                chat_id=chat_id,
+                update=update,
+                text=reply.text,
+            )
+            if not handled:
                 await self._reply_agent(update, reply.text)
-        elif self._config.compact_activity and self._app is not None:
-            await self._clear_compact_status(chat_id)
+        else:
+            await self._activity_handler(chat_id=chat_id).handle_empty_reply(chat_id=chat_id)
 
     async def _finalize_compact_reply(self, *, chat_id: int, update: Update, text: str) -> None:
         """Replace the compact in-progress status message with the final reply.
@@ -826,6 +1206,20 @@ class TelegramBridge:
         task = self._compact_status_tasks.pop(chat_id, None)
         if task is not None:
             task.cancel()
+
+    async def _set_activity_mode(self, *, chat_id: int, mode: ActivityMode) -> None:
+        await self._clear_activity_mode_state(chat_id=chat_id)
+        self._activity_mode_by_chat[chat_id] = mode
+
+    async def _clear_activity_mode_state(self, *, chat_id: int) -> None:
+        for handler in self._activity_handlers.values():
+            await handler.clear_chat_state(chat_id=chat_id)
+
+    def _activity_mode(self, *, chat_id: int) -> ActivityMode:
+        return self._activity_mode_by_chat.get(chat_id, self._config.activity_mode)
+
+    def _activity_handler(self, *, chat_id: int) -> _ActivityModeHandler:
+        return self._activity_handlers[self._activity_mode(chat_id=chat_id)]
 
     def _ensure_compact_animation(self, *, chat_id: int, message_id: int) -> None:
         task = self._compact_status_tasks.get(chat_id)
@@ -1248,6 +1642,8 @@ class TelegramBridge:
 
     @staticmethod
     def _format_activity_block(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
+        if block.kind == "reply":
+            return block.text
         label = TelegramBridge._activity_label(block)
         text_parts = [f"*{label}*"]
         normalized_title = TelegramBridge._normalize_activity_title(block, workspace=workspace)
@@ -1268,6 +1664,8 @@ class TelegramBridge:
 
     @staticmethod
     def _activity_label(block: AgentActivityBlock) -> str:
+        if block.kind == "reply":
+            return REPLY_LABEL
         if block.kind != "search":
             return KIND_LABELS.get(block.kind, "⚙️ Tool call")
         source = TelegramBridge._search_source(block)
@@ -1423,19 +1821,100 @@ class TelegramBridge:
     @staticmethod
     async def _reply_markdown_message(message: Message, *, text: str) -> None:
         try:
-            rendered_text, rendered_entities = convert(text)
-            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
-            for chunk_text, chunk_entities in chunks:
+            for chunk_text, chunk_entities in TelegramBridge._render_markdown_chunks(text):
                 if chunk_entities:
-                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
                     try:
-                        await message.reply_text(chunk_text, entities=entities)
+                        await message.reply_text(chunk_text, entities=chunk_entities)
                     except TelegramError:
                         await message.reply_text(chunk_text)
                 else:
                     await message.reply_text(chunk_text)
         except (RuntimeError, ValueError, TypeError):
             await message.reply_text(text)
+
+    @staticmethod
+    def _render_markdown_chunks(text: str) -> list[tuple[str, list[MessageEntity] | None]]:
+        rendered_text, rendered_entities = convert(text)
+        chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+        rendered_chunks: list[tuple[str, list[MessageEntity] | None]] = []
+        for chunk_text, chunk_entities in chunks:
+            if chunk_entities:
+                rendered_chunks.append(
+                    (chunk_text, [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities])
+                )
+                continue
+            rendered_chunks.append((chunk_text, None))
+        return rendered_chunks
+
+    @staticmethod
+    async def _send_rendered_chunks_to_chat(
+        *,
+        bot: Bot,
+        chat_id: int,
+        chunks: list[tuple[str, list[MessageEntity] | None]],
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> Message | None:
+        first_message: Message | None = None
+        for index, (chunk_text, chunk_entities) in enumerate(chunks):
+            current_reply_markup = reply_markup if index == 0 else None
+            if chunk_entities:
+                try:
+                    sent_message = await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        entities=chunk_entities,
+                        reply_markup=current_reply_markup,
+                    )
+                except TelegramError:
+                    sent_message = await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        reply_markup=current_reply_markup,
+                    )
+            else:
+                sent_message = await bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk_text,
+                    reply_markup=current_reply_markup,
+                )
+            if first_message is None:
+                first_message = sent_message
+        return first_message
+
+    @staticmethod
+    async def _edit_rendered_chunk_in_chat(  # noqa: PLR0913
+        *,
+        bot: Bot,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        entities: list[MessageEntity] | None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        if entities:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    entities=entities,
+                    reply_markup=reply_markup,
+                )
+            except TelegramError as exc:
+                if TelegramBridge._is_not_modified_error(exc):
+                    return True
+            else:
+                return True
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        except TelegramError as exc:
+            return bool(TelegramBridge._is_not_modified_error(exc))
+        return True
 
     @staticmethod
     async def _send_markdown_to_chat(
@@ -1446,38 +1925,41 @@ class TelegramBridge:
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message | None:
         try:
-            rendered_text, rendered_entities = convert(text)
-            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
-            first_message: Message | None = None
-            for index, (chunk_text, chunk_entities) in enumerate(chunks):
-                current_reply_markup = reply_markup if index == 0 else None
-                if chunk_entities:
-                    entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
-                    try:
-                        sent_message = await bot.send_message(
-                            chat_id=chat_id,
-                            text=chunk_text,
-                            entities=entities,
-                            reply_markup=current_reply_markup,
-                        )
-                    except TelegramError:
-                        sent_message = await bot.send_message(
-                            chat_id=chat_id,
-                            text=chunk_text,
-                            reply_markup=current_reply_markup,
-                        )
-                else:
-                    sent_message = await bot.send_message(
-                        chat_id=chat_id,
-                        text=chunk_text,
-                        reply_markup=current_reply_markup,
-                    )
-                if first_message is None:
-                    first_message = sent_message
+            chunks = TelegramBridge._render_markdown_chunks(text)
         except (RuntimeError, ValueError, TypeError):
             return await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
-        else:
-            return first_message
+        return await TelegramBridge._send_rendered_chunks_to_chat(
+            bot=bot,
+            chat_id=chat_id,
+            chunks=chunks,
+            reply_markup=reply_markup,
+        )
+
+    @staticmethod
+    def _render_markdown_preview_chunk(text: str) -> tuple[str, list[MessageEntity] | None] | None:
+        try:
+            chunks = TelegramBridge._render_markdown_chunks(text)
+        except (RuntimeError, ValueError, TypeError):
+            return (TelegramBridge._truncate_preview_text(text), None)
+        if not chunks:
+            return None
+        return chunks[0]
+
+    @staticmethod
+    def _truncate_preview_text(text: str) -> str:
+        if utf16_len(text) <= TELEGRAM_MAX_UTF16_MESSAGE_LENGTH:
+            return text
+        suffix = "..."
+        max_units = TELEGRAM_MAX_UTF16_MESSAGE_LENGTH - utf16_len(suffix)
+        preview_chars: list[str] = []
+        current_units = 0
+        for char in text:
+            char_units = utf16_len(char)
+            if current_units + char_units > max_units:
+                break
+            preview_chars.append(char)
+            current_units += char_units
+        return "".join(preview_chars).rstrip() + suffix
 
     @staticmethod
     async def _edit_markdown_in_chat(
@@ -1495,48 +1977,40 @@ class TelegramBridge:
         Multi-chunk content signals to the caller to fall back to normal delivery.
         """
         try:
-            rendered_text, rendered_entities = convert(text)
-            chunks = split_entities(rendered_text, rendered_entities, max_utf16_len=TELEGRAM_MAX_UTF16_MESSAGE_LENGTH)
+            chunks = TelegramBridge._render_markdown_chunks(text)
         except (RuntimeError, ValueError, TypeError):
             try:
                 await bot.edit_message_text(
                     chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup
                 )
-            except TelegramError:
-                return False
+            except TelegramError as exc:
+                return bool(TelegramBridge._is_not_modified_error(exc))
             else:
                 return True
         if len(chunks) != 1:
             return False
         chunk_text, chunk_entities = chunks[0]
-        if chunk_entities:
-            entities = [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities]
-            try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=chunk_text,
-                    entities=entities,
-                    reply_markup=reply_markup,
-                )
-            except TelegramError:
-                pass
-            else:
-                return True
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=chunk_text,
-                reply_markup=reply_markup,
-            )
-        except TelegramError:
-            return False
-        else:
-            return True
+        return await TelegramBridge._edit_rendered_chunk_in_chat(
+            bot=bot,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=chunk_text,
+            entities=chunk_entities,
+            reply_markup=reply_markup,
+        )
+
+    @staticmethod
+    def _is_not_modified_error(error: TelegramError) -> bool:
+        return "message is not modified" in str(error).lower()
 
     def _activity_workspace(self, *, chat_id: int) -> Path:
         return self._agent_service.get_workspace(chat_id=chat_id) or self._config.default_workspace
+
+    @staticmethod
+    def _activity_id(block: AgentActivityBlock) -> str:
+        if block.activity_id:
+            return block.activity_id
+        return f"{block.kind}:{block.title}"
 
     @staticmethod
     async def _send_image(update: Update, payload: ImagePayload) -> None:
@@ -1567,7 +2041,7 @@ class TelegramBridge:
 def build_application(config: BotConfig, bridge: TelegramBridge) -> Application:
     # Permission prompts are awaited inside message handlers, so callback queries
     # must be processed concurrently to avoid deadlocking the update loop.
-    app = Application.builder().token(config.token).concurrent_updates(True).build()
+    app = Application.builder().token(config.token).rate_limiter(AIORateLimiter()).concurrent_updates(True).build()
     bridge.install(app)
     return app
 
@@ -1580,21 +2054,24 @@ def run_polling(config: BotConfig, bridge: TelegramBridge) -> int:
     return 0
 
 
-def make_config(
+def make_config(  # noqa: PLR0913
     *,
     token: str,
     allowed_user_ids: list[int],
     workspace: str,
     allowed_usernames: list[str] | None = None,
-    compact_activity: bool = False,
+    activity_mode: ActivityMode = "normal",
+    compact_activity: bool | None = None,
 ) -> BotConfig:
     normalized_usernames = {
         username.lstrip("@").strip().lower() for username in (allowed_usernames or []) if username.strip()
     }
+    if compact_activity is not None:
+        activity_mode = "compact" if compact_activity else "normal"
     return BotConfig(
         token=token,
         allowed_user_ids=set(allowed_user_ids),
         allowed_usernames=normalized_usernames,
         default_workspace=Path(workspace).expanduser(),
-        compact_activity=compact_activity,
+        activity_mode=activity_mode,
     )
