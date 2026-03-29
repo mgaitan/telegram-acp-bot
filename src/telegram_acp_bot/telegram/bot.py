@@ -60,7 +60,9 @@ BUSY_CALLBACK_PREFIX = "busy"
 PERMISSION_CALLBACK_PARTS = 3
 RESUME_CALLBACK_PARTS = 2
 BUSY_CALLBACK_PARTS = 2
-BUSY_SEND_NOW_TEXT = "✅ Sent."
+BUSY_SENT_TEXT = "✅ Sent."
+BUSY_QUEUED_TEXT = "⏳ Agent is busy. Your message is queued."
+BUSY_STILL_QUEUED_TEXT = "Still queued."
 MAX_RESUME_ARGS = 1
 MAX_RESTART_ARGS = 2
 RESUME_KEYBOARD_MAX_ROWS = 10
@@ -603,6 +605,7 @@ class TelegramBridge:
         self._pending_resume_choices_by_chat: dict[int, tuple[ResumableSession, ...]] = {}
         self._chat_prompt_locks: dict[int, asyncio.Lock] = {}
         self._pending_prompts_by_chat: dict[int, _PendingPrompt] = {}
+        self._dequeued_prompts_by_chat: dict[int, _PendingPrompt] = {}
         self._compact_status_msg_id: dict[int, int] = {}
         # Per-chat lock to prevent concurrent sends from creating multiple status messages.
         self._compact_status_locks: dict[int, asyncio.Lock] = {}
@@ -1009,29 +1012,57 @@ class TelegramBridge:
             await query.answer("Missing chat.")
             return
 
-        pending = self._pending_prompts_by_chat.get(chat_id)
-        if pending is None or pending.token != token:
+        pending, already_dequeued = self._busy_prompt_for_token(chat_id=chat_id, token=token)
+        if pending is None:
             await query.answer("Already sent.")
-            with suppress(TelegramError):
-                await query.edit_message_reply_markup(reply_markup=None)
+            await self._dismiss_busy_notification(chat_id=chat_id, pending=None, query=query)
             return
 
-        with bind_log_context(chat_id=chat_id, prompt_cycle_id=pending.prompt_input.cycle_id):
-            try:
-                await self._agent_service.cancel(chat_id=chat_id)
-            except Exception:
-                logger.exception("Unhandled error while cancelling prompt in busy callback")
-                with suppress(TelegramError):
-                    await query.edit_message_reply_markup(reply_markup=None)
+        await self._handle_busy_prompt_selection(
+            chat_id=chat_id,
+            pending=pending,
+            already_dequeued=already_dequeued,
+            query=query,
+        )
+
+    async def _handle_busy_prompt_selection(
+        self,
+        *,
+        chat_id: int,
+        pending: _PendingPrompt,
+        already_dequeued: bool,
+        query: CallbackQuery,
+    ) -> None:
+        if not already_dequeued:
+            with bind_log_context(chat_id=chat_id, prompt_cycle_id=pending.prompt_input.cycle_id):
+                try:
+                    cancelled = await self._agent_service.cancel(chat_id=chat_id)
+                except Exception:
+                    logger.exception("Unhandled error while cancelling prompt in busy callback")
+                    await self._dismiss_busy_notification(chat_id=chat_id, pending=pending, query=query)
+                    await query.answer("Cancel failed.")
+                    return
+                if not cancelled:
+                    await query.answer(BUSY_STILL_QUEUED_TEXT)
+                    return
+                await query.answer(BUSY_SENT_TEXT)
+                await self._update_busy_notification(
+                    chat_id=chat_id,
+                    pending=pending,
+                    query=query,
+                    text=BUSY_SENT_TEXT,
+                )
                 pending.notify_msg_id = None
-                await query.answer("Cancel failed.")
-                return
-            await query.answer(BUSY_SEND_NOW_TEXT)
-            with suppress(TelegramError):
-                await query.edit_message_text(BUSY_SEND_NOW_TEXT)
-            with suppress(TelegramError):
-                await query.edit_message_reply_markup(reply_markup=None)
-            pending.notify_msg_id = None
+            return
+
+        await query.answer(BUSY_SENT_TEXT)
+        await self._update_busy_notification(
+            chat_id=chat_id,
+            pending=pending,
+            query=query,
+            text=BUSY_SENT_TEXT,
+        )
+        pending.notify_msg_id = None
 
     async def _resolve_resume_selection(
         self,
@@ -1136,16 +1167,24 @@ class TelegramBridge:
             # per-chat lock is still held; new messages observe lock.locked()
             # and take the queue path.
             pending = self._pending_prompts_by_chat.pop(chat_id, None)
-            await self._clear_busy_button(pending)
+            if pending is not None:
+                self._dequeued_prompts_by_chat[chat_id] = pending
+            else:
+                self._dequeued_prompts_by_chat.pop(chat_id, None)
 
-            if reply is not None:
-                await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
-                with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
-                    logger.info("Prompt cycle completed")
-            await self._activity_handler(chat_id=chat_id).clear_chat_state(chat_id=chat_id)
+            try:
+                if reply is not None:
+                    await self._dispatch_reply(chat_id=chat_id, update=current_update, reply=reply)
+                    with bind_log_context(chat_id=chat_id, prompt_cycle_id=current_input.cycle_id):
+                        logger.info("Prompt cycle completed")
+                await self._activity_handler(chat_id=chat_id).clear_chat_state(chat_id=chat_id)
 
-            if pending is None:
-                return
+                if pending is None:
+                    return
+
+                await self._clear_busy_button(pending)
+            finally:
+                self._dequeued_prompts_by_chat.pop(chat_id, None)
 
             with bind_log_context(chat_id=chat_id, prompt_cycle_id=pending.prompt_input.cycle_id):
                 logger.info("Dequeued pending prompt cycle")
@@ -1372,12 +1411,13 @@ class TelegramBridge:
                 )
                 send_kwargs: dict[str, object] = {
                     "chat_id": chat_id,
-                    "text": "⏳ Agent is busy. Your message is queued.",
+                    "text": BUSY_QUEUED_TEXT,
                     "reply_markup": keyboard,
                 }
                 queued_message = update.message
                 if queued_message is not None and isinstance(queued_message.message_id, int):
                     send_kwargs["reply_to_message_id"] = queued_message.message_id
+                    send_kwargs["allow_sending_without_reply"] = True
                 try:
                     notify_msg = await self._app.bot.send_message(**send_kwargs)
                     pending.notify_msg_id = getattr(notify_msg, "message_id", None)
@@ -1385,8 +1425,20 @@ class TelegramBridge:
                     logger.exception("Failed to send busy notification for chat_id=%s", chat_id)
 
     async def _clear_busy_button(self, pending: _PendingPrompt | None) -> None:
-        """Remove the *Send now* button when the queued prompt is about to be processed."""
+        """Update the busy notification to `BUSY_SENT_TEXT`.
+
+        Also remove the *Send now* button when the queued prompt is about to
+        be processed.
+        """
         if pending is None or pending.notify_msg_id is None or self._app is None:
+            return
+        with suppress(TelegramError):
+            await self._app.bot.edit_message_text(
+                chat_id=pending.prompt_input.chat_id,
+                message_id=pending.notify_msg_id,
+                text=BUSY_SENT_TEXT,
+                reply_markup=None,
+            )
             return
         with suppress(TelegramError):
             await self._app.bot.edit_message_reply_markup(
@@ -1394,6 +1446,56 @@ class TelegramBridge:
                 message_id=pending.notify_msg_id,
                 reply_markup=None,
             )
+
+    async def _update_busy_notification(
+        self,
+        *,
+        chat_id: int,
+        pending: _PendingPrompt,
+        query: CallbackQuery,
+        text: str,
+    ) -> None:
+        if pending.notify_msg_id is not None and self._app is not None:
+            with suppress(TelegramError):
+                await self._app.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=pending.notify_msg_id,
+                    text=text,
+                    reply_markup=None,
+                )
+                return
+        with suppress(TelegramError):
+            await query.edit_message_text(text, reply_markup=None)
+            return
+        await self._dismiss_busy_notification(chat_id=chat_id, pending=pending, query=query)
+
+    async def _dismiss_busy_notification(
+        self,
+        *,
+        chat_id: int,
+        pending: _PendingPrompt | None,
+        query: CallbackQuery,
+    ) -> None:
+        notify_msg_id = None if pending is None else pending.notify_msg_id
+        if notify_msg_id is not None and self._app is not None:
+            with suppress(TelegramError):
+                await self._app.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=notify_msg_id,
+                    reply_markup=None,
+                )
+                return
+        with suppress(TelegramError):
+            await query.edit_message_reply_markup(reply_markup=None)
+
+    def _busy_prompt_for_token(self, *, chat_id: int, token: str) -> tuple[_PendingPrompt | None, bool]:
+        pending = self._pending_prompts_by_chat.get(chat_id)
+        if pending is not None and pending.token == token:
+            return pending, False
+        dequeued = self._dequeued_prompts_by_chat.get(chat_id)
+        if dequeued is not None and dequeued.token == token:
+            return dequeued, True
+        return None, False
 
     async def _request_reply(
         self,
