@@ -3847,6 +3847,66 @@ async def test_verbose_reset_clears_older_pending_preview_before_flush(mocker):
     assert all(cast(str, item.get("text", "")) != "one two" for item in bot.edited_messages)
 
 
+async def test_verbose_in_progress_long_preview_stays_single_message(mocker):
+    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    long_text = "a" * 5000
+    longer_text = "a" * 5200
+
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text=long_text, activity_id="reply"),
+    )
+    await bridge.on_activity_event(
+        TEST_CHAT_ID,
+        AgentActivityBlock(kind="reply", title="", status="in_progress", text=longer_text, activity_id="reply"),
+    )
+    await asyncio.sleep(0.03)
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+
+
+async def test_verbose_in_progress_preview_helpers_handle_missing_preview(mocker):
+    bridge = make_verbose_bridge()
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    bot = DummyBot()
+
+    mocker.patch.object(TelegramBridge, "_render_markdown_preview_chunk", return_value=None)
+
+    assert (
+        await handler._edit_in_progress_preview(
+            bot=cast(Bot, bot),
+            chat_id=TEST_CHAT_ID,
+            message_id=123,
+            text="preview",
+        )
+        is False
+    )
+    assert await handler._send_in_progress_preview(bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, text="preview") is None
+
+
+async def test_render_markdown_preview_chunk_handles_empty_and_fallback(mocker):
+    short_text = "plain preview"
+    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", side_effect=RuntimeError("boom"))
+    short_preview = TelegramBridge._render_markdown_preview_chunk(short_text)
+
+    assert short_preview == (short_text, None)
+
+    long_text = "a" * (bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH + 50)
+    long_preview = TelegramBridge._render_markdown_preview_chunk(long_text)
+
+    assert long_preview is not None
+    assert long_preview[1] is None
+    assert long_preview[0].endswith("...")
+    assert bot_module.utf16_len(long_preview[0]) <= bot_module.TELEGRAM_MAX_UTF16_MESSAGE_LENGTH
+
+    mocker.patch.object(TelegramBridge, "_render_markdown_chunks", return_value=[])
+    assert TelegramBridge._render_markdown_preview_chunk("ignored") is None
+
+
 async def test_verbose_completed_event_without_active_message_sends_and_clears():
     bridge = make_verbose_bridge()
     bot = DummyBot()
@@ -3908,8 +3968,8 @@ async def test_verbose_internal_helpers_cover_remaining_branches(mocker):
             source_text="preview",
         ),
     )
-    mocker.patch.object(TelegramBridge, "_edit_markdown_in_chat", return_value=False)
-    mocked_send = mocker.patch.object(TelegramBridge, "_send_markdown_to_chat", return_value=None)
+    mocker.patch.object(handler, "_edit_in_progress_preview", return_value=False)
+    mocked_send = mocker.patch.object(handler, "_send_in_progress_preview", return_value=None)
     await handler._apply_block_locked(
         chat_id=TEST_CHAT_ID,
         slot_key="activity:reply",

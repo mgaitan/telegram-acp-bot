@@ -35,7 +35,7 @@ from telegram.ext import (
     filters,
 )
 from telegramify_markdown import MessageEntity as MarkdownMessageEntity
-from telegramify_markdown import convert, split_entities
+from telegramify_markdown import convert, split_entities, utf16_len
 
 from telegram_acp_bot.acp_app.models import (
     ActivityMode,
@@ -491,6 +491,33 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
             if task is current:
                 self._flush_tasks_by_chat.pop(chat_id, None)
 
+    @staticmethod
+    async def _edit_in_progress_preview(
+        *,
+        bot: Bot,
+        chat_id: int,
+        message_id: int,
+        text: str,
+    ) -> bool:
+        preview = TelegramBridge._render_markdown_preview_chunk(text)
+        if preview is None:
+            return False
+        preview_text, preview_entities = preview
+        return await TelegramBridge._edit_rendered_chunk_in_chat(
+            bot=bot,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=preview_text,
+            entities=preview_entities,
+        )
+
+    @staticmethod
+    async def _send_in_progress_preview(*, bot: Bot, chat_id: int, text: str) -> Message | None:
+        preview = TelegramBridge._render_markdown_preview_chunk(text)
+        if preview is None:
+            return None
+        return await TelegramBridge._send_rendered_chunks_to_chat(bot=bot, chat_id=chat_id, chunks=[preview])
+
     async def _apply_block_locked(self, *, chat_id: int, slot_key: str, block: AgentActivityBlock) -> None:
         app = self._bridge._app
         if app is None:
@@ -505,12 +532,20 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
         )
         active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
         if active is not None:
-            edited = await TelegramBridge._edit_markdown_in_chat(
-                bot=app.bot,
-                chat_id=chat_id,
-                message_id=active.message_id,
-                text=text,
-            )
+            if block.status == "in_progress":
+                edited = await self._edit_in_progress_preview(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=active.message_id,
+                    text=text,
+                )
+            else:
+                edited = await TelegramBridge._edit_markdown_in_chat(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=active.message_id,
+                    text=text,
+                )
             if edited:
                 if block.status == "in_progress":
                     self._store_message(
@@ -529,7 +564,14 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
                 return
             self._clear_message(chat_id=chat_id, slot_key=slot_key)
 
-        sent = await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+        if block.status == "in_progress":
+            sent = await self._send_in_progress_preview(
+                bot=app.bot,
+                chat_id=chat_id,
+                text=text,
+            )
+        else:
+            sent = await TelegramBridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
         if sent is None:
             return
         if block.status == "in_progress":
@@ -1892,6 +1934,32 @@ class TelegramBridge:
             chunks=chunks,
             reply_markup=reply_markup,
         )
+
+    @staticmethod
+    def _render_markdown_preview_chunk(text: str) -> tuple[str, list[MessageEntity] | None] | None:
+        try:
+            chunks = TelegramBridge._render_markdown_chunks(text)
+        except (RuntimeError, ValueError, TypeError):
+            return (TelegramBridge._truncate_preview_text(text), None)
+        if not chunks:
+            return None
+        return chunks[0]
+
+    @staticmethod
+    def _truncate_preview_text(text: str) -> str:
+        if utf16_len(text) <= TELEGRAM_MAX_UTF16_MESSAGE_LENGTH:
+            return text
+        suffix = "..."
+        max_units = TELEGRAM_MAX_UTF16_MESSAGE_LENGTH - utf16_len(suffix)
+        preview_chars: list[str] = []
+        current_units = 0
+        for char in text:
+            char_units = utf16_len(char)
+            if current_units + char_units > max_units:
+                break
+            preview_chars.append(char)
+            current_units += char_units
+        return "".join(preview_chars).rstrip() + suffix
 
     @staticmethod
     async def _edit_markdown_in_chat(
