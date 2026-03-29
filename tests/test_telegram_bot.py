@@ -1837,7 +1837,7 @@ async def test_format_activity_block_search_uses_web_label_when_url_present():
     assert "*🌐 Searching web*" in rendered
 
 
-async def test_format_activity_block_search_uses_project_label_for_local_markers():
+async def test_format_activity_block_search_uses_neutral_label_for_local_markers():
     block = AgentActivityBlock(
         kind="search",
         title='Query project for "ACP_TELEGRAM_CHANNEL_ALLOW_PATH"',
@@ -1845,7 +1845,7 @@ async def test_format_activity_block_search_uses_project_label_for_local_markers
         text="ripgrep in workspace",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    assert "*🔎 Querying project*" in rendered
+    assert "*🔎 Querying*" in rendered
 
 
 async def test_format_activity_block_search_defaults_to_neutral_querying_label():
@@ -1870,7 +1870,7 @@ async def test_format_activity_block_search_report_word_is_not_misclassified_as_
     assert "*🔎 Querying*" in rendered
 
 
-async def test_format_activity_block_search_uses_project_label_for_file_uri():
+async def test_format_activity_block_search_uses_neutral_label_for_file_uri():
     block = AgentActivityBlock(
         kind="search",
         title='Query: "config"',
@@ -1878,7 +1878,7 @@ async def test_format_activity_block_search_uses_project_label_for_file_uri():
         text="file:///home/user/project/pyproject.toml",
     )
     rendered = TelegramBridge._format_activity_block(block)
-    assert "*🔎 Querying project*" in rendered
+    assert "*🔎 Querying*" in rendered
 
 
 async def test_format_activity_block_reply_and_fallback_helpers():

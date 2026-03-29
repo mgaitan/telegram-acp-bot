@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -89,7 +88,6 @@ KIND_LABELS = {
     "write": "✍️ Writing",
 }
 SEARCH_LABEL_WEB = "🌐 Searching web"
-SEARCH_LABEL_LOCAL = "🔎 Querying project"
 SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 REPLY_LABEL = "✍️ Replying"
 ACTIVITY_MODE_CHOICES: tuple[ActivityMode, ...] = ("normal", "compact", "verbose")
@@ -1769,11 +1767,8 @@ class TelegramBridge:
             return REPLY_LABEL
         if block.kind != "search":
             return KIND_LABELS.get(block.kind, "⚙️ Tool call")
-        source = TelegramBridge._search_source(block)
-        if source == "web":
+        if TelegramBridge._search_source(block) == "web":
             return SEARCH_LABEL_WEB
-        if source == "local":
-            return SEARCH_LABEL_LOCAL
         return SEARCH_LABEL_NEUTRAL
 
     @staticmethod
@@ -1781,20 +1776,6 @@ class TelegramBridge:
         content = f"{block.title}\n{block.text}".lower()
         if any(token in content for token in ("http://", "https://", "url:", "web search", "internet")):
             return "web"
-        if "file://" in content:
-            return "local"
-        local_patterns = (
-            r"\bworkspace\b",
-            r"\brepository\b",
-            r"\brepo\b",
-            r"\bproject\b",
-            r"\bripgrep\b",
-            r"\brg\b",
-            r"\bgrep\b",
-            r"\bglob\b",
-        )
-        if any(re.search(pattern, content) for pattern in local_patterns):
-            return "local"
         return None
 
     @staticmethod
