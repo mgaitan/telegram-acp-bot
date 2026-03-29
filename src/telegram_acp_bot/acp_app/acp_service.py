@@ -7,6 +7,7 @@ import logging
 import mimetypes
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import unquote, urlparse
@@ -77,9 +78,17 @@ MIN_NUMERIC_DOT_CHUNK_MIN_LENGTH = 2
 INCREMENTAL_TEXT_MIN_INTERVAL_SECONDS = 0.10
 INCREMENTAL_TEXT_MIN_DELTA_CHARS = 8
 INCREMENTAL_TEXT_BOUNDARY_CHARS = ("\n", ".", "!", "?", ":", ";")
+PACKAGE_NAME = "telegram-acp-bot"
 PromptContentBlock = (
     TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
 )
+
+
+def _package_version() -> str:
+    try:
+        return metadata.version(PACKAGE_NAME)
+    except metadata.PackageNotFoundError:
+        return "unknown"
 
 
 class AcpConnectionFactory(Protocol):
@@ -901,7 +910,11 @@ class AcpAgentService:
                 connection.initialize(
                     protocol_version=PROTOCOL_VERSION,
                     client_capabilities=ClientCapabilities(),
-                    client_info=Implementation(name="telegram-acp-bot", title="Telegram ACP Bot", version="0.1.1"),
+                    client_info=Implementation(
+                        name="telegram-acp-bot",
+                        title="Telegram ACP Bot",
+                        version=_package_version(),
+                    ),
                 ),
                 timeout=self._connect_timeout,
             )
