@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from telegram_acp_bot.acp.models import PermissionEventOutput, PermissionMode
 from telegram_acp_bot.acp.service import AcpAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
-from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
+from telegram_acp_bot.mcp.state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
 from telegram_acp_bot.telegram.bot import TelegramBridge, make_config, run_polling
 
 TOKEN_REQUIRED_MESSAGE = "--telegram-token (or TELEGRAM_BOT_TOKEN) is required"
@@ -50,7 +50,7 @@ def _default_mcp_servers(*, telegram_token: str, state_file: Path) -> tuple[McpS
         McpServerStdio(
             name="telegram-channel",
             command=sys.executable,
-            args=["-m", "telegram_acp_bot.mcp_channel"],
+            args=["-m", "telegram_acp_bot.mcp.server"],
             env=[
                 EnvVariable(name=TOKEN_ENV, value=telegram_token),
                 EnvVariable(name=STATE_FILE_ENV, value=str(state_file)),
