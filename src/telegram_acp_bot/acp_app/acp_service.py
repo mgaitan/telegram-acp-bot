@@ -30,7 +30,7 @@ from telegram_acp_bot.acp_app.protocols import (  # noqa: F401
     SessionLoadNotSupportedError,
     _package_version,
 )
-from telegram_acp_bot.acp_app.service import AcpAgentService  # noqa: F401
+from telegram_acp_bot.acp_app.service import AcpAgentService, PromptContentBlock  # noqa: F401
 from telegram_acp_bot.acp_app.session import (  # noqa: F401
     _ActiveToolBlock,
     _LiveSession,

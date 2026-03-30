@@ -18,14 +18,18 @@ from acp.core import ClientSideConnection
 from acp.schema import (
     AgentCapabilities,
     AllowedOutcome,
+    AudioContentBlock,
     ClientCapabilities,
     DeniedOutcome,
+    EmbeddedResourceContentBlock,
     ImageContentBlock,
     Implementation,
     McpServerStdio,
     PermissionOption,
     RequestPermissionResponse,
+    ResourceContentBlock,
     SessionInfo,
+    TextContentBlock,
     ToolCall,
 )
 
@@ -64,6 +68,10 @@ from telegram_acp_bot.mcp_channel_state import (
 )
 
 logger = logging.getLogger(__name__)
+
+PromptContentBlock = (
+    TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
+)
 
 
 class AcpAgentService:
@@ -241,7 +249,7 @@ class AcpAgentService:
                     live.active_prompt_auto_approve = True
                     live.next_prompt_auto_approve = False
                 live.client.start_capture(live.acp_session_id)
-                prompt_blocks = [text_block(text)]
+                prompt_blocks: list[PromptContentBlock] = [text_block(text)]
                 prompt_blocks.extend(
                     [
                         ImageContentBlock(data=image.data_base64, mime_type=image.mime_type, type="image")
