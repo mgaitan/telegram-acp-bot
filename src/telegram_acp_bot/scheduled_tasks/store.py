@@ -167,6 +167,78 @@ class ScheduledTaskStore:
             ).fetchone()
         return None if row is None else self._row_to_task(row)
 
+    def list_tasks_for_chat(
+        self,
+        *,
+        chat_id: int,
+        statuses: tuple[ScheduledTaskStatus, ...] = ("pending", "running"),
+        limit: int = 10,
+    ) -> list[ScheduledTask]:
+        """Return scheduled tasks for one chat, ordered for user-facing inspection."""
+
+        if not statuses or limit <= 0:
+            return []
+
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM scheduled_tasks
+                WHERE chat_id = ? AND status IN ({placeholders})
+                ORDER BY
+                    CASE status
+                        WHEN 'pending' THEN 0
+                        WHEN 'running' THEN 1
+                        ELSE 2
+                    END,
+                    run_at,
+                    created_at
+                LIMIT ?
+                """,
+                (chat_id, *statuses, limit),
+            ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
+    def cancel_task(self, *, chat_id: int, task_id: str) -> bool:
+        """Cancel one pending task for the given chat."""
+
+        now = format_utc_timestamp(utc_now())
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE scheduled_tasks
+                SET status = 'cancelled',
+                    finished_at = ?,
+                    updated_at = ?,
+                    last_error = NULL
+                WHERE id = ?
+                  AND chat_id = ?
+                  AND status = 'pending'
+                """,
+                (now, now, task_id, chat_id),
+            )
+        return cursor.rowcount > 0
+
+    def cancel_pending_tasks_for_chat(self, *, chat_id: int) -> int:
+        """Cancel all pending tasks for the given chat."""
+
+        now = format_utc_timestamp(utc_now())
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE scheduled_tasks
+                SET status = 'cancelled',
+                    finished_at = ?,
+                    updated_at = ?,
+                    last_error = NULL
+                WHERE chat_id = ?
+                  AND status = 'pending'
+                """,
+                (now, now, chat_id),
+            )
+        return cursor.rowcount
+
     def claim_due_tasks(self, *, now: datetime, limit: int = 10) -> list[ScheduledTask]:
         """Atomically move due pending tasks into `running` and return them."""
 

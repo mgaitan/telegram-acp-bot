@@ -79,6 +79,9 @@ from telegram_acp_bot.telegram.constants import (
     RESUME_CALLBACK_PARTS,
     RESUME_CALLBACK_PREFIX,
     RESUME_KEYBOARD_MAX_ROWS,
+    SCHEDULED_CALLBACK_PARTS,
+    SCHEDULED_CALLBACK_PREFIX,
+    SCHEDULED_KEYBOARD_MAX_ROWS,
     SEARCH_LABEL_NEUTRAL,
     SEARCH_LABEL_WEB,
     TELEGRAM_MAX_UTF16_MESSAGE_LENGTH,
@@ -97,6 +100,7 @@ APP_NOT_RUNNING_ERROR = "application is not running"
 SCHEDULED_CHAT_BUSY_ERROR = "chat is busy"
 SCHEDULED_PROMPT_TRY_LOCK_TIMEOUT_SECONDS = 1e-9
 SCHEDULED_MISSING_ANCHOR_ERROR = "scheduled task is missing an anchor message"
+SCHEDULED_TASK_PREVIEW_MAX_CHARS = 72
 
 
 class TelegramBridge:
@@ -144,6 +148,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("help", self.help))
         app.add_handler(CommandHandler("new", self.new_session))
         app.add_handler(CommandHandler("resume", self.resume_session))
+        app.add_handler(CommandHandler("scheduled", self.scheduled))
         app.add_handler(CommandHandler("mode", self.mode))
         app.add_handler(CommandHandler("session", self.session))
         app.add_handler(CommandHandler("cancel", self.cancel))
@@ -152,6 +157,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("restart", self.restart))
         app.add_handler(CallbackQueryHandler(self.on_permission_callback, pattern=r"^perm\|"))
         app.add_handler(CallbackQueryHandler(self.on_resume_callback, pattern=r"^resume\|"))
+        app.add_handler(CallbackQueryHandler(self.on_scheduled_callback, pattern=r"^scheduled\|"))
         app.add_handler(CallbackQueryHandler(self.on_busy_callback, pattern=r"^busy\|"))
         app.add_handler(
             MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
@@ -172,8 +178,8 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /resume [N|workspace], /mode [normal|compact|verbose], /session, "
-            "/cancel, /stop, /clear, /restart [N [workspace]], /help",
+            "Commands: /new [workspace], /resume [N|workspace], /scheduled, /mode [normal|compact|verbose], "
+            "/session, /cancel, /stop, /clear, /restart [N [workspace]], /help",
         )
 
     async def mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -278,6 +284,22 @@ class TelegramBridge:
             return
 
         await self._reply(update, f"Active session workspace: `{workspace}`")
+
+    async def scheduled(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+        if self._scheduled_task_store is None:
+            await self._reply(update, "Scheduled tasks are unavailable.")
+            return
+
+        chat_id = self._chat_id(update)
+        tasks = await self._list_visible_scheduled_tasks(chat_id=chat_id)
+        text = self._format_scheduled_tasks_text(tasks=tasks)
+        keyboard = self._scheduled_keyboard(tasks=tasks)
+        if update.message is None:
+            return
+        await update.message.reply_text(text, reply_markup=keyboard)
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -513,6 +535,40 @@ class TelegramBridge:
             await query.edit_message_reply_markup(reply_markup=None)
         self._pending_resume_choices_by_chat.pop(chat_id, None)
         await self._reply(update, f"Session resumed: `{session_id}` in `{candidate.workspace}`")
+
+    async def on_scheduled_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        query = update.callback_query
+        if query is None:
+            return
+        if not await self._require_access(update):
+            await query.answer("Access denied.")
+            return
+        if self._scheduled_task_store is None:
+            await query.answer("Scheduled tasks are unavailable.")
+            return
+
+        parsed = self._parse_scheduled_callback(query.data or "")
+        if parsed is None:
+            await query.answer("Invalid action.")
+            return
+        action, task_id = parsed
+        chat_id = self._chat_id_from_update_or_query(update=update, query=query)
+        if chat_id is None:
+            await query.answer("Missing chat.")
+            return
+
+        if action == "cancel_all":
+            cancelled = await asyncio.to_thread(
+                self._scheduled_task_store.cancel_pending_tasks_for_chat, chat_id=chat_id
+            )
+            await query.answer("No pending tasks." if cancelled == 0 else f"Cancelled {cancelled} task(s).")
+            await self._refresh_scheduled_callback_message(query=query, chat_id=chat_id)
+            return
+
+        cancelled = await asyncio.to_thread(self._scheduled_task_store.cancel_task, chat_id=chat_id, task_id=task_id)
+        await query.answer("Task cancelled." if cancelled else "Task is no longer pending.")
+        await self._refresh_scheduled_callback_message(query=query, chat_id=chat_id)
 
     async def on_busy_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle the *Send now* inline button shown when the agent is busy."""
@@ -1146,6 +1202,42 @@ class TelegramBridge:
             rows.append([InlineKeyboardButton(text=label, callback_data=callback_data)])
         return InlineKeyboardMarkup(rows)
 
+    @staticmethod
+    def _scheduled_keyboard(*, tasks: list[ScheduledTask]) -> InlineKeyboardMarkup | None:
+        pending_tasks = [
+            (index, task)
+            for index, task in enumerate(tasks[:SCHEDULED_KEYBOARD_MAX_ROWS], start=1)
+            if task.status == "pending"
+        ]
+        if not pending_tasks:
+            return None
+        show_cancel_all = len(pending_tasks) > 1
+        visible_pending_tasks = (
+            pending_tasks[: SCHEDULED_KEYBOARD_MAX_ROWS - 1]
+            if show_cancel_all
+            else pending_tasks[:SCHEDULED_KEYBOARD_MAX_ROWS]
+        )
+
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text=f"Cancel {index}",
+                    callback_data=f"{SCHEDULED_CALLBACK_PREFIX}|cancel|{task.id}",
+                )
+            ]
+            for index, task in visible_pending_tasks
+        ]
+        if show_cancel_all:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Cancel all pending",
+                        callback_data=f"{SCHEDULED_CALLBACK_PREFIX}|cancel_all|_",
+                    )
+                ]
+            )
+        return InlineKeyboardMarkup(rows)
+
     async def _require_access(self, update: Update) -> bool:
         allowed_ids = self._config.allowed_user_ids
         allowed_usernames = self._config.allowed_usernames
@@ -1183,6 +1275,18 @@ class TelegramBridge:
         return query_message.chat.id
 
     @staticmethod
+    def _parse_scheduled_callback(data: str) -> tuple[str, str] | None:
+        parts = data.split("|", maxsplit=2)
+        if len(parts) != SCHEDULED_CALLBACK_PARTS or parts[0] != SCHEDULED_CALLBACK_PREFIX:
+            return None
+        action, value = parts[1], parts[2]
+        if action == "cancel" and value:
+            return action, value
+        if action == "cancel_all" and value == "_":
+            return action, value
+        return None
+
+    @staticmethod
     def _resume_index(data: str) -> int | None:
         parts = data.split("|", maxsplit=1)
         if len(parts) != RESUME_CALLBACK_PARTS:
@@ -1191,6 +1295,73 @@ class TelegramBridge:
         if not raw_index.isdigit():
             return None
         return int(raw_index)
+
+    async def _list_visible_scheduled_tasks(self, *, chat_id: int) -> list[ScheduledTask]:
+        if self._scheduled_task_store is None:
+            return []
+        tasks = await asyncio.to_thread(
+            self._scheduled_task_store.list_tasks_for_chat,
+            chat_id=chat_id,
+            limit=SCHEDULED_KEYBOARD_MAX_ROWS + 1,
+        )
+        return tasks[:SCHEDULED_KEYBOARD_MAX_ROWS]
+
+    async def _refresh_scheduled_callback_message(self, *, query: CallbackQuery, chat_id: int) -> None:
+        tasks = await self._list_visible_scheduled_tasks(chat_id=chat_id)
+        text = self._format_scheduled_tasks_text(tasks=tasks)
+        reply_markup = self._scheduled_keyboard(tasks=tasks)
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup)
+        except TelegramError:
+            with suppress(TelegramError):
+                await query.edit_message_reply_markup(reply_markup=reply_markup)
+
+    @staticmethod
+    def _format_scheduled_tasks_text(*, tasks: list[ScheduledTask]) -> str:
+        if not tasks:
+            return "No pending or running scheduled tasks for this chat."
+
+        indexed_tasks = list(enumerate(tasks, start=1))
+        pending_lines = TelegramBridge._format_scheduled_task_group(
+            heading="Pending",
+            tasks=[item for item in indexed_tasks if item[1].status == "pending"],
+        )
+        running_lines = TelegramBridge._format_scheduled_task_group(
+            heading="Running",
+            tasks=[item for item in indexed_tasks if item[1].status == "running"],
+        )
+
+        lines = ["Scheduled tasks for this chat:"]
+        if pending_lines:
+            lines.extend(["", *pending_lines])
+        if running_lines:
+            lines.extend(["", *running_lines])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_scheduled_task_group(*, heading: str, tasks: list[tuple[int, ScheduledTask]]) -> list[str]:
+        if not tasks:
+            return []
+        lines = [f"{heading}:"]
+        for index, task in tasks:
+            lines.append(f"{index}. {task.mode} | {TelegramBridge._format_scheduled_task_run_at(task)}")
+            lines.append(f"  {TelegramBridge._scheduled_task_preview(task)}")
+        return lines
+
+    @staticmethod
+    def _scheduled_task_preview(task: ScheduledTask) -> str:
+        raw = task.prompt_text if task.mode == "prompt_agent" else task.notify_text
+        text = " ".join((raw or "").split())
+        if not text:
+            fallback = "prompt" if task.mode == "prompt_agent" else "notification"
+            return f"(empty {fallback})"
+        if len(text) <= SCHEDULED_TASK_PREVIEW_MAX_CHARS:
+            return text
+        return f"{text[: SCHEDULED_TASK_PREVIEW_MAX_CHARS - 3].rstrip()}..."
+
+    @staticmethod
+    def _format_scheduled_task_run_at(task: ScheduledTask) -> str:
+        return task.run_at.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     def _workspace_from_args(self, args: list[str]) -> Path:
         if not args:

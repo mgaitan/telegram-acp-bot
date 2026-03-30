@@ -25,7 +25,9 @@ The current implementation supports one-shot tasks only. Tasks are persisted in 
 
 `prompt_agent` is more interesting. It re-enters the agent flow later with a stored prompt and sends the resulting answer back to Telegram as a reply to the scheduling confirmation.
 
-Recurring schedules, list/cancel commands, and automatic session rehydration are intentionally out of scope for this first version.
+Recurring schedules and automatic session rehydration are intentionally out of scope for this first version.
+
+The bot does, however, provide a small management surface for already-scheduled work. The `/scheduled` command shows the pending and running follow-ups for the current chat, and pending items can be cancelled from inline buttons without typing task ids by hand.
 
 (deferred-followups-ux)=
 ## How The UX Works
@@ -69,6 +71,20 @@ Absolute scheduling is still supported through `run_at`, which must be an ISO ti
 `prompt_agent` only runs if the chat has an active ACP session when the scheduled time arrives. The implementation intentionally reuses the chat’s current live session rather than trying to resurrect one invisibly. That makes failures easier to understand and avoids hidden magic.
 
 If there is no active session, the task fails visibly by replying to the anchor message with an explanation such as `Could not run automatically: no active session.` The same principle applies to delivery errors: the user should see a plain explanation in the thread rather than having the task disappear silently.
+
+## Inspecting And Cancelling Scheduled Work
+
+The scheduling flow is conversational, but it is still useful to inspect what is queued. For that reason, the bot exposes a Telegram-side command:
+
+```text
+/scheduled
+```
+
+This command is intentionally modest. It is not a rich dashboard. It simply shows the pending and running tasks for the current chat in a readable list, with inline **Cancel** buttons for the tasks that are still pending.
+
+The list uses small consecutive numbers such as `1.` and `2.` so the interface feels more like `/resume` and less like a database browser. Internally the bot still uses the real task ids for callback handling, but the user only sees the short numbered list.
+
+That choice keeps the product surface small. The agent still owns scheduling itself through `schedule_task`, while the human gets a direct way to inspect or cancel follow-ups without leaving Telegram or touching the SQLite database.
 
 ## A Note About Multiple MCP Calls
 
