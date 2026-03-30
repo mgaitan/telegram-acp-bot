@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
-from .support import *
+from tests.acp.support import *
 
 
 async def test_acp_client_capture_text_and_media_markers():

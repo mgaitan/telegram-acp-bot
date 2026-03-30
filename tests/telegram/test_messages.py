@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
-from .support import *
+from tests.telegram.support import *
 
 
 async def test_on_text_plain_reply_when_response_has_no_entities():

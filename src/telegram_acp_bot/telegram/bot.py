@@ -53,8 +53,8 @@ from telegram.ext import (  # noqa: F401
 from telegramify_markdown import MessageEntity as MarkdownMessageEntity  # noqa: F401
 from telegramify_markdown import convert, split_entities, utf16_len  # noqa: F401
 
-# Internal re-exports from acp_app and logging_context.
-from telegram_acp_bot.acp_app.models import (  # noqa: F401
+# Internal re-exports from ACP models and logging_context.
+from telegram_acp_bot.acp.models import (  # noqa: F401
     ActivityMode,
     AgentActivityBlock,
     AgentOutputLimitExceededError,

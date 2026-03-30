@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
-from .support import *
+from tests.telegram.support import *
 
 
 async def test_make_config_compact_activity_defaults_to_false():

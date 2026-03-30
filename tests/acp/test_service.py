@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
-from .support import *
+from tests.acp.support import *
 
 
 async def test_new_session_creates_missing_workspace(tmp_path: Path):
