@@ -4552,7 +4552,7 @@ async def test_compact_rotating_dots_cycle(mocker):
         if steps >= stop_after_steps:
             bridge._compact_status_label.pop(TEST_CHAT_ID, None)
 
-    mocker.patch("telegram_acp_bot.telegram.bridge.asyncio.sleep", side_effect=fake_sleep)
+    mocker.patch("telegram_acp_bot.telegram.bot.asyncio.sleep", side_effect=fake_sleep)
     await bridge._animate_compact_status(chat_id=TEST_CHAT_ID, message_id=1)
 
     texts = [cast(str, bot.sent_messages[0]["text"])] + [cast(str, m["text"]) for m in bot.edited_messages]

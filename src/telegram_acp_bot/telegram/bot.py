@@ -15,11 +15,61 @@ See also:
 
 from __future__ import annotations
 
-# Re-export third-party names that tests access via `bot_module.X`.
-from telegram import Bot  # noqa: F401
-from telegramify_markdown import MessageEntity as MarkdownMessageEntity  # noqa: F401
-from telegramify_markdown import utf16_len  # noqa: F401
+# Standard-library re-exports (were at module scope in the original bot.py).
+import asyncio  # noqa: F401
+import base64  # noqa: F401
+import logging  # noqa: F401
+from collections.abc import Awaitable, Callable  # noqa: F401
+from contextlib import suppress  # noqa: F401
+from dataclasses import dataclass, field  # noqa: F401
+from io import BytesIO  # noqa: F401
+from pathlib import Path  # noqa: F401
+from typing import Protocol, cast  # noqa: F401
+from urllib.parse import urlparse  # noqa: F401
+from uuid import uuid4  # noqa: F401
 
+# Third-party re-exports.
+from telegram import (  # noqa: F401
+    Bot,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    Message,
+    MessageEntity,
+    Update,
+)
+from telegram.constants import ChatAction, ParseMode  # noqa: F401
+from telegram.error import TelegramError  # noqa: F401
+from telegram.ext import (  # noqa: F401
+    AIORateLimiter,
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from telegramify_markdown import MessageEntity as MarkdownMessageEntity  # noqa: F401
+from telegramify_markdown import convert, split_entities, utf16_len  # noqa: F401
+
+# Internal re-exports from acp_app and logging_context.
+from telegram_acp_bot.acp_app.models import (  # noqa: F401
+    ActivityMode,
+    AgentActivityBlock,
+    AgentOutputLimitExceededError,
+    AgentReply,
+    FilePayload,
+    ImagePayload,
+    PermissionDecisionAction,
+    PermissionMode,
+    PermissionPolicy,
+    PermissionRequest,
+    PromptFile,
+    PromptImage,
+    ResumableSession,
+)
+from telegram_acp_bot.logging_context import bind_log_context, log_text_preview  # noqa: F401
 from telegram_acp_bot.telegram.activity import (  # noqa: F401
     VERBOSE_STREAM_TICK_SECONDS,
     _ActivityModeHandler,
