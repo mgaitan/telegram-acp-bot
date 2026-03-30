@@ -25,7 +25,10 @@ from telegram_acp_bot.acp_app.models import (
 )
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
+from telegram_acp_bot.telegram import activity as activity_module
+from telegram_acp_bot.telegram import app as app_module
 from telegram_acp_bot.telegram import bot as bot_module
+from telegram_acp_bot.telegram import bridge as bridge_module
 from telegram_acp_bot.telegram.bot import (
     BUSY_CALLBACK_PREFIX,
     BUSY_SENT_TEXT,
@@ -2612,9 +2615,9 @@ async def test_reply_agent_uses_entities_split_flow(monkeypatch: pytest.MonkeyPa
     assert update.message is not None
 
     entity = bot_module.MarkdownMessageEntity(type="bold", offset=0, length=5)
-    monkeypatch.setattr(bot_module, "convert", lambda text: (text, [entity]))
+    monkeypatch.setattr(bridge_module, "convert", lambda text: (text, [entity]))
     monkeypatch.setattr(
-        bot_module,
+        bridge_module,
         "split_entities",
         lambda text, entities, max_utf16_len: [("hello ", entities), ("world", [])],
     )
@@ -2636,7 +2639,7 @@ async def test_reply_agent_falls_back_to_plain_text_on_convert_error(
     def boom(_: str):
         raise RuntimeError
 
-    monkeypatch.setattr(bot_module, "convert", boom)
+    monkeypatch.setattr(bridge_module, "convert", boom)
 
     await TelegramBridge._reply_agent(update, "*x*")
 
@@ -2665,7 +2668,7 @@ async def test_reply_agent_falls_back_to_plain_when_convert_fails(
     def boom(_: str):
         raise RuntimeError
 
-    monkeypatch.setattr(bot_module, "convert", boom)
+    monkeypatch.setattr(bridge_module, "convert", boom)
 
     await TelegramBridge._reply_agent(update, "*x*")
 
@@ -2709,7 +2712,7 @@ async def test_send_markdown_to_chat_falls_back_to_plain_when_convert_fails(monk
     def boom(_: str):
         raise ValueError
 
-    monkeypatch.setattr(bot_module, "convert", boom)
+    monkeypatch.setattr(bridge_module, "convert", boom)
 
     await TelegramBridge._send_markdown_to_chat(
         bot=cast(bot_module.Bot, dummy_bot),
@@ -2767,7 +2770,7 @@ async def test_run_polling(monkeypatch):
         del config, bridge
         return DummyApp()
 
-    monkeypatch.setattr(bot_module, "build_application", fake_build_application)
+    monkeypatch.setattr(app_module, "build_application", fake_build_application)
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = make_bridge()
@@ -2785,7 +2788,7 @@ async def test_run_polling_returns_restart_exit_code(monkeypatch):
         bridge._restart_requested = True
         return DummyApp()
 
-    monkeypatch.setattr(bot_module, "build_application", fake_build_application)
+    monkeypatch.setattr(app_module, "build_application", fake_build_application)
 
     config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
     bridge = make_bridge()
@@ -4147,7 +4150,7 @@ async def test_edit_markdown_in_chat_returns_false_when_plain_edit_fails():
 
 async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
 
-    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    mocker.patch("telegram_acp_bot.telegram.bridge.convert", side_effect=RuntimeError("bad"))
     bot = DummyBot()
     result = await TelegramBridge._edit_markdown_in_chat(
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
@@ -4158,7 +4161,7 @@ async def test_edit_markdown_in_chat_convert_error_falls_back_to_plain(mocker):
 
 async def test_edit_markdown_in_chat_convert_error_returns_false_when_edit_fails(mocker):
 
-    mocker.patch("telegram_acp_bot.telegram.bot.convert", side_effect=RuntimeError("bad"))
+    mocker.patch("telegram_acp_bot.telegram.bridge.convert", side_effect=RuntimeError("bad"))
     bot = FailingEditBot()
     result = await TelegramBridge._edit_markdown_in_chat(
         bot=cast(Bot, bot), chat_id=TEST_CHAT_ID, message_id=COMPACT_STATUS_MSG_ID, text="Hello"
@@ -4308,7 +4311,7 @@ async def test_verbose_final_reply_deletes_preview_when_final_edit_fails():
 
 
 async def test_verbose_in_progress_updates_are_coalesced_before_editing(mocker):
-    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    mocker.patch.object(activity_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
     bridge = make_verbose_bridge()
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
@@ -4333,7 +4336,7 @@ async def test_verbose_in_progress_updates_are_coalesced_before_editing(mocker):
 
 
 async def test_verbose_reset_clears_older_pending_preview_before_flush(mocker):
-    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    mocker.patch.object(activity_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
     bridge = make_verbose_bridge()
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
@@ -4358,7 +4361,7 @@ async def test_verbose_reset_clears_older_pending_preview_before_flush(mocker):
 
 
 async def test_verbose_in_progress_long_preview_stays_single_message(mocker):
-    mocker.patch.object(bot_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
+    mocker.patch.object(activity_module, "VERBOSE_STREAM_TICK_SECONDS", 0.01)
     bridge = make_verbose_bridge()
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
@@ -4549,7 +4552,7 @@ async def test_compact_rotating_dots_cycle(mocker):
         if steps >= stop_after_steps:
             bridge._compact_status_label.pop(TEST_CHAT_ID, None)
 
-    mocker.patch("telegram_acp_bot.telegram.bot.asyncio.sleep", side_effect=fake_sleep)
+    mocker.patch("telegram_acp_bot.telegram.bridge.asyncio.sleep", side_effect=fake_sleep)
     await bridge._animate_compact_status(chat_id=TEST_CHAT_ID, message_id=1)
 
     texts = [cast(str, bot.sent_messages[0]["text"])] + [cast(str, m["text"]) for m in bot.edited_messages]
