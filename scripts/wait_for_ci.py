@@ -29,12 +29,19 @@ class WaitRequest:
 
 
 def _run_gh(*args: str) -> str:
-    completed = subprocess.run(
-        ["gh", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["gh", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            sys.stderr.write(exc.stderr)
+        else:
+            sys.stderr.write(f"'gh' command failed with exit code {exc.returncode}\n")
+        raise
     return completed.stdout
 
 
