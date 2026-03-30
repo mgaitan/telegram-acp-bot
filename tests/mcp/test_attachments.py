@@ -110,6 +110,17 @@ def test_load_attachment_bytes_rejects_missing_path(tmp_path: Path):
     assert result.startswith("file not found:")
 
 
+def test_load_attachment_bytes_requires_exactly_one_source():
+    assert (
+        mcp_channel._load_attachment_bytes(path=None, data_base64=None, name=None)
+        == "provide exactly one of `path` or `data_base64`"
+    )
+    assert (
+        mcp_channel._load_attachment_bytes(path="artifact.bin", data_base64="cGF5bG9hZA==", name=None)
+        == "provide exactly one of `path` or `data_base64`"
+    )
+
+
 @pytest.mark.asyncio
 async def test_send_attachment_rejects_path_when_not_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_file = tmp_path / "state.json"

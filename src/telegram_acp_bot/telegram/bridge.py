@@ -95,6 +95,7 @@ from telegram_acp_bot.telegram.models import (
 logger = logging.getLogger(__name__)
 APP_NOT_RUNNING_ERROR = "application is not running"
 SCHEDULED_CHAT_BUSY_ERROR = "chat is busy"
+SCHEDULED_PROMPT_TRY_LOCK_TIMEOUT_SECONDS = 1e-9
 SCHEDULED_MISSING_ANCHOR_ERROR = "scheduled task is missing an anchor message"
 
 
@@ -1698,12 +1699,9 @@ class TelegramBridge:
             message = "Could not run automatically: scheduled prompt is empty."
             await self._send_scheduled_status_message(task=task, text=message)
             raise ScheduledTaskExecutionError(message)
-        lock = self._chat_prompt_lock(task.chat_id)
-        if lock.locked():
-            raise ScheduledTaskDeferredError(SCHEDULED_CHAT_BUSY_ERROR)
-
         anchor_message_id = self._scheduled_anchor_message_id(task)
-        async with lock:
+        lock = await self._acquire_scheduled_prompt_lock(task.chat_id)
+        try:
             session_context = self._active_session_context(chat_id=task.chat_id)
             session_id = None if session_context is None else session_context[0]
             with bind_log_context(chat_id=task.chat_id, session_id=session_id):
@@ -1737,6 +1735,18 @@ class TelegramBridge:
                 message = f"Could not deliver scheduled reply: {exc}"
                 await self._send_scheduled_status_message(task=task, text=message)
                 raise ScheduledTaskExecutionError(message) from exc
+        finally:
+            lock.release()
+
+    async def _acquire_scheduled_prompt_lock(self, chat_id: int) -> asyncio.Lock:
+        lock = self._chat_prompt_lock(chat_id)
+        try:
+            # `asyncio.Lock` has no try-acquire API. A tiny positive timeout gives
+            # us effective non-blocking behavior without the race in `lock.locked()`.
+            await asyncio.wait_for(lock.acquire(), timeout=SCHEDULED_PROMPT_TRY_LOCK_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            raise ScheduledTaskDeferredError(SCHEDULED_CHAT_BUSY_ERROR) from exc
+        return lock
 
     async def _send_agent_reply_to_chat(
         self,

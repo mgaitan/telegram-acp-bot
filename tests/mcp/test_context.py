@@ -9,7 +9,7 @@ import pytest
 from tests.mcp.support import STATE_FILE_ENV, TOKEN_ENV, mcp_channel, save_last_session_id, save_session_chat_map
 
 
-def test_resolve_request_context_requires_exactly_one_payload_source():
+def test_resolve_request_context_reports_missing_token_by_default():
     result = mcp_channel._resolve_request_context(session_id="s1")
     assert result == f"missing {TOKEN_ENV}"
 

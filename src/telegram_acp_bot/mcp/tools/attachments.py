@@ -9,6 +9,7 @@ import os
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 from mcp.server.fastmcp import FastMCP
 from telegram import Bot, InputFile
@@ -16,6 +17,7 @@ from telegram import Bot, InputFile
 from telegram_acp_bot.mcp.context import resolve_request_context
 
 ALLOW_PATH_ENV = "ACP_TELEGRAM_CHANNEL_ALLOW_PATH"
+EXACTLY_ONE_ATTACHMENT_SOURCE_ERROR = "provide exactly one of `path` or `data_base64`"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +89,9 @@ def load_attachment_bytes(
 ) -> AttachmentPayload | str:
     """Load attachment bytes from a trusted path or base64 payload."""
 
+    if (path is None) == (data_base64 is None):
+        return EXACTLY_ONE_ATTACHMENT_SOURCE_ERROR
+
     if path is not None:
         source_path = Path(path).expanduser().resolve(strict=False)
         if not source_path.is_file():
@@ -96,9 +101,8 @@ def load_attachment_bytes(
         guessed_mime = mimetypes.guess_type(filename)[0]
         return AttachmentPayload(raw=raw, filename=filename, guessed_mime=guessed_mime)
 
-    assert data_base64 is not None
     try:
-        raw = base64.b64decode(data_base64, validate=True)
+        raw = base64.b64decode(cast(str, data_base64), validate=True)
     except (ValueError, binascii.Error):
         return "invalid base64 payload"
     filename = name or "attachment.bin"

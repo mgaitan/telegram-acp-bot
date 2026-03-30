@@ -90,6 +90,17 @@ class FakeScheduler:
         self.stopped = True
 
 
+class SlowAcquireLock:
+    def locked(self) -> bool:
+        return False
+
+    async def acquire(self) -> None:
+        await asyncio.Future()
+
+    def release(self) -> None:
+        return None
+
+
 async def wait_for_task_status(
     store: ScheduledTaskStore,
     task_id: str,
@@ -494,6 +505,24 @@ async def test_execute_scheduled_prompt_defers_while_chat_is_busy():
             await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
     finally:
         lock.release()
+
+    assert bot.sent_messages == []
+    assert service.prompt_calls == []
+
+
+async def test_execute_scheduled_prompt_defers_when_try_lock_times_out(mocker):
+    service = ScheduledPromptService()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=cast(AgentService, service),
+    )
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    slow_lock = SlowAcquireLock()
+    mocker.patch.object(bridge, "_chat_prompt_lock", return_value=cast(asyncio.Lock, slow_lock))
+
+    with pytest.raises(ScheduledTaskDeferredError):
+        await bridge.execute_scheduled_task(make_task(mode="prompt_agent", prompt_text="check again"))
 
     assert bot.sent_messages == []
     assert service.prompt_calls == []
