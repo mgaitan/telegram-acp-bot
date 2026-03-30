@@ -18,8 +18,8 @@ from typing import cast
 from acp.schema import EnvVariable, McpServerStdio
 from dotenv import load_dotenv
 
-from telegram_acp_bot.acp_app.acp_service import AcpAgentService
-from telegram_acp_bot.acp_app.models import ActivityMode, PermissionEventOutput, PermissionMode
+from telegram_acp_bot.acp.models import ActivityMode, PermissionEventOutput, PermissionMode
+from telegram_acp_bot.acp.service import AcpAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import configure_logging
 from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file

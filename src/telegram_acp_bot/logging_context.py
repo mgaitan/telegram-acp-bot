@@ -170,6 +170,6 @@ class _JsonLogFormatter(logging.Formatter):
 def _logger_label(logger_name: str) -> str:
     labels = {
         "telegram_acp_bot.telegram.bot": "telegram",
-        "telegram_acp_bot.acp_app.acp_service": "acp",
+        "telegram_acp_bot.acp.service": "acp",
     }
     return labels.get(logger_name, logger_name.rsplit(".", maxsplit=1)[-1])

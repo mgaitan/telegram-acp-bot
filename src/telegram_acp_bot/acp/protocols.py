@@ -7,6 +7,13 @@ from importlib import metadata
 from typing import Protocol
 
 from acp.core import ClientSideConnection
+from acp.schema import (
+    AudioContentBlock,
+    EmbeddedResourceContentBlock,
+    ImageContentBlock,
+    ResourceContentBlock,
+    TextContentBlock,
+)
 
 TERMINAL_TOOL_STATUSES = {"completed", "failed"}
 MIN_NUMERIC_DOT_PREFIX_LENGTH = 2
@@ -15,6 +22,9 @@ INCREMENTAL_TEXT_MIN_INTERVAL_SECONDS = 0.10
 INCREMENTAL_TEXT_MIN_DELTA_CHARS = 8
 INCREMENTAL_TEXT_BOUNDARY_CHARS = ("\n", ".", "!", "?", ":", ";")
 PACKAGE_NAME = "telegram-acp-bot"
+PromptContentBlock = (
+    TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
+)
 
 
 def _package_version() -> str:

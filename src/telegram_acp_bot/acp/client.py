@@ -32,14 +32,14 @@ from acp.schema import (
     WriteTextFileResponse,
 )
 
-from telegram_acp_bot.acp_app.models import (
+from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
     AgentReply,
     FilePayload,
     ImagePayload,
     ToolCallStatus,
 )
-from telegram_acp_bot.acp_app.protocols import (
+from telegram_acp_bot.acp.protocols import (
     INCREMENTAL_TEXT_BOUNDARY_CHARS,
     INCREMENTAL_TEXT_MIN_DELTA_CHARS,
     INCREMENTAL_TEXT_MIN_INTERVAL_SECONDS,
@@ -47,7 +47,7 @@ from telegram_acp_bot.acp_app.protocols import (
     MIN_NUMERIC_DOT_PREFIX_LENGTH,
     TERMINAL_TOOL_STATUSES,
 )
-from telegram_acp_bot.acp_app.session import (
+from telegram_acp_bot.acp.session import (
     _ActiveToolBlock,
     _PendingTextState,
 )

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from telegram_acp_bot.acp_app.echo_service import EchoAgentService
+from telegram_acp_bot.acp.echo_service import EchoAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
 
 pytestmark = pytest.mark.asyncio

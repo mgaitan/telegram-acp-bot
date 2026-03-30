@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from telegram_acp_bot.acp_app.models import ActivityMode
+from telegram_acp_bot.acp.models import ActivityMode
 
 
 @dataclass(slots=True, frozen=True)

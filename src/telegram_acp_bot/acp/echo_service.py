@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from telegram_acp_bot.acp_app.models import (
+from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
     AgentReply,
     PermissionDecisionAction,

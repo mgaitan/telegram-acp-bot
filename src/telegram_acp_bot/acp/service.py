@@ -18,23 +18,19 @@ from acp.core import ClientSideConnection
 from acp.schema import (
     AgentCapabilities,
     AllowedOutcome,
-    AudioContentBlock,
     ClientCapabilities,
     DeniedOutcome,
-    EmbeddedResourceContentBlock,
     ImageContentBlock,
     Implementation,
     McpServerStdio,
     PermissionOption,
     RequestPermissionResponse,
-    ResourceContentBlock,
     SessionInfo,
-    TextContentBlock,
     ToolCall,
 )
 
-from telegram_acp_bot.acp_app.client import _AcpClient
-from telegram_acp_bot.acp_app.models import (
+from telegram_acp_bot.acp.client import _AcpClient
+from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
     AgentOutputLimitExceededError,
     AgentReply,
@@ -49,15 +45,16 @@ from telegram_acp_bot.acp_app.models import (
     PromptImage,
     ResumableSession,
 )
-from telegram_acp_bot.acp_app.protocols import (
+from telegram_acp_bot.acp.protocols import (
     AcpConnectionFactory,
     AcpHandshakeTimeoutError,
     AcpSpawnFn,
     ProcessLike,
+    PromptContentBlock,
     SessionLoadNotSupportedError,
     _package_version,
 )
-from telegram_acp_bot.acp_app.session import _LiveSession, _PendingPermission
+from telegram_acp_bot.acp.session import _LiveSession, _PendingPermission
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
 from telegram_acp_bot.mcp_channel_state import (
@@ -68,10 +65,6 @@ from telegram_acp_bot.mcp_channel_state import (
 )
 
 logger = logging.getLogger(__name__)
-
-PromptContentBlock = (
-    TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
-)
 
 
 class AcpAgentService:

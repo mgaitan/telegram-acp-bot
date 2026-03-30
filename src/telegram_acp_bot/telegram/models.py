@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from telegram import Update
 
-from telegram_acp_bot.acp_app.models import (
+from telegram_acp_bot.acp.models import (
     AgentActivityBlock,
     AgentReply,
     PermissionDecisionAction,

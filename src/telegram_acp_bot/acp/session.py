@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING
 from acp.core import ClientSideConnection
 from acp.schema import PermissionOption, RequestPermissionResponse
 
-from telegram_acp_bot.acp_app.models import PermissionMode
+from telegram_acp_bot.acp.models import PermissionMode
 
 if TYPE_CHECKING:
-    from telegram_acp_bot.acp_app.client import _AcpClient
-    from telegram_acp_bot.acp_app.protocols import ProcessLike
+    from telegram_acp_bot.acp.client import _AcpClient
+    from telegram_acp_bot.acp.protocols import ProcessLike
 
 
 @dataclass(slots=True)

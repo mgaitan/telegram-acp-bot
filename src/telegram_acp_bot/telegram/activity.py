@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from telegram import Bot, InlineKeyboardMarkup, Message, Update
 from telegram.error import TelegramError
 
-from telegram_acp_bot.acp_app.models import AgentActivityBlock, PermissionRequest
+from telegram_acp_bot.acp.models import AgentActivityBlock, PermissionRequest
 from telegram_acp_bot.telegram.models import _QueuedVerboseBlock, _VerboseActivityMessage
 
 if TYPE_CHECKING:

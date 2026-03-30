@@ -35,7 +35,7 @@ from telegram.ext import (
 from telegramify_markdown import MessageEntity as MarkdownMessageEntity
 from telegramify_markdown import convert, split_entities, utf16_len
 
-from telegram_acp_bot.acp_app.models import (
+from telegram_acp_bot.acp.models import (
     ActivityMode,
     AgentActivityBlock,
     AgentOutputLimitExceededError,
