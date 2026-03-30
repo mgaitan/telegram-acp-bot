@@ -37,6 +37,8 @@ It currently exposes:
   Returns channel capability metadata.
 2. `telegram_send_attachment`
   Sends a file/image attachment to Telegram for the active session.
+3. `schedule_task`
+  Schedules a one-shot deferred follow-up for the current Telegram chat.
 
 ## `telegram_send_attachment`
 
@@ -54,6 +56,24 @@ Behavior:
 - If mime resolves to `image/*`, it sends as Telegram photo.
 - Otherwise it sends as Telegram document.
 - For security, prefer `data_base64` unless you explicitly trust local file-path inputs.
+
+## `schedule_task`
+
+Inputs:
+
+- `run_at` as ISO 8601 with an explicit timezone offset
+- `mode`: `notify` or `prompt_agent`
+- `notify_text` for `notify`
+- `prompt_text` for `prompt_agent`
+- `reply_to_message_id` (optional)
+- `session_id` (optional)
+
+Behavior:
+
+- The tool resolves the current Telegram chat from the internal MCP channel state.
+- It creates a Telegram anchor message immediately.
+- It persists the deferred task in the SQLite database configured by {term}`ACP_SCHEDULED_TASKS_DB`.
+- The bot scheduler later edits that anchor message as the task moves through execution.
 
 ## Session routing
 

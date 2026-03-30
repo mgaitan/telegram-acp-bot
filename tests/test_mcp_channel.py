@@ -18,14 +18,18 @@ from telegram_acp_bot.mcp_channel_state import (
     save_last_session_id,
     save_session_chat_map,
 )
+from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskStore
 
 STATE_FILE_PRIVATE_MODE = 0o600
+TEST_SCHEDULED_CHAT_ID = 123
+TEST_ANCHOR_MESSAGE_ID = 77
 
 
 def test_telegram_channel_info_reports_active_capabilities():
     payload = mcp_channel.telegram_channel_info()
     assert payload["status"] == "active"
     assert payload["supports_attachment_delivery"] is True
+    assert payload["supports_scheduled_tasks"] is True
     assert payload["supports_followup_buttons"] is False
 
 
@@ -169,21 +173,21 @@ async def test_send_attachment_uses_overridden_name_for_mime_inference(
 
 
 def test_resolve_request_context_requires_exactly_one_payload_source():
-    result = mcp_channel._resolve_request_context(session_id="s1", path=None, data_base64=None)
-    assert result == "provide exactly one of `path` or `data_base64`"
+    result = mcp_channel._resolve_request_context(session_id="s1")
+    assert result == f"missing {TOKEN_ENV}"
 
 
 def test_resolve_request_context_requires_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(TOKEN_ENV, raising=False)
     monkeypatch.setenv(STATE_FILE_ENV, str(tmp_path / "state.json"))
-    result = mcp_channel._resolve_request_context(session_id="s1", path="file.bin", data_base64=None)
+    result = mcp_channel._resolve_request_context(session_id="s1")
     assert result == f"missing {TOKEN_ENV}"
 
 
 def test_resolve_request_context_requires_state_file_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.delenv(STATE_FILE_ENV, raising=False)
-    result = mcp_channel._resolve_request_context(session_id="s1", path="file.bin", data_base64=None)
+    result = mcp_channel._resolve_request_context(session_id="s1")
     assert result == f"missing {STATE_FILE_ENV}"
 
 
@@ -193,7 +197,7 @@ def test_resolve_request_context_requires_inferable_session(tmp_path: Path, monk
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
 
-    result = mcp_channel._resolve_request_context(session_id=None, path="file.bin", data_base64=None)
+    result = mcp_channel._resolve_request_context(session_id=None)
 
     assert result == "missing session_id and no active session could be inferred"
 
@@ -206,7 +210,7 @@ def test_resolve_request_context_requires_explicit_session_when_multiple_mapping
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
 
-    result = mcp_channel._resolve_request_context(session_id=None, path="file.bin", data_base64=None)
+    result = mcp_channel._resolve_request_context(session_id=None)
 
     assert (
         result == "missing session_id: multiple active sessions exist and no last active session could be inferred. "
@@ -223,7 +227,7 @@ def test_resolve_request_context_uses_last_active_session_when_multiple_mappings
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
 
-    result = mcp_channel._resolve_request_context(session_id=None, path="file.bin", data_base64=None)
+    result = mcp_channel._resolve_request_context(session_id=None)
 
     assert result == mcp_channel._RequestContext(token="TOKEN", chat_id=456, session_id="s2")
 
@@ -235,7 +239,7 @@ def test_resolve_request_context_ignores_stale_last_session_id(tmp_path: Path, m
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
 
-    result = mcp_channel._resolve_request_context(session_id=None, path="file.bin", data_base64=None)
+    result = mcp_channel._resolve_request_context(session_id=None)
 
     assert isinstance(result, str)
     assert result.startswith(
@@ -298,3 +302,188 @@ def test_state_file_atomic_write_removes_temp_file_on_replace_error(tmp_path: Pa
         save_session_chat_map(state_file, {"s1": 123})
 
     assert list(tmp_path.glob(f".{state_file.name}*.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_creates_anchor_message_and_persists_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker,
+):
+    state_file = tmp_path / "state.json"
+    scheduled_db = tmp_path / "scheduled.sqlite3"
+    save_session_chat_map(state_file, {"s1": 123})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.setenv(ACP_SCHEDULED_TASKS_DB_ENV, str(scheduled_db))
+    bot = mocker.AsyncMock()
+    bot.send_message.return_value = mocker.Mock(message_id=TEST_ANCHOR_MESSAGE_ID)
+    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="notify",
+        notify_text="Review the PR now",
+    )
+
+    store = ScheduledTaskStore(scheduled_db)
+    task = store.get_task(result["task_id"])
+
+    assert result["ok"] is True
+    assert result["anchor_message_id"] == TEST_ANCHOR_MESSAGE_ID
+    assert task is not None
+    assert task.chat_id == TEST_SCHEDULED_CHAT_ID
+    assert task.anchor_message_id == TEST_ANCHOR_MESSAGE_ID
+    assert task.mode == "notify"
+    assert task.notify_text == "Review the PR now"
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_rejects_invalid_timestamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+    scheduled_db = tmp_path / "scheduled.sqlite3"
+    save_session_chat_map(state_file, {"s1": 123})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.setenv(ACP_SCHEDULED_TASKS_DB_ENV, str(scheduled_db))
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00",
+        mode="notify",
+        notify_text="Review the PR now",
+    )
+
+    assert result["ok"] is False
+    assert "timezone" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_rejects_invalid_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+    scheduled_db = tmp_path / "scheduled.sqlite3"
+    save_session_chat_map(state_file, {"s1": TEST_SCHEDULED_CHAT_ID})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.setenv(ACP_SCHEDULED_TASKS_DB_ENV, str(scheduled_db))
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="later",
+        notify_text="Review the PR now",
+    )
+
+    assert result["ok"] is False
+    assert "mode must be one of" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_requires_notify_text_for_notify_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state_file = tmp_path / "state.json"
+    scheduled_db = tmp_path / "scheduled.sqlite3"
+    save_session_chat_map(state_file, {"s1": TEST_SCHEDULED_CHAT_ID})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.setenv(ACP_SCHEDULED_TASKS_DB_ENV, str(scheduled_db))
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="notify",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "notify mode requires notify_text"
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_requires_prompt_text_for_prompt_agent_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state_file = tmp_path / "state.json"
+    scheduled_db = tmp_path / "scheduled.sqlite3"
+    save_session_chat_map(state_file, {"s1": TEST_SCHEDULED_CHAT_ID})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.setenv(ACP_SCHEDULED_TASKS_DB_ENV, str(scheduled_db))
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="prompt_agent",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "prompt_agent mode requires prompt_text"
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_replies_to_specific_message_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker,
+):
+    state_file = tmp_path / "state.json"
+    scheduled_db = tmp_path / "scheduled.sqlite3"
+    save_session_chat_map(state_file, {"s1": TEST_SCHEDULED_CHAT_ID})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.setenv(ACP_SCHEDULED_TASKS_DB_ENV, str(scheduled_db))
+    bot = mocker.AsyncMock()
+    bot.send_message.return_value = mocker.Mock(message_id=TEST_ANCHOR_MESSAGE_ID)
+    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+
+    await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="notify",
+        notify_text="Review the PR now",
+        reply_to_message_id=9,
+    )
+
+    bot.send_message.assert_awaited_once_with(
+        chat_id=TEST_SCHEDULED_CHAT_ID,
+        text="Scheduled for 2026-03-30 21:00 UTC.",
+        reply_to_message_id=9,
+        allow_sending_without_reply=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_reports_missing_scheduled_db_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker,
+):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": TEST_SCHEDULED_CHAT_ID})
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+    monkeypatch.delenv(ACP_SCHEDULED_TASKS_DB_ENV, raising=False)
+    bot = mocker.AsyncMock()
+    bot.send_message.return_value = mocker.Mock(message_id=TEST_ANCHOR_MESSAGE_ID)
+    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="notify",
+        notify_text="Review the PR now",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == f"missing {ACP_SCHEDULED_TASKS_DB_ENV}"
+
+
+@pytest.mark.asyncio
+async def test_schedule_task_reports_context_resolution_error(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(TOKEN_ENV, raising=False)
+    monkeypatch.delenv(STATE_FILE_ENV, raising=False)
+
+    result = await mcp_channel.schedule_task(
+        run_at="2026-03-30T21:00:00+00:00",
+        mode="notify",
+        notify_text="Review the PR now",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == f"missing {TOKEN_ENV}"

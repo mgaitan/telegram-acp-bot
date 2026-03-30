@@ -70,6 +70,10 @@ ACP_ACTIVITY_MODE
   tool activity, and then finalizes those messages when the prompt completes.
   Maps to `--activity-mode`.
 
+ACP_SCHEDULED_TASKS_DB
+  Path to the SQLite database used for deferred follow-up tasks.
+  Maps to `--scheduled-tasks-db`.
+
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
   Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
   Disabled by default. Set to `1` (or `true`/`yes`/`on`) only when file-path inputs are trusted.
@@ -98,6 +102,7 @@ ACP_CONNECT_TIMEOUT=30
 ACP_LOG_LEVEL=INFO
 ACP_LOG_FORMAT=text
 ACP_ACTIVITY_MODE=normal
+ACP_SCHEDULED_TASKS_DB=/home/alice/.local/state/telegram-acp-bot/scheduled-tasks.sqlite3
 ```
 
 ## MCP behavior

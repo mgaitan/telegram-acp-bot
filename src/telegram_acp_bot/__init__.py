@@ -24,6 +24,13 @@ from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import configure_logging
 from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
 from telegram_acp_bot.register_commands import add_register_commands_subparser
+from telegram_acp_bot.scheduled_tasks import (
+    ACP_SCHEDULED_TASKS_DB_ENV,
+    ScheduledTaskRunner,
+    ScheduledTaskScheduler,
+    ScheduledTaskStore,
+    default_scheduled_tasks_db_path,
+)
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, BotConfig, TelegramBridge, make_config, run_polling
 
 ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
@@ -117,10 +124,20 @@ def get_parser() -> argparse.ArgumentParser:
             "'verbose' streams append-only updates for active reply and tool activity."
         ),
     )
+    parser.add_argument(
+        "--scheduled-tasks-db",
+        default=os.getenv(ACP_SCHEDULED_TASKS_DB_ENV, str(default_scheduled_tasks_db_path())),
+        help="SQLite database path used for deferred scheduled follow-ups.",
+    )
     return parser
 
 
-def _default_mcp_servers(*, telegram_token: str, state_file: Path) -> tuple[McpServerStdio, ...]:
+def _default_mcp_servers(
+    *,
+    telegram_token: str,
+    state_file: Path,
+    scheduled_tasks_db: Path,
+) -> tuple[McpServerStdio, ...]:
     """Return MCP servers that should always be exposed to the ACP agent."""
 
     return (
@@ -131,6 +148,7 @@ def _default_mcp_servers(*, telegram_token: str, state_file: Path) -> tuple[McpS
             env=[
                 EnvVariable(name=TOKEN_ENV, value=telegram_token),
                 EnvVariable(name=STATE_FILE_ENV, value=str(state_file)),
+                EnvVariable(name=ACP_SCHEDULED_TASKS_DB_ENV, value=str(scheduled_tasks_db)),
             ],
         ),
     )
@@ -164,11 +182,12 @@ def _resolve_allowed_users(*, parser: argparse.ArgumentParser, opts: argparse.Na
 def _run_bot_loop(
     config: BotConfig,
     bridge: TelegramBridge,
+    scheduler: ScheduledTaskScheduler | None,
     restart_command_parts: list[str] | None,
 ) -> int:
     """Poll until normal exit; re-exec the process on restart requests."""
     while True:
-        exit_code = run_polling(config, bridge)
+        exit_code = run_polling(config, bridge, scheduler=scheduler)
         if exit_code != RESTART_EXIT_CODE:
             return exit_code
         try:
@@ -227,7 +246,12 @@ def main(args: list[str] | None = None) -> int:
         parser.error("--agent-command is empty after parsing")
     restart_command_parts = shlex.split(opts.restart_command) if opts.restart_command.strip() else None
     channel_state_file = default_state_file(pid=os.getpid())
-    mcp_servers = _default_mcp_servers(telegram_token=opts.telegram_token, state_file=channel_state_file)
+    scheduled_tasks_db = Path(opts.scheduled_tasks_db).expanduser()
+    mcp_servers = _default_mcp_servers(
+        telegram_token=opts.telegram_token,
+        state_file=channel_state_file,
+        scheduled_tasks_db=scheduled_tasks_db,
+    )
 
     config = make_config(
         token=opts.telegram_token,
@@ -248,7 +272,11 @@ def main(args: list[str] | None = None) -> int:
         connect_timeout=opts.acp_connect_timeout,
     )
     bridge = TelegramBridge(config=config, agent_service=service)
-    return _run_bot_loop(config, bridge, restart_command_parts)
+    scheduler = ScheduledTaskScheduler(
+        store=ScheduledTaskStore(scheduled_tasks_db),
+        runner=ScheduledTaskRunner(bridge.execute_scheduled_task),
+    )
+    return _run_bot_loop(config, bridge, scheduler, restart_command_parts)
 
 
 __all__: list[str] = ["get_parser", "main"]

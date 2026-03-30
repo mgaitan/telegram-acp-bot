@@ -102,6 +102,7 @@ TELEGRAM_BOT_TOKEN=123456:abc ACP_AGENT_COMMAND="your acp capable agent" uvx tel
 :caption: Documentation
 
 how-to.md
+deferred_followups.md
 agents.md
 cli.md
 mcp.md

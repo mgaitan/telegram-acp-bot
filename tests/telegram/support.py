@@ -132,6 +132,8 @@ class DummyBot:
         self.actions: list[tuple[int, str]] = []
         self.files: dict[str, bytes] = {}
         self.sent_messages: list[dict[str, object]] = []
+        self.sent_photos: list[dict[str, object]] = []
+        self.sent_documents: list[dict[str, object]] = []
         self._next_message_id = 1
         self.edited_reply_markups: list[dict[str, object]] = []
         self.edited_messages: list[dict[str, object]] = []
@@ -146,6 +148,18 @@ class DummyBot:
 
     async def send_message(self, **kwargs: object) -> SimpleNamespace:
         self.sent_messages.append(kwargs)
+        msg = SimpleNamespace(message_id=self._next_message_id)
+        self._next_message_id += 1
+        return msg
+
+    async def send_photo(self, **kwargs: object) -> SimpleNamespace:
+        self.sent_photos.append(kwargs)
+        msg = SimpleNamespace(message_id=self._next_message_id)
+        self._next_message_id += 1
+        return msg
+
+    async def send_document(self, **kwargs: object) -> SimpleNamespace:
+        self.sent_documents.append(kwargs)
         msg = SimpleNamespace(message_id=self._next_message_id)
         self._next_message_id += 1
         return msg

@@ -11,8 +11,10 @@ import binascii
 import mimetypes
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 from mcp.server.fastmcp import FastMCP
 from telegram import Bot, InputFile
@@ -23,8 +25,11 @@ from telegram_acp_bot.mcp_channel_state import (
     load_last_session_id,
     load_session_chat_map,
 )
+from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskMode, ScheduledTaskStore
+from telegram_acp_bot.scheduled_tasks.store import parse_utc_timestamp
 
 ALLOW_PATH_ENV = "ACP_TELEGRAM_CHANNEL_ALLOW_PATH"
+MISSING_SCHEDULED_DB_ERROR = f"missing {ACP_SCHEDULED_TASKS_DB_ENV}"
 
 mcp = FastMCP(
     name="telegram-channel",
@@ -55,6 +60,7 @@ class _AttachmentPayload:
 def telegram_channel_info() -> dict[str, object]:
     return {
         "supports_attachment_delivery": True,
+        "supports_scheduled_tasks": True,
         "supports_followup_buttons": False,
         "status": "active",
     }
@@ -81,7 +87,7 @@ async def telegram_send_attachment(
     if path is not None and not _allow_path_inputs():
         return fail(f"`path` input is disabled by default. Set {ALLOW_PATH_ENV}=1 to enable it.")
 
-    context = _resolve_request_context(session_id=session_id, path=path, data_base64=data_base64)
+    context = _resolve_request_context(session_id=session_id)
     if isinstance(context, str):
         return fail(context)
 
@@ -106,6 +112,74 @@ async def telegram_send_attachment(
         "delivered_as": delivered_as,
         "name": loaded.filename,
         "mime_type": resolved_mime,
+    }
+
+
+@mcp.tool(
+    name="schedule_task",
+    description=(
+        "Schedule a one-shot deferred follow-up for the current Telegram chat. "
+        "Use an ISO 8601 timestamp with an explicit timezone offset."
+    ),
+)
+async def schedule_task(  # noqa: PLR0911,PLR0913
+    run_at: str,
+    mode: str,
+    prompt_text: str | None = None,
+    notify_text: str | None = None,
+    reply_to_message_id: int | None = None,
+    session_id: str | None = None,
+) -> dict[str, object]:
+    def fail(error: str) -> dict[str, object]:
+        return {"ok": False, "error": error}
+
+    context = _resolve_request_context(session_id=session_id)
+    if isinstance(context, str):
+        return fail(context)
+
+    if mode not in {"notify", "prompt_agent"}:
+        return fail("mode must be one of: notify, prompt_agent")
+    if mode == "notify" and not (notify_text or "").strip():
+        return fail("notify mode requires notify_text")
+    if mode == "prompt_agent" and not (prompt_text or "").strip():
+        return fail("prompt_agent mode requires prompt_text")
+
+    try:
+        run_at_dt = parse_utc_timestamp(run_at)
+    except ValueError as exc:
+        return fail(str(exc))
+
+    bot = Bot(token=context.token)
+    anchor_text = _format_scheduled_anchor_text(run_at_dt)
+    if isinstance(reply_to_message_id, int):
+        anchor_message = await bot.send_message(
+            chat_id=context.chat_id,
+            text=anchor_text,
+            reply_to_message_id=reply_to_message_id,
+            allow_sending_without_reply=True,
+        )
+    else:
+        anchor_message = await bot.send_message(chat_id=context.chat_id, text=anchor_text)
+
+    try:
+        store = _load_scheduled_task_store()
+    except RuntimeError as exc:
+        return fail(str(exc))
+    task = store.create_task(
+        chat_id=context.chat_id,
+        anchor_message_id=anchor_message.message_id,
+        mode=cast(ScheduledTaskMode, mode),
+        prompt_text=prompt_text,
+        notify_text=notify_text,
+        run_at=run_at_dt,
+    )
+    return {
+        "ok": True,
+        "task_id": task.id,
+        "chat_id": task.chat_id,
+        "anchor_message_id": task.anchor_message_id,
+        "run_at": task.run_at.isoformat(),
+        "summary": anchor_text,
     }
 
 
@@ -134,15 +208,10 @@ def _load_attachment_bytes(
     return _AttachmentPayload(raw=raw, filename=filename, guessed_mime=guessed_mime)
 
 
-def _resolve_request_context(  # noqa: PLR0911
+def _resolve_request_context(
     *,
     session_id: str | None,
-    path: str | None,
-    data_base64: str | None,
 ) -> _RequestContext | str:
-    if bool(path) == bool(data_base64):
-        return "provide exactly one of `path` or `data_base64`"
-
     token = os.getenv(TOKEN_ENV, "").strip()
     if not token:
         return f"missing {TOKEN_ENV}"
@@ -173,6 +242,20 @@ def _resolve_request_context(  # noqa: PLR0911
     if chat_id is None:
         return f"unknown session_id `{selected_session_id}`"
     return _RequestContext(token=token, chat_id=chat_id, session_id=selected_session_id)
+
+
+def _load_scheduled_task_store() -> ScheduledTaskStore:
+    db_path_raw = os.getenv(ACP_SCHEDULED_TASKS_DB_ENV, "").strip()
+    if not db_path_raw:
+        raise RuntimeError(MISSING_SCHEDULED_DB_ERROR)
+    store = ScheduledTaskStore(Path(db_path_raw).expanduser())
+    store.initialize()
+    return store
+
+
+def _format_scheduled_anchor_text(run_at: datetime) -> str:
+    timestamp = run_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return f"Scheduled for {timestamp}."
 
 
 def _allow_path_inputs() -> bool:
