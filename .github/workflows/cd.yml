@@ -39,7 +39,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
@@ -65,7 +65,7 @@ jobs:
       name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_target == 'preview' && 'github-pages-preview' || 'github-pages' }}
       url: ${{ steps.preview_url.outputs.url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: actions/configure-pages@v5
