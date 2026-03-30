@@ -1,89 +1,80 @@
 # Deferred Follow-ups
 
-Deferred follow-ups let the agent schedule a one-shot action for later without
-keeping the original ACP prompt alive.
+Deferred follow-ups let the agent promise something now and do it later, without keeping the original ACP prompt alive. The feature is deliberately small, but it already covers the most useful cases: “check this again in 10 minutes”, “remind me at 9 PM”, or “send me a short follow-up in 30 seconds”.
 
-This is useful for requests such as:
+The important user-facing idea is that scheduling should feel conversational, not infrastructural. The user asks for something later. The agent answers normally in the thread. When the scheduled time arrives, the follow-up appears as a reply to that scheduling confirmation.
 
-- `check this PR again in 10 minutes`
-- `notify me at 9 PM`
+For example, the interaction is meant to feel like this:
 
-## Current scope
+```text
+User: check this PR again in 10 minutes
+Bot: Okay. I’ll check it again in 10 minutes.
 
-The first iteration is intentionally narrow:
+... later ...
 
-- one-shot tasks only
-- local SQLite persistence
-- an in-process scheduler inside the bot runtime
-- two execution modes:
-  - `notify`
-  - `prompt_agent`
-
-Not included yet:
-
-- recurring schedules
-- list/cancel commands in Telegram
-- automatic session resume when no active chat session exists
-
-## User-facing behavior
-
-When a task is scheduled, the bot creates a single anchor message in Telegram:
-
-- `Scheduled for 2026-03-30 21:00 UTC.`
-
-When the task becomes due, the bot edits that same message:
-
-- `Running now...`
-
-When execution finishes, the bot edits the anchor again:
-
-- `Completed.`
-- or a failure message such as `Could not run automatically: no active session.`
-
-For `prompt_agent`, the actual agent reply is delivered through the normal
-Telegram reply pipeline as a reply to that anchor message.
-
-## Session behavior
-
-`prompt_agent` only runs when the chat already has an active ACP session.
-
-If no active session exists at execution time:
-
-- the task is marked as failed
-- the anchor message is updated with a visible explanation
-
-This keeps the first version predictable and avoids hidden session rehydration.
-
-## Persistence model
-
-Deferred tasks are stored in a local SQLite database configured via
-{term}`ACP_SCHEDULED_TASKS_DB`.
-
-Each task stores:
-
-- target `chat_id`
-- the Telegram anchor `message_id`
-- execution `mode`
-- payload (`notify_text` or `prompt_text`)
-- `run_at`
-- lifecycle status
-
-## Flow
-
-```{mermaid}
-flowchart TD
-    U[User in Telegram] --> B[Bot receives prompt]
-    B --> A[ACP agent handles immediate work]
-    A --> M[MCP tool schedule_task]
-    M --> S[(SQLite scheduled tasks)]
-    M --> T[Telegram anchor message]
-    S --> W[Scheduler claims due task]
-    W --> E[Execute notify or prompt_agent]
-    E --> T2[Edit anchor message]
-    E --> R[Reply to anchor with final agent output]
+Bot (replying to that confirmation): There are 3 new comments on the PR.
 ```
 
-## Related pages
+The bot does not need to expose internal status messages such as “Scheduled” or “Completed”. The useful message is the one the agent already sends to the user. That message becomes the anchor for the later follow-up.
 
-- {doc}`mcp`
-- {doc}`configuration`
+## What Exists Today
+
+The current implementation supports one-shot tasks only. Tasks are persisted in the SQLite database configured by {term}`ACP_SCHEDULED_TASKS_DB`, and an in-process scheduler loop claims due work inside the bot runtime. There are two execution modes.
+
+`notify` is the simpler mode. It sends a plain reminder or follow-up text later.
+
+`prompt_agent` is more interesting. It re-enters the agent flow later with a stored prompt and sends the resulting answer back to Telegram as a reply to the scheduling confirmation.
+
+Recurring schedules, list/cancel commands, and automatic session rehydration are intentionally out of scope for this first version.
+
+## How The UX Works
+
+When the agent calls `schedule_task`, the MCP tool persists the task and returns a summary. The tool itself does not send a Telegram message. Instead, the agent uses that tool result to answer the user in normal language. Once that answer reaches Telegram, the bot records that reply as the task’s anchor message.
+
+That small design choice keeps the chat cleaner. The visible message is the conversational confirmation from the agent, not a second technical artifact from the transport layer.
+
+When the scheduled time arrives, the scheduler claims the task and runs it. A `notify` task sends its text as a reply to the anchor. A `prompt_agent` task sends the stored prompt through the normal agent pipeline and replies to the same anchor with the final result.
+
+```{mermaid}
+:align: center
+sequenceDiagram
+    participant U as Telegram user
+    participant B as Bot runtime
+    participant A as ACP agent
+    participant M as MCP schedule_task
+    participant S as Scheduler
+
+    U->>B: "Check this PR again in 10 minutes"
+    B->>A: ACP prompt
+    A->>M: schedule_task(...)
+    M-->>A: { ok: true, summary: ... }
+    A-->>B: "Okay. I'll check again in 10 minutes."
+    B-->>U: scheduling confirmation
+    B->>B: bind task to that message id
+    S->>B: task becomes due
+    B->>A: stored prompt, later
+    A-->>B: final reply
+    B-->>U: reply to scheduling confirmation
+```
+
+## Relative And Absolute Time Inputs
+
+For short delays, relative time is the preferred path. Requests like “in 30 seconds” or “in 10 minutes” should become `delay_seconds`, `delay_minutes`, or `delay_hours` on the MCP side. That avoids forcing the agent to calculate a wall-clock timestamp for something that is naturally relative.
+
+Absolute scheduling is still supported through `run_at`, which must be an ISO timestamp with an explicit timezone offset. That is appropriate for requests such as “at 21:00 UTC” or “tomorrow at 09:00-03:00”.
+
+## Session Behavior
+
+`prompt_agent` only runs if the chat has an active ACP session when the scheduled time arrives. The implementation intentionally reuses the chat’s current live session rather than trying to resurrect one invisibly. That makes failures easier to understand and avoids hidden magic.
+
+If there is no active session, the task fails visibly by replying to the anchor message with an explanation such as `Could not run automatically: no active session.` The same principle applies to delivery errors: the user should see a plain explanation in the thread rather than having the task disappear silently.
+
+## A Note About Multiple MCP Calls
+
+During development you may sometimes see two `schedule_task` tool calls in the Telegram activity stream for what looks like a single request. That is usually the agent retrying or refining its tool usage while reasoning. It does not automatically mean that two follow-ups were scheduled.
+
+The durable source of truth is the task row stored in {term}`ACP_SCHEDULED_TASKS_DB`. If one row was persisted, then one follow-up survived.
+
+## Related Pages
+
+See {doc}`mcp` for the broader MCP architecture and {doc}`configuration` for the runtime settings involved in scheduling.

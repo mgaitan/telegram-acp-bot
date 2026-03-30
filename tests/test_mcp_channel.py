@@ -6,12 +6,13 @@ import base64
 import json
 import stat
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from telegram_acp_bot import mcp_channel
-from telegram_acp_bot import mcp_channel_state as channel_state_module
-from telegram_acp_bot.mcp_channel_state import (
+from telegram_acp_bot.mcp import server as mcp_channel
+from telegram_acp_bot.mcp import state as channel_state_module
+from telegram_acp_bot.mcp.state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
     load_last_session_id,
@@ -48,7 +49,7 @@ async def test_send_attachment_from_path_as_photo(tmp_path: Path, monkeypatch: p
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(path=str(image_file))
 
@@ -67,7 +68,7 @@ async def test_send_attachment_from_base64_as_document(tmp_path: Path, monkeypat
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(
         session_id="s1",
@@ -92,7 +93,7 @@ async def test_send_attachment_infers_last_active_session_when_multiple(
     monkeypatch.setenv(TOKEN_ENV, "TOKEN")
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(
         data_base64=base64.b64encode(b"payload").decode("ascii"),
@@ -115,7 +116,7 @@ async def test_send_attachment_rejects_missing_session_mapping(tmp_path: Path, m
 
     result = await mcp_channel.telegram_send_attachment(session_id="unknown", path=str(tmp_path / "x.jpg"))
     assert result["ok"] is False
-    assert "unknown session_id" in result["error"]
+    assert "unknown session_id" in cast(str, result["error"])
 
 
 @pytest.mark.asyncio
@@ -147,7 +148,7 @@ async def test_send_attachment_rejects_path_when_not_enabled(tmp_path: Path, mon
 
     result = await mcp_channel.telegram_send_attachment(session_id="s1", path=str(tmp_path / "x.jpg"))
     assert result["ok"] is False
-    assert "`path` input is disabled by default" in result["error"]
+    assert "`path` input is disabled by default" in cast(str, result["error"])
 
 
 @pytest.mark.asyncio
@@ -162,7 +163,7 @@ async def test_send_attachment_uses_overridden_name_for_mime_inference(
     monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
     monkeypatch.setenv(mcp_channel.ALLOW_PATH_ENV, "1")
     bot = mocker.AsyncMock()
-    mocker.patch("telegram_acp_bot.mcp_channel.Bot", return_value=bot)
+    mocker.patch("telegram_acp_bot.mcp.tools.attachments.Bot", return_value=bot)
 
     result = await mcp_channel.telegram_send_attachment(path=str(binary_file), name="forced.jpg")
 
@@ -319,7 +320,7 @@ async def test_schedule_task_persists_unanchored_task(tmp_path: Path, monkeypatc
     )
 
     store = ScheduledTaskStore(scheduled_db)
-    task = store.get_task(result["task_id"])
+    task = store.get_task(cast(str, result["task_id"]))
 
     assert result["ok"] is True
     assert result["anchor_message_id"] is None
@@ -347,7 +348,7 @@ async def test_schedule_task_rejects_invalid_timestamp(tmp_path: Path, monkeypat
     )
 
     assert result["ok"] is False
-    assert "timezone" in result["error"]
+    assert "timezone" in cast(str, result["error"])
 
 
 @pytest.mark.asyncio
@@ -366,7 +367,7 @@ async def test_schedule_task_rejects_invalid_mode(tmp_path: Path, monkeypatch: p
     )
 
     assert result["ok"] is False
-    assert "mode must be one of" in result["error"]
+    assert "mode must be one of" in cast(str, result["error"])
 
 
 @pytest.mark.asyncio

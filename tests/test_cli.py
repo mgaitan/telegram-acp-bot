@@ -9,7 +9,7 @@ from importlib import metadata
 import pytest
 
 from telegram_acp_bot import get_version, main
-from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV
+from telegram_acp_bot.mcp.state import STATE_FILE_ENV, TOKEN_ENV
 from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE
 
 CUSTOM_STDIO_LIMIT = 12_345
@@ -244,7 +244,7 @@ def test_main_passes_default_internal_mcp_server_to_service(mocker):
     server = mcp_servers[0]
     assert server.name == "telegram-channel"
     assert server.command == sys.executable
-    assert server.args == ["-m", "telegram_acp_bot.mcp_channel"]
+    assert server.args == ["-m", "telegram_acp_bot.mcp.server"]
     env = {item.name: item.value for item in server.env}
     assert env[TOKEN_ENV] == "TOKEN"
     assert STATE_FILE_ENV in env

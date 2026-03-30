@@ -1,4 +1,4 @@
-"""Shared state helpers for Telegram MCP channel tools."""
+"""Shared state helpers for Telegram MCP tools."""
 
 from __future__ import annotations
 

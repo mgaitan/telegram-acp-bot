@@ -57,7 +57,7 @@ from telegram_acp_bot.acp.protocols import (
 from telegram_acp_bot.acp.session import _LiveSession, _PendingPermission
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import bind_log_context, log_text_preview
-from telegram_acp_bot.mcp_channel_state import (
+from telegram_acp_bot.mcp.state import (
     load_last_session_id,
     load_session_chat_map,
     save_last_session_id,

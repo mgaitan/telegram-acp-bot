@@ -22,7 +22,7 @@ from telegram_acp_bot.acp.models import ActivityMode, PermissionEventOutput, Per
 from telegram_acp_bot.acp.service import AcpAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import configure_logging
-from telegram_acp_bot.mcp_channel_state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
+from telegram_acp_bot.mcp.state import STATE_FILE_ENV, TOKEN_ENV, default_state_file
 from telegram_acp_bot.register_commands import add_register_commands_subparser
 from telegram_acp_bot.scheduled_tasks import (
     ACP_SCHEDULED_TASKS_DB_ENV,
@@ -144,7 +144,7 @@ def _default_mcp_servers(
         McpServerStdio(
             name="telegram-channel",
             command=sys.executable,
-            args=["-m", "telegram_acp_bot.mcp_channel"],
+            args=["-m", "telegram_acp_bot.mcp.server"],
             env=[
                 EnvVariable(name=TOKEN_ENV, value=telegram_token),
                 EnvVariable(name=STATE_FILE_ENV, value=str(state_file)),
