@@ -191,6 +191,118 @@ async def test_store_claim_due_tasks_returns_empty_when_nothing_is_due(tmp_path:
     assert claimed == []
 
 
+async def test_store_lists_tasks_for_chat_in_user_facing_order(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    pending = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=11,
+        mode="notify",
+        notify_text="pending",
+        run_at=now + timedelta(minutes=5),
+    )
+    running = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=12,
+        mode="notify",
+        notify_text="running",
+        run_at=now - timedelta(minutes=1),
+    )
+    other_chat = store.create_task(
+        chat_id=TEST_CHAT_ID + 1,
+        anchor_message_id=13,
+        mode="notify",
+        notify_text="other",
+        run_at=now + timedelta(minutes=1),
+    )
+    store.claim_due_tasks(now=now)
+
+    listed = store.list_tasks_for_chat(chat_id=TEST_CHAT_ID)
+
+    assert [task.id for task in listed] == [pending.id, running.id]
+    assert other_chat.id not in {task.id for task in listed}
+
+
+async def test_store_list_tasks_for_chat_handles_empty_statuses_or_limit(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+
+    assert store.list_tasks_for_chat(chat_id=TEST_CHAT_ID, statuses=()) == []
+    assert store.list_tasks_for_chat(chat_id=TEST_CHAT_ID, limit=0) == []
+
+
+async def test_store_cancels_pending_tasks_only(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    pending = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=11,
+        mode="notify",
+        notify_text="pending",
+        run_at=now + timedelta(minutes=5),
+    )
+    running = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=12,
+        mode="notify",
+        notify_text="running",
+        run_at=now - timedelta(minutes=1),
+    )
+    store.claim_due_tasks(now=now)
+
+    assert store.cancel_task(chat_id=TEST_CHAT_ID, task_id=pending.id)
+    assert not store.cancel_task(chat_id=TEST_CHAT_ID, task_id=running.id)
+
+    pending_stored = store.get_task(pending.id)
+    running_stored = store.get_task(running.id)
+    assert pending_stored is not None
+    assert running_stored is not None
+    assert pending_stored.status == "cancelled"
+    assert running_stored.status == "running"
+
+
+async def test_store_cancels_all_pending_tasks_for_chat(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    first = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=11,
+        mode="notify",
+        notify_text="first",
+        run_at=now + timedelta(minutes=5),
+    )
+    second = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=12,
+        mode="prompt_agent",
+        prompt_text="second",
+        run_at=now + timedelta(minutes=6),
+    )
+    other_chat = store.create_task(
+        chat_id=TEST_CHAT_ID + 1,
+        anchor_message_id=13,
+        mode="notify",
+        notify_text="other",
+        run_at=now + timedelta(minutes=7),
+    )
+
+    cancelled = store.cancel_pending_tasks_for_chat(chat_id=TEST_CHAT_ID)
+
+    first_stored = store.get_task(first.id)
+    second_stored = store.get_task(second.id)
+    other_stored = store.get_task(other_chat.id)
+    assert cancelled == len((first, second))
+    assert first_stored is not None
+    assert second_stored is not None
+    assert other_stored is not None
+    assert first_stored.status == "cancelled"
+    assert second_stored.status == "cancelled"
+    assert other_stored.status == "pending"
+
+
 async def test_store_recovers_running_tasks_after_restart(tmp_path: Path):
     store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
     store.initialize()

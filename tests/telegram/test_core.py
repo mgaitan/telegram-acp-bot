@@ -33,6 +33,7 @@ async def test_start_and_help():
     assert "Commands:" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
     assert "/mode" in update.message.replies[1]
+    assert "/scheduled" in update.message.replies[1]
 
 
 async def test_mode_command_sets_verbose_activity_mode():

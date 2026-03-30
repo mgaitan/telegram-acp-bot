@@ -126,7 +126,35 @@ The queued notice is updated to `✅ Sent.` so chat state matches what happened.
 
 If the current task finishes naturally before you press the button, your queued message runs automatically and the button is removed (pressing it after that shows "Already sent." with no side effects).
 
-## 8. Restart bot process (dev workflow)
+## 8. Inspect and cancel scheduled follow-ups
+
+When the agent schedules a deferred follow-up, you can inspect the pending work directly from Telegram:
+
+```text
+/scheduled
+```
+
+The bot replies with a compact summary of the scheduled tasks for the current chat. Pending tasks are shown with inline **Cancel** buttons, so you do not have to copy or type task ids manually.
+
+A typical interaction looks like this:
+
+```text
+/scheduled
+
+Scheduled tasks for this chat:
+
+Pending:
+1. prompt_agent | 2026-03-30 22:10:00 UTC
+  Check the PR again and report any new comments.
+2. notify | 2026-03-30 22:30:00 UTC
+  Remind me to restart the bot.
+```
+
+From there you can tap **Cancel 1**, **Cancel 2**, and so on, or use **Cancel all pending** if you want to clear the queue for that chat.
+
+For this first version, cancellation is intentionally limited to tasks that are still `pending`. Tasks that are already `running` are visible for inspection, but they are not turned into interruptible jobs by this command.
+
+## 9. Restart bot process (dev workflow)
 
 ```text
 /restart

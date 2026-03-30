@@ -2,6 +2,10 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
+from datetime import UTC, datetime, timedelta
+
+from telegram_acp_bot.scheduled_tasks import ScheduledTaskStore
+from telegram_acp_bot.telegram.constants import SCHEDULED_KEYBOARD_MAX_ROWS
 from tests.telegram.support import *
 
 
@@ -1197,6 +1201,419 @@ async def test_on_resume_callback_uses_query_message_chat_when_effective_chat_mi
     )
     await bridge.on_resume_callback(update, make_context())
     assert callback.answers[-1] == "Session resumed."
+
+
+async def test_scheduled_command_lists_pending_tasks_with_cancel_buttons(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="prompt_agent",
+        prompt_text="Check for new PR comments and tell me if anything changed.",
+        run_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True)
+
+    await bridge.scheduled(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies[-1].startswith("Scheduled tasks for this chat:")
+    assert "1. prompt_agent" in update.message.replies[-1]
+    reply_markup = update.message.reply_kwargs[-1]["reply_markup"]
+    assert reply_markup.inline_keyboard[0][0].text == "Cancel 1"
+    assert reply_markup.inline_keyboard[0][0].callback_data == f"scheduled|cancel|{task.id}"
+
+
+async def test_scheduled_command_reports_when_no_tasks_exist(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True)
+
+    await bridge.scheduled(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies == ["No pending or running scheduled tasks for this chat."]
+
+
+async def test_scheduled_command_handles_access_denied_and_missing_message(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="notify",
+        notify_text="Ping me later",
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    denied_bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[999], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    denied_update = make_update(with_message=True)
+    await denied_bridge.scheduled(denied_update, make_context())
+    assert denied_update.message is not None
+    assert denied_update.message.replies == ["Access denied for this bot."]
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    await bridge.scheduled(make_update(with_message=False), make_context())
+
+    no_store_bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+    )
+    no_store_update = make_update(with_message=True)
+    await no_store_bridge.scheduled(no_store_update, make_context())
+    assert no_store_update.message is not None
+    assert no_store_update.message.replies == ["Scheduled tasks are unavailable."]
+
+
+async def test_on_scheduled_callback_invalid_cases(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[999], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+
+    update_no_query = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=None,
+            message=None,
+        ),
+    )
+    await bridge.on_scheduled_callback(update_no_query, make_context())
+
+    callback_denied = DummyCallbackQuery("scheduled|cancel|task-id")
+    update_denied = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback_denied,
+            message=None,
+        ),
+    )
+    await bridge.on_scheduled_callback(update_denied, make_context())
+    assert callback_denied.answers[-1] == "Access denied."
+
+    bridge_ok = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    callback_invalid = DummyCallbackQuery("scheduled|oops")
+    update_invalid = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback_invalid,
+            message=None,
+        ),
+    )
+    await bridge_ok.on_scheduled_callback(update_invalid, make_context())
+    assert callback_invalid.answers[-1] == "Invalid action."
+
+    assert bridge_ok._parse_scheduled_callback("scheduled|noop|task-id") is None
+
+    callback_missing_chat = DummyCallbackQuery("scheduled|cancel|task-id")
+    callback_missing_chat.message = None
+    update_missing_chat = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=None,
+            callback_query=callback_missing_chat,
+            message=None,
+        ),
+    )
+    await bridge_ok.on_scheduled_callback(update_missing_chat, make_context())
+    assert callback_missing_chat.answers[-1] == "Missing chat."
+
+
+async def test_on_scheduled_callback_reports_missing_store(tmp_path: Path):
+    del tmp_path
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+    )
+    callback = DummyCallbackQuery("scheduled|cancel|task-id")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=None,
+        ),
+    )
+
+    await bridge.on_scheduled_callback(update, make_context())
+    assert callback.answers[-1] == "Scheduled tasks are unavailable."
+
+
+async def test_on_scheduled_callback_cancels_one_task_and_refreshes_message(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="notify",
+        notify_text="Ping me later",
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    callback = DummyCallbackQuery(f"scheduled|cancel|{task.id}")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_scheduled_callback(update, make_context())
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "cancelled"
+    assert callback.answers[-1] == "Task cancelled."
+    assert callback.edited_text == "No pending or running scheduled tasks for this chat."
+
+
+async def test_on_scheduled_callback_cancels_all_pending_tasks(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    first = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=41,
+        mode="notify",
+        notify_text="first",
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    second = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="prompt_agent",
+        prompt_text="second",
+        run_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    callback = DummyCallbackQuery("scheduled|cancel_all|_")
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_scheduled_callback(update, make_context())
+
+    first_stored = store.get_task(first.id)
+    second_stored = store.get_task(second.id)
+    assert callback.answers[-1] == "Cancelled 2 task(s)."
+    assert callback.edited_text == "No pending or running scheduled tasks for this chat."
+    assert first_stored is not None
+    assert second_stored is not None
+    assert first_stored.status == "cancelled"
+    assert second_stored.status == "cancelled"
+
+
+async def test_on_scheduled_callback_falls_back_to_editing_reply_markup(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="notify",
+        notify_text="Ping me later",
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    class FailingEditCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
+            raise MarkdownFailureError
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    callback = FailingEditCallbackQuery(f"scheduled|cancel|{task.id}")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_scheduled_callback(update, make_context())
+    assert callback.answers[-1] == "Task cancelled."
+    assert callback.reply_markup_cleared
+
+
+async def test_on_scheduled_callback_ignores_noop_reply_markup_refresh_error(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="notify",
+        notify_text="Ping me later",
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    class NoopRefreshCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
+            raise MarkdownFailureError
+
+        async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
+            del reply_markup
+            raise NotModifiedError()
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    callback = NoopRefreshCallbackQuery(f"scheduled|cancel|{task.id}")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_scheduled_callback(update, make_context())
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "cancelled"
+    assert callback.answers[-1] == "Task cancelled."
+    assert callback.edited_text is None
+
+
+async def test_scheduled_helpers_cover_running_groups_and_preview_edges(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=41,
+        mode="notify",
+        notify_text="first pending",
+        run_at=now + timedelta(minutes=5),
+    )
+    running = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="prompt_agent",
+        prompt_text="x" * 120,
+        run_at=now - timedelta(minutes=1),
+    )
+    empty_prompt_task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=43,
+        mode="prompt_agent",
+        prompt_text=None,
+        run_at=now + timedelta(minutes=7),
+    )
+    store.claim_due_tasks(now=now)
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    tasks = await bridge._list_visible_scheduled_tasks(chat_id=TEST_CHAT_ID)
+    text = bridge._format_scheduled_tasks_text(tasks=tasks)
+    keyboard = bridge._scheduled_keyboard(tasks=tasks)
+
+    no_store_bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+    )
+
+    assert "Running:" in text
+    assert "1. notify" in text
+    assert "3. running" not in text
+    assert keyboard is not None
+    assert keyboard.inline_keyboard[0][0].text == "Cancel 1"
+    assert keyboard.inline_keyboard[-1][0].callback_data == "scheduled|cancel_all|_"
+    assert bridge._scheduled_task_preview(running).endswith("...")
+    assert bridge._scheduled_task_preview(empty_prompt_task) == "(empty prompt)"
+    assert await no_store_bridge._list_visible_scheduled_tasks(chat_id=TEST_CHAT_ID) == []
+
+
+async def test_scheduled_keyboard_reserves_space_for_cancel_all(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    for index in range(12):
+        store.create_task(
+            chat_id=TEST_CHAT_ID,
+            anchor_message_id=100 + index,
+            mode="notify",
+            notify_text=f"task {index}",
+            run_at=now + timedelta(minutes=index + 1),
+        )
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+
+    tasks = await bridge._list_visible_scheduled_tasks(chat_id=TEST_CHAT_ID)
+    keyboard = bridge._scheduled_keyboard(tasks=tasks)
+
+    assert keyboard is not None
+    assert len(keyboard.inline_keyboard) == SCHEDULED_KEYBOARD_MAX_ROWS
+    assert keyboard.inline_keyboard[0][0].text == "Cancel 1"
+    assert keyboard.inline_keyboard[-2][0].text == "Cancel 9"
+    assert keyboard.inline_keyboard[-1][0].text == "Cancel all pending"
 
 
 async def test_cancel_stop_clear_without_session():
