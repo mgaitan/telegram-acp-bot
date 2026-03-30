@@ -46,7 +46,7 @@ Description: A Telegram bot that implements Agent Client Protocol to interact wi
 - Consider mentioning yourself in the commits as co-author if you helped enough. Use the standard Git co-author trailer:
   "Co-authored-by: Name <email>".
   For common AI collaborators, use:
-  - "Co-authored-by: codex <codex@openai.com>".
+  - "Co-authored-by: Codex <codex@openai.com>".
   - "Co-authored-by: Claude <noreply@anthropic.com>".
 
 ## Documentation
