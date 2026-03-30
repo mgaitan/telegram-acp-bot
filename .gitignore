@@ -29,3 +29,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# local worktrees and generated artifacts
+.worktrees/
+.external-worktrees/
+artifacts/
