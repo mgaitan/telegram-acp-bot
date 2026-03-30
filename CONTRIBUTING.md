@@ -48,3 +48,21 @@ As usual:
     1. run `make docs` and check that everything looks good
 
 If you are unsure about how to fix or ignore a warning, just let the continuous integration fail, and we will help you during review.
+
+## Releases
+
+Prepare version bumps through a pull request and merge them into `main` first.
+
+After the bump commit is on `main` and the `CI` workflow is green for that exact commit, create the GitHub release from `main` with:
+
+```bash
+make release
+```
+
+`make release` now verifies that:
+
+- you are on `main`
+- your local `main` matches `origin/main`
+- the current `main` commit has a successful `CI` push run
+
+Only after those checks pass does it create the GitHub release that triggers PyPI publication and docs deployment.

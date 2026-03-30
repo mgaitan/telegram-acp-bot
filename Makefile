@@ -30,12 +30,17 @@ qa: ## Run local QA checks via prek
 bump:
 	uv version --bump minor
 
+.PHONY: release-check
+release-check: ## Ensure the current main commit is green in CI
+	@test "$$(git branch --show-current)" = "main" || { echo "release-check must run from main"; exit 1; }
+	@git fetch origin main --quiet
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" || { echo "main must be up to date with origin/main"; exit 1; }
+	@uv run python scripts/wait_for_ci.py --repo mgaitan/telegram-acp-bot --workflow CI --branch main --event push --commit "$$(git rev-parse HEAD)"
+
 .PHONY: release
-release: ## Create a GitHub release for the current version
+release: release-check ## Create a GitHub release for the current green main commit
 	@version=$$(uv version --short); \
-	git commit -am "Bump $$version"; \
-	git push origin main; \
-	gh release create "$$version" --generate-notes
+	gh release create "$$version" --target "$$(git rev-parse HEAD)" --generate-notes
 
 .PHONY: docs docs-html docs-epub docs-open html epub open
 
