@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from telegram_acp_bot.scheduled_tasks import ScheduledTaskStore
+from telegram_acp_bot.telegram.constants import SCHEDULED_KEYBOARD_MAX_ROWS
 from tests.telegram.support import *
 
 
@@ -1489,6 +1490,51 @@ async def test_on_scheduled_callback_falls_back_to_editing_reply_markup(tmp_path
     assert callback.reply_markup_cleared
 
 
+async def test_on_scheduled_callback_ignores_noop_reply_markup_refresh_error(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    task = store.create_task(
+        chat_id=TEST_CHAT_ID,
+        anchor_message_id=42,
+        mode="notify",
+        notify_text="Ping me later",
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    class NoopRefreshCallbackQuery(DummyCallbackQuery):
+        async def edit_message_text(self, text: str, **kwargs: object) -> None:
+            del text, kwargs
+            raise MarkdownFailureError
+
+        async def edit_message_reply_markup(self, *, reply_markup: object | None = None) -> None:
+            del reply_markup
+            raise NotModifiedError()
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    callback = NoopRefreshCallbackQuery(f"scheduled|cancel|{task.id}")
+    update = cast(
+        Update,
+        SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=TEST_CHAT_ID),
+            callback_query=callback,
+            message=DummyMessage("trigger"),
+        ),
+    )
+
+    await bridge.on_scheduled_callback(update, make_context())
+
+    stored = store.get_task(task.id)
+    assert stored is not None
+    assert stored.status == "cancelled"
+    assert callback.answers[-1] == "Task cancelled."
+    assert callback.edited_text is None
+
+
 async def test_scheduled_helpers_cover_running_groups_and_preview_edges(tmp_path: Path):
     store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
     store.initialize()
@@ -1539,6 +1585,35 @@ async def test_scheduled_helpers_cover_running_groups_and_preview_edges(tmp_path
     assert bridge._scheduled_task_preview(running).endswith("...")
     assert bridge._scheduled_task_preview(empty_prompt_task) == "(empty prompt)"
     assert await no_store_bridge._list_visible_scheduled_tasks(chat_id=TEST_CHAT_ID) == []
+
+
+async def test_scheduled_keyboard_reserves_space_for_cancel_all(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    for index in range(12):
+        store.create_task(
+            chat_id=TEST_CHAT_ID,
+            anchor_message_id=100 + index,
+            mode="notify",
+            notify_text=f"task {index}",
+            run_at=now + timedelta(minutes=index + 1),
+        )
+
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+
+    tasks = await bridge._list_visible_scheduled_tasks(chat_id=TEST_CHAT_ID)
+    keyboard = bridge._scheduled_keyboard(tasks=tasks)
+
+    assert keyboard is not None
+    assert len(keyboard.inline_keyboard) == SCHEDULED_KEYBOARD_MAX_ROWS
+    assert keyboard.inline_keyboard[0][0].text == "Cancel 1"
+    assert keyboard.inline_keyboard[-2][0].text == "Cancel 9"
+    assert keyboard.inline_keyboard[-1][0].text == "Cancel all pending"
 
 
 async def test_cancel_stop_clear_without_session():

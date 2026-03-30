@@ -1211,6 +1211,12 @@ class TelegramBridge:
         ]
         if not pending_tasks:
             return None
+        show_cancel_all = len(pending_tasks) > 1
+        visible_pending_tasks = (
+            pending_tasks[: SCHEDULED_KEYBOARD_MAX_ROWS - 1]
+            if show_cancel_all
+            else pending_tasks[:SCHEDULED_KEYBOARD_MAX_ROWS]
+        )
 
         rows = [
             [
@@ -1219,9 +1225,9 @@ class TelegramBridge:
                     callback_data=f"{SCHEDULED_CALLBACK_PREFIX}|cancel|{task.id}",
                 )
             ]
-            for index, task in pending_tasks
+            for index, task in visible_pending_tasks
         ]
-        if len(pending_tasks) > 1:
+        if show_cancel_all:
             rows.append(
                 [
                     InlineKeyboardButton(
@@ -1307,7 +1313,8 @@ class TelegramBridge:
         try:
             await query.edit_message_text(text, reply_markup=reply_markup)
         except TelegramError:
-            await query.edit_message_reply_markup(reply_markup=reply_markup)
+            with suppress(TelegramError):
+                await query.edit_message_reply_markup(reply_markup=reply_markup)
 
     @staticmethod
     def _format_scheduled_tasks_text(*, tasks: list[ScheduledTask]) -> str:
