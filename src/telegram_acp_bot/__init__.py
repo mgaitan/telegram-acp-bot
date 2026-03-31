@@ -18,6 +18,12 @@ from typing import cast
 from acp.schema import EnvVariable, McpServerStdio
 from dotenv import load_dotenv
 
+# Load environment variables from .env file in current directory
+import os
+env_path = os.path.join(os.getcwd(), '.env')
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
 from telegram_acp_bot.acp.models import ActivityMode, PermissionEventOutput, PermissionMode
 from telegram_acp_bot.acp.service import AcpAgentService
 from telegram_acp_bot.core.session_registry import SessionRegistry
