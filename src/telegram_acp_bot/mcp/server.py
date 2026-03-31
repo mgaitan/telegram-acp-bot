@@ -11,6 +11,7 @@ from telegram_acp_bot.mcp.state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
     load_last_session_id,
+    load_prompt_message_id,
     load_session_chat_map,
 )
 from telegram_acp_bot.mcp.tools.attachments import (
@@ -20,6 +21,12 @@ from telegram_acp_bot.mcp.tools.attachments import (
     load_attachment_bytes,
     register_attachment_tools,
     telegram_send_attachment,
+)
+from telegram_acp_bot.mcp.tools.reactions import (
+    STANDARD_REACTION_EMOJI_LIST,
+    STANDARD_REACTION_EMOJIS,
+    register_reaction_tools,
+    telegram_set_message_reaction,
 )
 from telegram_acp_bot.mcp.tools.scheduling import (
     MISSING_SCHEDULED_DB_ERROR,
@@ -45,6 +52,8 @@ __all__ = [
     "MIXED_RUN_AT_AND_DELAY_ERROR",
     "NEGATIVE_DELAY_ERROR",
     "RUN_AT_OR_DELAY_ERROR",
+    "STANDARD_REACTION_EMOJIS",
+    "STANDARD_REACTION_EMOJI_LIST",
     "STATE_FILE_ENV",
     "TOKEN_ENV",
     "UTC",
@@ -56,24 +65,29 @@ __all__ = [
     "datetime",
     "format_scheduled_summary",
     "load_last_session_id",
+    "load_prompt_message_id",
     "load_scheduled_task_store",
     "load_session_chat_map",
     "main",
     "mcp",
     "parse_utc_timestamp",
     "register_attachment_tools",
+    "register_reaction_tools",
     "register_scheduling_tools",
     "resolve_run_at",
     "schedule_task",
     "telegram_channel_info",
     "telegram_send_attachment",
+    "telegram_set_message_reaction",
     "timedelta",
 ]
 
 mcp = FastMCP(
     name="telegram-channel",
     instructions=(
-        "Channel helper tools for Telegram clients. Use these tools when you need channel-specific behavior."
+        "Channel helper tools for Telegram clients. Use these tools when you need channel-specific behavior. "
+        "Telegram-native lightweight actions such as reactions can be appropriate for concise acknowledgement, "
+        "celebration, or affirmation when a full text reply would be noisier than necessary."
     ),
 )
 
@@ -85,6 +99,8 @@ mcp = FastMCP(
 def telegram_channel_info() -> dict[str, object]:
     return {
         "supports_attachment_delivery": True,
+        "supports_message_reactions": True,
+        "supported_reaction_emojis": STANDARD_REACTION_EMOJI_LIST,
         "supports_scheduled_tasks": True,
         "supports_followup_buttons": False,
         "status": "active",
@@ -92,6 +108,7 @@ def telegram_channel_info() -> dict[str, object]:
 
 
 register_attachment_tools(mcp)
+register_reaction_tools(mcp)
 register_scheduling_tools(mcp)
 
 

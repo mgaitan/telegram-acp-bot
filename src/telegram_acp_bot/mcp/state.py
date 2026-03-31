@@ -34,6 +34,14 @@ def load_session_chat_map(path: Path) -> dict[str, int]:
     return {key: value for key, value in sessions.items() if isinstance(key, str) and isinstance(value, int)}
 
 
+def load_prompt_message_id(path: Path, session_id: str) -> int | None:
+    """Load the active Telegram prompt message id for an ACP session."""
+
+    prompt_message_ids = _clean_prompt_message_ids(_load_raw_state(path).get("prompt_message_ids"))
+    value = prompt_message_ids.get(session_id)
+    return value if isinstance(value, int) else None
+
+
 def save_session_chat_map(path: Path, mapping: dict[str, int]) -> None:
     """Persist `session_id -> chat_id` mapping atomically."""
 
@@ -42,6 +50,9 @@ def save_session_chat_map(path: Path, mapping: dict[str, int]) -> None:
     payload: dict[str, object] = {"sessions": mapping}
     if isinstance(existing.get("last_session_id"), str):
         payload["last_session_id"] = existing["last_session_id"]
+    prompt_message_ids = _clean_prompt_message_ids(existing.get("prompt_message_ids"))
+    if prompt_message_ids:
+        payload["prompt_message_ids"] = prompt_message_ids
     _write_json_atomic(path, payload)
 
 
@@ -61,6 +72,29 @@ def save_last_session_id(path: Path, session_id: str | None) -> None:
     payload: dict[str, object] = {"sessions": sessions if isinstance(sessions, dict) else {}}
     if session_id is not None:
         payload["last_session_id"] = session_id
+    prompt_message_ids = _clean_prompt_message_ids(existing.get("prompt_message_ids"))
+    if prompt_message_ids:
+        payload["prompt_message_ids"] = prompt_message_ids
+    _write_json_atomic(path, payload)
+
+
+def save_prompt_message_id(path: Path, session_id: str, message_id: int | None) -> None:
+    """Persist or clear the active Telegram prompt message id for a session."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _load_raw_state(path)
+    sessions = existing.get("sessions")
+    payload: dict[str, object] = {"sessions": sessions if isinstance(sessions, dict) else {}}
+    if isinstance(existing.get("last_session_id"), str):
+        payload["last_session_id"] = existing["last_session_id"]
+
+    prompt_message_ids = _clean_prompt_message_ids(existing.get("prompt_message_ids"))
+    if message_id is None:
+        prompt_message_ids.pop(session_id, None)
+    else:
+        prompt_message_ids[session_id] = message_id
+    if prompt_message_ids:
+        payload["prompt_message_ids"] = prompt_message_ids
     _write_json_atomic(path, payload)
 
 
@@ -88,3 +122,9 @@ def _load_raw_state(path: Path) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _clean_prompt_message_ids(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, int)}

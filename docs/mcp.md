@@ -6,6 +6,7 @@ That becomes visible in requests such as these:
 
 ```text
 Send me the generated screenshot.
+React with a thumbs up if that was enough.
 Check for review in 2 minutes.
 Remind me at 9 PM to restart the bot.
 ```
@@ -24,11 +25,13 @@ ACP remains responsible for the conversational session with the agent. MCP is th
 
 ## What The Tools Enable
 
-The built-in server currently exposes three tools.
+The built-in server currently exposes four tools.
 
 `telegram_channel_info` is a lightweight capability probe. It lets the agent confirm what this Telegram channel integration can currently do.
 
 `telegram_send_attachment` lets the agent deliver a file or image to the current Telegram chat. This is the tool behind flows like “send me the generated screenshot” or “upload the review artifact”.
+
+`telegram_set_message_reaction` lets the agent add a standard Telegram emoji reaction to a message in the current chat. This is the tool behind lightweight moments such as “acknowledge that briefly” or “react instead of sending a noisy one-line reply”.
 
 `schedule_task` lets the agent schedule a one-shot deferred follow-up. This is the tool behind flows like “check for review in 2 minutes” or “remind me tomorrow at 9 PM”.
 
@@ -88,6 +91,23 @@ telegram_send_attachment(
 ```
 
 If the MIME type resolves to `image/*`, the server sends a Telegram photo. Otherwise it sends a document. In most deployments, `data_base64` is the safer default. The `path` input is intentionally disabled unless {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` is enabled.
+
+(mcp-feature-reactions)=
+## React To Messages
+
+`telegram_set_message_reaction` is the small, Telegram-native counterpart to a normal text reply. It is useful when the agent wants to acknowledge something briefly, celebrate success, or confirm that it understood the user's last message without adding another sentence to the chat.
+
+A typical call looks like this:
+
+```text
+telegram_set_message_reaction(
+  emoji="👍"
+)
+```
+
+When `message_id` is omitted, the server tries to infer the active Telegram prompt message for the current turn. That makes the tool natural to use during a normal conversational reply. If there is no active prompt message to infer, the tool returns an explicit error instead of guessing.
+
+The first version intentionally supports only standard Telegram reaction emoji. Custom emoji and stickers are a separate design space, and they are tracked independently from this lightweight reaction flow.
 
 (mcp-feature-scheduling)=
 ## Schedule Tasks

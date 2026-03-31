@@ -6,7 +6,9 @@ from telegram_acp_bot.mcp.state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
     load_last_session_id,
+    load_prompt_message_id,
     save_last_session_id,
+    save_prompt_message_id,
     save_session_chat_map,
 )
 from telegram_acp_bot.scheduled_tasks import ACP_SCHEDULED_TASKS_DB_ENV, ScheduledTaskStore
@@ -23,7 +25,9 @@ __all__ = [
     "ScheduledTaskStore",
     "channel_state_module",
     "load_last_session_id",
+    "load_prompt_message_id",
     "mcp_channel",
     "save_last_session_id",
+    "save_prompt_message_id",
     "save_session_chat_map",
 ]

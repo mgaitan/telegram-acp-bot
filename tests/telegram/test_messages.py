@@ -216,6 +216,67 @@ async def test_on_message_sends_live_activity_events_via_app_bot():
     assert "💡 Thinking" in cast(str, context.bot.sent_messages[0]["text"])
 
 
+async def test_on_message_sets_and_clears_prompt_message_context():
+    service = PromptContextService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update = make_update(text="hello", message_id=91)
+
+    await bridge.on_message(update, make_context())
+
+    assert service.prompt_message_context == [("s-context", 91), ("s-context", None)]
+
+
+async def test_on_message_continues_when_setting_prompt_message_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FailingPromptContextService(PromptContextService):
+        async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
+            del session_id
+            if message_id is not None:
+                raise RuntimeError
+            self.prompt_message_context.append(("s-context", message_id))
+
+    service = FailingPromptContextService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update = make_update(text="hello", message_id=91)
+    logged: list[str] = []
+    monkeypatch.setattr(bridge_module.logger, "exception", lambda message, *args: logged.append(message % args))
+
+    await bridge.on_message(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies[-1] == "ok"
+    assert logged == ["Failed to persist prompt message context: session_id=s-context message_id=91"]
+    assert service.prompt_message_context == [("s-context", None)]
+
+
+async def test_on_message_continues_when_clearing_prompt_message_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FailingPromptContextService(PromptContextService):
+        async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
+            del session_id
+            if message_id is None:
+                raise RuntimeError
+            self.prompt_message_context.append(("s-context", message_id))
+
+    service = FailingPromptContextService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update = make_update(text="hello", message_id=91)
+    logged: list[str] = []
+    monkeypatch.setattr(bridge_module.logger, "exception", lambda message, *args: logged.append(message % args))
+
+    await bridge.on_message(update, make_context())
+
+    assert update.message is not None
+    assert update.message.replies[-1] == "ok"
+    assert logged == ["Failed to persist prompt message context: session_id=s-context message_id=None"]
+    assert service.prompt_message_context == [("s-context", 91)]
+
+
 async def test_on_message_skips_empty_final_text_reply():
     class EmptyTextService:
         async def new_session(self, *, chat_id: int, workspace):

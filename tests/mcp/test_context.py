@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.mcp.support import STATE_FILE_ENV, TOKEN_ENV, mcp_channel, save_last_session_id, save_session_chat_map
+from tests.mcp.support import (
+    STATE_FILE_ENV,
+    TOKEN_ENV,
+    mcp_channel,
+    save_last_session_id,
+    save_prompt_message_id,
+    save_session_chat_map,
+)
 
 
 def test_resolve_request_context_reports_missing_token_by_default():
@@ -66,7 +73,19 @@ def test_resolve_request_context_uses_last_active_session_when_multiple_mappings
 
     result = mcp_channel._resolve_request_context(session_id=None)
 
-    assert result == mcp_channel._RequestContext(token="TOKEN", chat_id=456, session_id="s2")
+    assert result == mcp_channel._RequestContext(token="TOKEN", chat_id=456, session_id="s2", prompt_message_id=None)
+
+
+def test_resolve_request_context_includes_active_prompt_message_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": 123})
+    save_prompt_message_id(state_file, "s1", 42)
+    monkeypatch.setenv(TOKEN_ENV, "TOKEN")
+    monkeypatch.setenv(STATE_FILE_ENV, str(state_file))
+
+    result = mcp_channel._resolve_request_context(session_id="s1")
+
+    assert result == mcp_channel._RequestContext(token="TOKEN", chat_id=123, session_id="s1", prompt_message_id=42)
 
 
 def test_resolve_request_context_ignores_stale_last_session_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
