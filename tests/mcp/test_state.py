@@ -12,10 +12,14 @@ from tests.mcp.support import (
     STATE_FILE_PRIVATE_MODE,
     channel_state_module,
     load_last_session_id,
+    load_prompt_message_id,
     mcp_channel,
     save_last_session_id,
+    save_prompt_message_id,
     save_session_chat_map,
 )
+
+PROMPT_MESSAGE_ID = 42
 
 
 def test_load_session_chat_map_handles_invalid_json(tmp_path: Path):
@@ -58,6 +62,58 @@ def test_state_file_permissions_are_restricted(tmp_path: Path):
 
     mode = stat.S_IMODE(state_file.stat().st_mode)
     assert mode == STATE_FILE_PRIVATE_MODE
+
+
+def test_save_prompt_message_id_round_trips(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": 123})
+
+    save_prompt_message_id(state_file, "s1", PROMPT_MESSAGE_ID)
+
+    assert load_prompt_message_id(state_file, "s1") == PROMPT_MESSAGE_ID
+
+
+def test_save_prompt_message_id_preserves_existing_session_state(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": 123})
+    save_last_session_id(state_file, "s1")
+
+    save_prompt_message_id(state_file, "s1", PROMPT_MESSAGE_ID)
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["sessions"] == {"s1": 123}
+    assert payload["last_session_id"] == "s1"
+    assert payload["prompt_message_ids"] == {"s1": PROMPT_MESSAGE_ID}
+
+
+def test_save_prompt_message_id_can_clear_existing_value(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_session_chat_map(state_file, {"s1": 123})
+    save_prompt_message_id(state_file, "s1", PROMPT_MESSAGE_ID)
+
+    save_prompt_message_id(state_file, "s1", None)
+
+    assert load_prompt_message_id(state_file, "s1") is None
+
+
+def test_save_session_chat_map_preserves_prompt_message_ids(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_prompt_message_id(state_file, "s1", PROMPT_MESSAGE_ID)
+
+    save_session_chat_map(state_file, {"s1": 123})
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["prompt_message_ids"] == {"s1": PROMPT_MESSAGE_ID}
+
+
+def test_save_last_session_id_preserves_prompt_message_ids(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    save_prompt_message_id(state_file, "s1", PROMPT_MESSAGE_ID)
+
+    save_last_session_id(state_file, "s1")
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["prompt_message_ids"] == {"s1": PROMPT_MESSAGE_ID}
 
 
 def test_state_file_atomic_write_removes_temp_file_on_replace_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

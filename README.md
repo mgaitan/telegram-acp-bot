@@ -22,6 +22,8 @@ Some of the most useful capabilities are documented here:
 
 - Reply with attachments:
   https://mgaitan.github.io/telegram-acp-bot/mcp.html#mcp-feature-attachments
+- React to messages:
+  https://mgaitan.github.io/telegram-acp-bot/mcp.html#mcp-feature-reactions
 - Scheduled tasks:
   https://mgaitan.github.io/telegram-acp-bot/deferred_followups.html#deferred-followups-ux
 - Queue messages when the agent is busy:

@@ -312,6 +312,57 @@ class LiveActivityService:
         self._activity_handler = handler
 
 
+class PromptContextService:
+    def __init__(self) -> None:
+        self._workspace: Path | None = None
+        self.prompt_message_context: list[tuple[str, int | None]] = []
+
+    async def new_session(self, *, chat_id: int, workspace: Path) -> str:
+        del chat_id
+        self._workspace = workspace
+        return "s-context"
+
+    async def prompt(self, *, chat_id: int, text: str, images=(), files=()):
+        del chat_id, text, images, files
+        return AgentReply(text="ok")
+
+    async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
+        self.prompt_message_context.append((session_id, message_id))
+
+    def get_workspace(self, *, chat_id: int) -> Path | None:
+        del chat_id
+        return self._workspace
+
+    def get_active_session_context(self, *, chat_id: int):
+        del chat_id
+        if self._workspace is None:
+            return None
+        return "s-context", self._workspace
+
+    async def cancel(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def stop(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    async def clear(self, *, chat_id: int) -> bool:
+        del chat_id
+        return False
+
+    def get_permission_policy(self, *, chat_id: int):
+        del chat_id
+
+    async def set_session_permission_mode(self, *, chat_id: int, mode):
+        del chat_id, mode
+        return False
+
+    async def set_next_prompt_auto_approve(self, *, chat_id: int, enabled: bool):
+        del chat_id, enabled
+        return False
+
+
 class ResumeService:
     def __init__(self) -> None:
         self.loaded: tuple[int, str, Path] | None = None
@@ -565,6 +616,7 @@ __all__ = [
     "NotModifiedError",
     "Path",
     "PermissionRequest",
+    "PromptContextService",
     "PromptWithoutSessionImplicitService",
     "RecordingImplicitService",
     "ResumableSession",

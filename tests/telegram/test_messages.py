@@ -216,6 +216,17 @@ async def test_on_message_sends_live_activity_events_via_app_bot():
     assert "💡 Thinking" in cast(str, context.bot.sent_messages[0]["text"])
 
 
+async def test_on_message_sets_and_clears_prompt_message_context():
+    service = PromptContextService()
+    config = make_config(token="TOKEN", allowed_user_ids=[], workspace=".")
+    bridge = TelegramBridge(config=config, agent_service=cast(AgentService, service))
+    update = make_update(text="hello", message_id=91)
+
+    await bridge.on_message(update, make_context())
+
+    assert service.prompt_message_context == [("s-context", 91), ("s-context", None)]
+
+
 async def test_on_message_skips_empty_final_text_reply():
     class EmptyTextService:
         async def new_session(self, *, chat_id: int, workspace):

@@ -61,6 +61,7 @@ from telegram_acp_bot.mcp.state import (
     load_last_session_id,
     load_session_chat_map,
     save_last_session_id,
+    save_prompt_message_id,
     save_session_chat_map,
 )
 
@@ -698,6 +699,14 @@ class AcpAgentService:
         async with self._channel_state_lock:
             await asyncio.to_thread(save_last_session_id, self._channel_state_file, session_id)
 
+    async def set_prompt_message_context(self, *, session_id: str, message_id: int | None) -> None:
+        """Persist the active Telegram prompt message id for the current turn."""
+
+        if self._channel_state_file is None:
+            return
+        async with self._channel_state_lock:
+            await asyncio.to_thread(save_prompt_message_id, self._channel_state_file, session_id, message_id)
+
     def _write_channel_session_mapping(self, *, chat_id: int, session_id: str) -> None:
         assert self._channel_state_file is not None
         mapping = load_session_chat_map(self._channel_state_file)
@@ -712,6 +721,7 @@ class AcpAgentService:
             return
         mapping.pop(session_id, None)
         save_session_chat_map(self._channel_state_file, mapping)
+        save_prompt_message_id(self._channel_state_file, session_id, None)
         if load_last_session_id(self._channel_state_file) == session_id:
             save_last_session_id(self._channel_state_file, None)
 

@@ -1097,7 +1097,11 @@ class TelegramBridge:
             session_id=session_id,
         ):
             await context.bot.send_chat_action(chat_id=prompt_input.chat_id, action=ChatAction.TYPING)
+        prompt_context_setter = getattr(self._agent_service, "set_prompt_message_context", None)
+        source_message_id = getattr(update.message, "message_id", None)
         try:
+            if callable(prompt_context_setter) and session_id is not None:
+                await prompt_context_setter(session_id=session_id, message_id=source_message_id)
             with bind_log_context(
                 chat_id=prompt_input.chat_id,
                 prompt_cycle_id=prompt_input.cycle_id,
@@ -1116,6 +1120,9 @@ class TelegramBridge:
                 "(or `ACP_STDIO_LIMIT`).",
             )
             return None
+        finally:
+            if callable(prompt_context_setter) and session_id is not None:
+                await prompt_context_setter(session_id=session_id, message_id=None)
         if reply is not None:
             with bind_log_context(
                 chat_id=prompt_input.chat_id,

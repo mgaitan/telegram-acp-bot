@@ -102,6 +102,7 @@ TELEGRAM_BOT_TOKEN=123456:abc ACP_AGENT_COMMAND="your acp capable agent" uvx tel
 If you want the quickest tour of what the bot can do, these are good places to start.
 
 - {ref}`mcp-feature-attachments` explains how the agent can reply with images and files in the same Telegram chat.
+- {ref}`mcp-feature-reactions` shows how the Telegram channel can use native message reactions for lightweight acknowledgements.
 - {ref}`deferred-followups-ux` shows how scheduled tasks work as conversational follow-ups instead of technical status messages.
 - {ref}`how-to-busy-queue` covers queued messages and the **Send now** flow when the agent is already busy.
 - {doc}`mcp` gives the broader picture of the internal MCP tools that power those features.

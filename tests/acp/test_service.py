@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from tests.acp.support import *
 
+PROMPT_MESSAGE_ID = 42
+
 
 async def test_new_session_creates_missing_workspace(tmp_path: Path):
     missing = tmp_path / "missing"
@@ -291,6 +293,21 @@ async def test_set_last_channel_session_updates_state_file(tmp_path: Path):
 async def test_set_last_channel_session_without_state_file_is_noop():
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     await service._set_last_channel_session(session_id="ignored")
+
+
+async def test_set_prompt_message_context_updates_state_file(tmp_path: Path):
+    state_file = tmp_path / "channel-state.json"
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], channel_state_file=state_file)
+
+    await service.set_prompt_message_context(session_id="latest", message_id=PROMPT_MESSAGE_ID)
+
+    assert load_prompt_message_id(state_file, "latest") == PROMPT_MESSAGE_ID
+
+
+async def test_set_prompt_message_context_without_state_file_is_noop():
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+
+    await service.set_prompt_message_context(session_id="ignored", message_id=PROMPT_MESSAGE_ID)
 
 
 async def test_load_session_rejects_when_capability_is_false(tmp_path: Path):

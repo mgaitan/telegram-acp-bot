@@ -10,6 +10,7 @@ from telegram_acp_bot.mcp.state import (
     STATE_FILE_ENV,
     TOKEN_ENV,
     load_last_session_id,
+    load_prompt_message_id,
     load_session_chat_map,
 )
 
@@ -19,6 +20,7 @@ class RequestContext:
     token: str
     chat_id: int
     session_id: str
+    prompt_message_id: int | None
 
 
 def resolve_request_context(*, session_id: str | None) -> RequestContext | str:
@@ -53,4 +55,9 @@ def resolve_request_context(*, session_id: str | None) -> RequestContext | str:
     chat_id = mapping.get(selected_session_id)
     if chat_id is None:
         return f"unknown session_id `{selected_session_id}`"
-    return RequestContext(token=token, chat_id=chat_id, session_id=selected_session_id)
+    return RequestContext(
+        token=token,
+        chat_id=chat_id,
+        session_id=selected_session_id,
+        prompt_message_id=load_prompt_message_id(state_file, selected_session_id),
+    )

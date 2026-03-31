@@ -48,8 +48,10 @@ from telegram_acp_bot.core.session_registry import SessionRegistry
 from telegram_acp_bot.logging_context import LOG_TEXT_PREVIEW_MAX_CHARS, log_text_preview
 from telegram_acp_bot.mcp.state import (
     load_last_session_id,
+    load_prompt_message_id,
     load_session_chat_map,
     save_last_session_id,
+    save_prompt_message_id,
     save_session_chat_map,
 )
 
@@ -260,6 +262,7 @@ __all__ = [
     "base64",
     "cast",
     "load_last_session_id",
+    "load_prompt_message_id",
     "load_session_chat_map",
     "log_text_preview",
     "logging",
@@ -268,6 +271,7 @@ __all__ = [
     "pytestmark",
     "quote",
     "save_last_session_id",
+    "save_prompt_message_id",
     "save_session_chat_map",
     "text_block",
 ]
