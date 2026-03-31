@@ -160,7 +160,7 @@ class TelegramBridge:
         app.add_handler(CallbackQueryHandler(self.on_scheduled_callback, pattern=r"^scheduled\|"))
         app.add_handler(CallbackQueryHandler(self.on_busy_callback, pattern=r"^busy\|"))
         app.add_handler(
-            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
+            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VOICE) & ~filters.COMMAND, self.on_message)
         )
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -886,9 +886,38 @@ class TelegramBridge:
         message = update.message
         if message is None:
             return None
+        
+        # Handle voice messages - transcribe to text
         text = message.text or message.caption or ""
+        
+        # Check for voice message
+        if message.voice and message.voice.file_id:
+            logger.info("Voice message received, downloading and transcribing...")
+            try:
+                file = await context.bot.get_file(message.voice.file_id)
+                audio_data = await file.download_as_bytearray()
+                logger.info("Voice message downloaded: %d bytes", len(audio_data))
+                from telegram_acp_bot.audio_transcriber import transcribe_audio
+                audio_text = await transcribe_audio(bytes(audio_data))
+                logger.info("Transcription result: %s", audio_text[:100] if audio_text else "empty")
+                if audio_text:
+                    transcription = f"[Trascrizione audio]: {audio_text}"
+                    text = f"{text}\n\n{transcription}" if text else transcription
+                else:
+                    text = "[Audio ricevuto ma nessun contenuto rilevato]" if not text else text
+            except Exception as exc:
+                logger.exception("Voice message transcription failed: %s", exc)
+                text = f"{text}\n\n[Errore trascrizione: {exc}]" if text else f"[Errore trascrizione: {exc}]"
+        
         images = await self._extract_prompt_images(message=message, context=context)
         files = await self._extract_prompt_files(message=message, context=context)
+        
+        # For voice messages, always return even if no text (the audio was the message)
+        if message.voice and message.voice.file_id and not images and not files:
+            if not text:
+                text = "[Voice message ricevuto]"
+            return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=files)
+        
         if not text and not images and not files:
             return None
         return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=files)
