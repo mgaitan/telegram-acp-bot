@@ -452,7 +452,14 @@ class AcpAgentService:
                         _kill_process(process)
             else:
                 _kill_process(process)
-            await asyncio.wait_for(process.wait(), timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning(
+                    "ACP process did not exit after SIGKILL fallback within %ss: pid=%s",
+                    PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+                    pid,
+                )
 
     async def _start_initialized_connection(
         self,
