@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess as aio_subprocess
 import base64
+import errno
 import logging
 import mimetypes
+import os
+import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import cast
@@ -66,6 +69,28 @@ from telegram_acp_bot.mcp.state import (
 )
 
 logger = logging.getLogger(__name__)
+
+PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 3
+
+
+def _is_missing_process_error(exc: OSError) -> bool:
+    return isinstance(exc, ProcessLookupError) or exc.errno == errno.ESRCH
+
+
+def _terminate_process(process: ProcessLike) -> None:
+    try:
+        process.terminate()
+    except OSError as exc:
+        if not _is_missing_process_error(exc):
+            raise
+
+
+def _kill_process(process: ProcessLike) -> None:
+    try:
+        process.kill()
+    except OSError as exc:
+        if not _is_missing_process_error(exc):
+            raise
 
 
 class AcpAgentService:
@@ -406,12 +431,35 @@ class AcpAgentService:
         if process.returncode is not None:
             return
 
-        process.terminate()
+        pid: int | None = getattr(process, "pid", None)
+        killpg = getattr(os, "killpg", None)
+        if killpg is not None and pid is not None:
+            try:
+                killpg(os.getpgid(pid), signal.SIGTERM)
+            except OSError as exc:
+                if not _is_missing_process_error(exc):
+                    _terminate_process(process)
+        else:
+            _terminate_process(process)
         try:
-            await asyncio.wait_for(process.wait(), timeout=3)
+            await asyncio.wait_for(process.wait(), timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
         except TimeoutError:
-            process.kill()
-            await process.wait()
+            if killpg is not None and pid is not None:
+                try:
+                    killpg(os.getpgid(pid), signal.SIGKILL)
+                except OSError as exc:
+                    if not _is_missing_process_error(exc):
+                        _kill_process(process)
+            else:
+                _kill_process(process)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning(
+                    "ACP process did not exit after SIGKILL fallback within %ss: pid=%s",
+                    PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+                    pid,
+                )
 
     async def _start_initialized_connection(
         self,
@@ -424,6 +472,7 @@ class AcpAgentService:
             stdin=aio_subprocess.PIPE,
             stdout=aio_subprocess.PIPE,
             limit=self._stdio_limit,
+            start_new_session=True,
         )
         with bind_log_context(chat_id=chat_id):
             logger.debug("Spawned ACP process for chat_id=%s pid=%s", chat_id, getattr(process, "pid", "unknown"))

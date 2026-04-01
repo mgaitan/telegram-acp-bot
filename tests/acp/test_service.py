@@ -2,6 +2,10 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
+import errno
+import os
+import signal
+
 from tests.acp.support import *
 
 PROMPT_MESSAGE_ID = 42
@@ -1194,6 +1198,195 @@ async def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monk
     finished.returncode = 0
     await service._shutdown(finished)
     assert not finished.terminated
+
+
+async def test_new_session_passes_start_new_session_to_spawner(tmp_path: Path):
+    process = FakeProcess()
+    spawn_kwargs: list[dict] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args
+        spawn_kwargs.append(dict(kwargs))
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        conn = FakeConnection(session_id="s")
+        conn.client = client
+        return conn
+
+    service = AcpAgentService(
+        SessionRegistry(),
+        program="agent",
+        args=[],
+        spawner=fake_spawn,
+        connector=fake_connect,
+    )
+    await service.new_session(chat_id=1, workspace=tmp_path)
+    assert spawn_kwargs[0].get("start_new_session") is True
+
+
+async def test_shutdown_kills_process_group_on_posix(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=1234)
+
+    killed_groups: list[tuple[int, int]] = []
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        killed_groups.append((pgid, sig))
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+
+    await service._shutdown(process)
+
+    assert killed_groups == [(1234, signal.SIGTERM)]
+    assert not process.terminated
+
+
+async def test_shutdown_kills_process_group_on_timeout(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=5678)
+
+    killed_groups: list[tuple[int, int]] = []
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        killed_groups.append((pgid, sig))
+
+    async def fake_wait_for(fut, **kwargs):
+        del kwargs
+        fut.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    await service._shutdown(process)
+
+    assert killed_groups == [(5678, signal.SIGTERM), (5678, signal.SIGKILL)]
+    assert not process.killed
+
+
+async def test_shutdown_falls_back_to_terminate_on_oserror(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=9999)
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        raise OSError
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+
+    await service._shutdown(process)
+
+    assert process.terminated
+
+
+async def test_shutdown_ignores_missing_process_race_on_sigterm(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=9999)
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        del pgid, sig
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+
+    await service._shutdown(process)
+
+    assert not process.terminated
+
+
+async def test_shutdown_falls_back_to_kill_on_oserror_and_timeout(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=9999)
+    call_count = 0
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        nonlocal call_count
+        call_count += 1
+        raise OSError
+
+    async def fake_wait_for(fut, **kwargs):
+        del kwargs
+        fut.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    await service._shutdown(process)
+
+    assert call_count == 2  # noqa: PLR2004
+    assert process.killed
+
+
+async def test_shutdown_reraises_unexpected_terminate_oserror(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=9999)
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        del pgid, sig
+        raise OSError(errno.EPERM, "operation not permitted")
+
+    def fake_terminate() -> None:
+        raise OSError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(process, "terminate", fake_terminate)
+
+    with pytest.raises(PermissionError):
+        await service._shutdown(process)
+
+
+async def test_shutdown_reraises_unexpected_kill_oserror_on_timeout(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=9999)
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        del pgid, sig
+        raise OSError(errno.EPERM, "operation not permitted")
+
+    async def fake_wait_for(fut, **kwargs):
+        del kwargs
+        fut.close()
+        raise TimeoutError
+
+    def fake_kill() -> None:
+        raise OSError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(process, "kill", fake_kill)
+
+    with pytest.raises(PermissionError):
+        await service._shutdown(process)
 
 
 async def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path):

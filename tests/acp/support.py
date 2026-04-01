@@ -74,17 +74,31 @@ def make_client() -> _AcpClient:
 
 
 class FakeProcess:
-    def __init__(self, *, with_pipes: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        with_pipes: bool = True,
+        pid: int | None = None,
+        raise_on_terminate: bool = False,
+        raise_on_kill: bool = False,
+    ) -> None:
         self.stdin = object() if with_pipes else None
         self.stdout = object() if with_pipes else None
         self.returncode: int | None = None
         self.terminated = False
         self.killed = False
+        self.pid = pid
+        self._raise_on_terminate = raise_on_terminate
+        self._raise_on_kill = raise_on_kill
 
     def terminate(self) -> None:
+        if self._raise_on_terminate:
+            raise OSError
         self.terminated = True
 
     def kill(self) -> None:
+        if self._raise_on_kill:
+            raise OSError
         self.killed = True
 
     async def wait(self) -> int:
