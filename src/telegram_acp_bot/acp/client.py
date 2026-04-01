@@ -16,7 +16,7 @@ from acp.schema import (
     EmbeddedResourceContentBlock,
     EnvVariable,
     ImageContentBlock,
-    KillTerminalCommandResponse,
+    KillTerminalResponse,
     PermissionOption,
     ReadTextFileResponse,
     ReleaseTerminalResponse,
@@ -400,9 +400,7 @@ class _AcpClient:
         del session_id, terminal_id, kwargs
         raise RequestError.method_not_found("terminal/wait_for_exit")
 
-    async def kill_terminal(
-        self, session_id: str, terminal_id: str, **kwargs: object
-    ) -> KillTerminalCommandResponse | None:
+    async def kill_terminal(self, session_id: str, terminal_id: str, **kwargs: object) -> KillTerminalResponse | None:
         del session_id, terminal_id, kwargs
         raise RequestError.method_not_found("terminal/kill")
 

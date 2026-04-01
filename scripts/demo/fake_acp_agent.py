@@ -174,8 +174,14 @@ class FakeDemoAcpAgent(Agent):
     async def authenticate(self, method_id: str, **kwargs: object) -> None:
         del method_id, kwargs
 
-    async def prompt(self, prompt: list[PromptBlock], session_id: str, **kwargs: object) -> PromptResponse:
-        del kwargs
+    async def prompt(
+        self,
+        prompt: list[PromptBlock],
+        session_id: str,
+        message_id: str | None = None,
+        **kwargs: object,
+    ) -> PromptResponse:
+        del message_id, kwargs
         session = self._sessions.get(session_id)
         if session is None:
             raise RequestError.invalid_params({"session_id": session_id})
