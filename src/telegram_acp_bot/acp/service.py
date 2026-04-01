@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess as aio_subprocess
 import base64
-import contextlib
+import errno
 import logging
 import mimetypes
 import os
@@ -69,6 +69,28 @@ from telegram_acp_bot.mcp.state import (
 )
 
 logger = logging.getLogger(__name__)
+
+PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 3
+
+
+def _is_missing_process_error(exc: OSError) -> bool:
+    return isinstance(exc, ProcessLookupError) or exc.errno == errno.ESRCH
+
+
+def _terminate_process(process: ProcessLike) -> None:
+    try:
+        process.terminate()
+    except OSError as exc:
+        if not _is_missing_process_error(exc):
+            raise
+
+
+def _kill_process(process: ProcessLike) -> None:
+    try:
+        process.kill()
+    except OSError as exc:
+        if not _is_missing_process_error(exc):
+            raise
 
 
 class AcpAgentService:
@@ -414,25 +436,23 @@ class AcpAgentService:
         if killpg is not None and pid is not None:
             try:
                 killpg(os.getpgid(pid), signal.SIGTERM)
-            except OSError:
-                with contextlib.suppress(OSError):
-                    process.terminate()
+            except OSError as exc:
+                if not _is_missing_process_error(exc):
+                    _terminate_process(process)
         else:
-            with contextlib.suppress(OSError):
-                process.terminate()
+            _terminate_process(process)
         try:
-            await asyncio.wait_for(process.wait(), timeout=3)
+            await asyncio.wait_for(process.wait(), timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
         except TimeoutError:
             if killpg is not None and pid is not None:
                 try:
                     killpg(os.getpgid(pid), signal.SIGKILL)
-                except OSError:
-                    with contextlib.suppress(OSError):
-                        process.kill()
+                except OSError as exc:
+                    if not _is_missing_process_error(exc):
+                        _kill_process(process)
             else:
-                with contextlib.suppress(OSError):
-                    process.kill()
-            await process.wait()
+                _kill_process(process)
+            await asyncio.wait_for(process.wait(), timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
 
     async def _start_initialized_connection(
         self,

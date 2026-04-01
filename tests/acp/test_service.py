@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
+import errno
 import os
 import signal
 
@@ -1291,6 +1292,25 @@ async def test_shutdown_falls_back_to_terminate_on_oserror(monkeypatch):
     assert process.terminated
 
 
+async def test_shutdown_ignores_missing_process_race_on_sigterm(monkeypatch):
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
+    process = FakeProcess(pid=9999)
+
+    def fake_getpgid(pid: int) -> int:
+        return pid
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        del pgid, sig
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+
+    await service._shutdown(process)
+
+    assert not process.terminated
+
+
 async def test_shutdown_falls_back_to_kill_on_oserror_and_timeout(monkeypatch):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
     process = FakeProcess(pid=9999)
@@ -1319,77 +1339,54 @@ async def test_shutdown_falls_back_to_kill_on_oserror_and_timeout(monkeypatch):
     assert process.killed
 
 
-async def test_shutdown_swallows_oserror_from_terminate_fallback(monkeypatch):
-    """Fallback process.terminate() raising OSError (process already gone) is silently ignored."""
+async def test_shutdown_reraises_unexpected_terminate_oserror(monkeypatch):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
-    process = FakeProcess(pid=1234, raise_on_terminate=True)
+    process = FakeProcess(pid=9999)
 
     def fake_getpgid(pid: int) -> int:
         return pid
 
     def fake_killpg(pgid: int, sig: int) -> None:
-        raise OSError
+        del pgid, sig
+        raise OSError(errno.EPERM, "operation not permitted")
+
+    def fake_terminate() -> None:
+        raise OSError(errno.EPERM, "operation not permitted")
 
     monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(process, "terminate", fake_terminate)
 
-    # Should not raise even though terminate() raises OSError
-    await service._shutdown(process)
+    with pytest.raises(PermissionError):
+        await service._shutdown(process)
 
 
-async def test_shutdown_swallows_oserror_from_terminate_no_killpg(monkeypatch):
-    """process.terminate() raising OSError without killpg available is silently ignored."""
+async def test_shutdown_reraises_unexpected_kill_oserror_on_timeout(monkeypatch):
     service = AcpAgentService(SessionRegistry(), program="agent", args=[])
-    process = FakeProcess(raise_on_terminate=True)
-
-    monkeypatch.delattr(os, "killpg", raising=False)
-
-    # Should not raise even though terminate() raises OSError
-    await service._shutdown(process)
-
-
-async def test_shutdown_swallows_oserror_from_kill_fallback(monkeypatch):
-    """Fallback process.kill() raising OSError (process already gone) is silently ignored."""
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
-    process = FakeProcess(pid=9999, raise_on_kill=True)
-    call_count = 0
+    process = FakeProcess(pid=9999)
 
     def fake_getpgid(pid: int) -> int:
         return pid
 
     def fake_killpg(pgid: int, sig: int) -> None:
-        nonlocal call_count
-        call_count += 1
-        raise OSError
+        del pgid, sig
+        raise OSError(errno.EPERM, "operation not permitted")
 
     async def fake_wait_for(fut, **kwargs):
         del kwargs
         fut.close()
         raise TimeoutError
 
+    def fake_kill() -> None:
+        raise OSError(errno.EPERM, "operation not permitted")
+
     monkeypatch.setattr(os, "killpg", fake_killpg)
     monkeypatch.setattr(os, "getpgid", fake_getpgid)
     monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(process, "kill", fake_kill)
 
-    # Should not raise even though kill() raises OSError
-    await service._shutdown(process)
-
-
-async def test_shutdown_swallows_oserror_from_kill_no_killpg(monkeypatch):
-    """process.kill() raising OSError without killpg available is silently ignored."""
-    service = AcpAgentService(SessionRegistry(), program="agent", args=[])
-    process = FakeProcess(raise_on_kill=True)
-
-    async def fake_wait_for(fut, **kwargs):
-        del kwargs
-        fut.close()
-        raise TimeoutError
-
-    monkeypatch.delattr(os, "killpg", raising=False)
-    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
-
-    # Should not raise even though kill() raises OSError
-    await service._shutdown(process)
+    with pytest.raises(PermissionError):
+        await service._shutdown(process)
 
 
 async def test_resolve_file_uri_resources_keeps_non_file_payloads(tmp_path: Path):
