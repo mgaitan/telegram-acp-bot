@@ -638,6 +638,20 @@ async def test_format_activity_block_search_renders_patterns_as_inline_code():
     assert r"Search `AGENTS\.md|pedidos`" in rendered
 
 
+async def test_format_activity_block_search_keeps_escaped_backticks_inside_inline_code():
+    block = AgentActivityBlock(
+        kind="search",
+        title=r"Search foo`bar[baz]_qux",
+        status="completed",
+        text="",
+    )
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert r"Search `foo\`bar[baz]_qux`" in rendered
+    assert r"foo\`bar[baz]_qux" in rendered
+
+
 async def test_format_activity_block_search_list_uses_workspace_root_for_basename_match():
     workspace = Path("/home/tin/lab/custom")
     block = AgentActivityBlock(

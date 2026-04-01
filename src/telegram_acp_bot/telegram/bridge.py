@@ -1572,21 +1572,28 @@ class TelegramBridge:
     def _escape_markdown_preserving_code(text: str, *, allow_basic_markdown: bool = False) -> str:
         escaped: list[str] = []
         in_code = False
+        previous_char = ""
         for char in text:
             if char == "`":
-                in_code = not in_code
+                if previous_char != "\\":
+                    in_code = not in_code
                 escaped.append(char)
+                previous_char = char
                 continue
             if in_code:
                 escaped.append(char)
+                previous_char = char
                 continue
             if char in {"\\", "["}:
                 escaped.append(f"\\{char}")
+                previous_char = char
                 continue
             if not allow_basic_markdown and char in {"_", "*"}:
                 escaped.append(f"\\{char}")
+                previous_char = char
                 continue
             escaped.append(char)
+            previous_char = char
         return "".join(escaped)
 
     @staticmethod
