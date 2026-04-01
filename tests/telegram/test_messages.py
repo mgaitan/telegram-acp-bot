@@ -625,6 +625,84 @@ async def test_format_activity_block_search_uses_neutral_label_for_file_uri():
     assert "*🔎 Querying*" in rendered
 
 
+async def test_format_activity_block_search_renders_patterns_as_inline_code():
+    block = AgentActivityBlock(
+        kind="search",
+        title=r"Search AGENTS\.md|pedidos",
+        status="completed",
+        text="",
+    )
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert r"Search `AGENTS\.md|pedidos`" in rendered
+
+
+async def test_format_activity_block_search_keeps_escaped_backticks_inside_inline_code():
+    block = AgentActivityBlock(
+        kind="search",
+        title=r"Search foo`bar[baz]_qux",
+        status="completed",
+        text="",
+    )
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert r"Search `foo\`bar[baz]_qux`" in rendered
+    assert r"foo\`bar[baz]_qux" in rendered
+
+
+async def test_format_activity_block_search_list_uses_workspace_root_for_basename_match():
+    workspace = Path("/home/tin/lab/custom")
+    block = AgentActivityBlock(
+        kind="search",
+        title="List custom",
+        status="completed",
+        text="",
+    )
+
+    rendered = TelegramBridge._format_activity_block(block, workspace=workspace)
+
+    assert "List `/home/tin/lab/custom`" in rendered
+    assert "/home/tin/lab/custom/custom" not in rendered
+
+
+async def test_format_activity_block_search_list_collapses_duplicate_entries():
+    block = AgentActivityBlock(
+        kind="search",
+        title="List /home/tin/lab/custom/custom, List /home/tin/lab/custom/custom",
+        status="completed",
+        text="",
+    )
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert rendered.count("List `/home/tin/lab/custom/custom`") == 1
+
+
+async def test_format_activity_block_search_keeps_incomplete_list_marker_as_plain_text():
+    block = AgentActivityBlock(
+        kind="search",
+        title="List ",
+        status="completed",
+        text="",
+    )
+
+    rendered = TelegramBridge._format_activity_block(block)
+
+    assert "List" in rendered
+
+
+async def test_split_prefixed_items_returns_empty_when_prefix_is_missing():
+    assert TelegramBridge._split_prefixed_items("Query project", prefix="List ") == []
+
+
+async def test_normalize_search_activity_part_keeps_plain_text_when_list_items_are_missing(monkeypatch):
+    monkeypatch.setattr(TelegramBridge, "_split_prefixed_items", staticmethod(lambda text, prefix: []))
+
+    assert TelegramBridge._normalize_search_activity_part("List something") == "List something"
+
+
 async def test_format_activity_block_reply_and_fallback_helpers():
     block = AgentActivityBlock(kind="reply", title="ignored", status="completed", text="final")
 

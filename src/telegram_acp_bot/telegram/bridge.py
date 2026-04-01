@@ -1507,6 +1507,8 @@ class TelegramBridge:
         title = block.title.strip()
         if block.kind == "think":
             return ""
+        if block.kind == "search":
+            return TelegramBridge._normalize_search_activity_part(title, workspace=workspace)
         if block.kind == "execute" and title.startswith("Run "):
             command = title[4:].strip()
             if command:
@@ -1520,30 +1522,78 @@ class TelegramBridge:
     @staticmethod
     def _normalize_activity_text(block: AgentActivityBlock, *, workspace: Path | None = None) -> str:
         text = block.text.strip()
+        if block.kind == "search":
+            return TelegramBridge._normalize_search_activity_part(text, workspace=workspace)
         path_prefix = TelegramBridge._path_prefix_for_kind(block.kind)
         if path_prefix and text.startswith(path_prefix) and "\n" not in text:
             return TelegramBridge._format_read_path(text[len(path_prefix) :], workspace=workspace)
         return text
 
     @staticmethod
+    def _normalize_search_activity_part(text: str, *, workspace: Path | None = None) -> str:
+        stripped = text.strip()
+        if not stripped:
+            return ""
+        if stripped.startswith("List "):
+            paths = TelegramBridge._split_prefixed_items(stripped, prefix="List ")
+            if not paths:
+                return stripped
+            seen: set[str] = set()
+            rendered: list[str] = []
+            for path in paths:
+                normalized = TelegramBridge._format_search_path(path, workspace=workspace)
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                rendered.append(f"List {normalized}")
+            return ", ".join(rendered)
+        if stripped.startswith("Search "):
+            pattern = stripped[len("Search ") :].strip().replace("`", "\\`")
+            if pattern:
+                return f"Search `{pattern}`"
+        return stripped
+
+    @staticmethod
+    def _split_prefixed_items(text: str, *, prefix: str) -> list[str]:
+        if not text.startswith(prefix):
+            return []
+        remainder = text[len(prefix) :]
+        separator = f", {prefix}"
+        return [item.strip() for item in remainder.split(separator) if item.strip()]
+
+    @staticmethod
+    def _format_search_path(raw_path: str, *, workspace: Path | None) -> str:
+        raw = raw_path.strip()
+        if workspace is not None and raw == workspace.name:
+            return TelegramBridge._format_read_path(".", workspace=workspace)
+        return TelegramBridge._format_read_path(raw, workspace=workspace)
+
+    @staticmethod
     def _escape_markdown_preserving_code(text: str, *, allow_basic_markdown: bool = False) -> str:
         escaped: list[str] = []
         in_code = False
+        previous_char = ""
         for char in text:
             if char == "`":
-                in_code = not in_code
+                if previous_char != "\\":
+                    in_code = not in_code
                 escaped.append(char)
+                previous_char = char
                 continue
             if in_code:
                 escaped.append(char)
+                previous_char = char
                 continue
             if char in {"\\", "["}:
                 escaped.append(f"\\{char}")
+                previous_char = char
                 continue
             if not allow_basic_markdown and char in {"_", "*"}:
                 escaped.append(f"\\{char}")
+                previous_char = char
                 continue
             escaped.append(char)
+            previous_char = char
         return "".join(escaped)
 
     @staticmethod
