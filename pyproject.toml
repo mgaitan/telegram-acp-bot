@@ -116,7 +116,7 @@ test = [
 lint = ["ruff"]
 qa = [
     { include-group = "lint" },
-    "ty>=0.0.19",
+    "ty>=0.0.27",
     "playwright>=1.55.0",
 ]
 docs = [
