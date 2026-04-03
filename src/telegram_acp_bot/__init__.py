@@ -174,7 +174,7 @@ def _default_mcp_servers(
 def _parse_mcp_server_spec(spec: dict) -> McpServerStdio:
     """Parse a single MCP server spec dict into a `McpServerStdio`.
 
-    See also `{py:func}``_parse_extra_mcp_servers``.
+    See also `{py:func}`_parse_extra_mcp_servers``.
     """
     name = spec.get("name")
     command = spec.get("command")
