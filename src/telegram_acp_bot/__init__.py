@@ -7,6 +7,7 @@ A Telegram bot that implements Agent Client Protocol to interact with AI agents.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shlex
@@ -35,6 +36,7 @@ from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, BotConfig, Telegram
 
 ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
 ALLOWED_USERNAMES_ENV = "TELEGRAM_ALLOWED_USERNAMES"
+ACP_MCP_SERVERS_ENV = "ACP_MCP_SERVERS"
 
 
 def get_version() -> str:
@@ -129,6 +131,21 @@ def get_parser() -> argparse.ArgumentParser:
         default=os.getenv(ACP_SCHEDULED_TASKS_DB_ENV, str(default_scheduled_tasks_db_path())),
         help="SQLite database path used for deferred scheduled follow-ups.",
     )
+    parser.add_argument(
+        "--mcp-server",
+        action="append",
+        default=[],
+        dest="mcp_server",
+        metavar="JSON",
+        help=(
+            "Register an extra MCP stdio server. "
+            "Value must be a JSON object with 'name' (str), 'command' (str), "
+            "and optionally 'args' (list[str]) and 'env' (dict[str, str]). "
+            "Can be repeated. "
+            'Example: \'{"name": "my-server", "command": "uvx", "args": ["my-mcp-server"]}\'. '
+            f"Also configurable via {ACP_MCP_SERVERS_ENV} (JSON array of the same objects)."
+        ),
+    )
     return parser
 
 
@@ -152,6 +169,74 @@ def _default_mcp_servers(
             ],
         ),
     )
+
+
+def _parse_mcp_server_spec(spec: dict) -> McpServerStdio:
+    """Parse a single MCP server spec dict into a `McpServerStdio`.
+
+    See also `{py:func}``_parse_extra_mcp_servers``.
+    """
+    name = spec.get("name")
+    command = spec.get("command")
+    args = spec.get("args", [])
+    env_dict = spec.get("env", {})
+
+    if not isinstance(name, str) or not name:
+        msg = "MCP server spec must have a non-empty 'name' string"
+        raise ValueError(msg)
+    if not isinstance(command, str) or not command:
+        msg = "MCP server spec must have a non-empty 'command' string"
+        raise ValueError(msg)
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        msg = "MCP server spec 'args' must be a list of strings"
+        raise ValueError(msg)
+    if not isinstance(env_dict, dict):
+        msg = "MCP server spec 'env' must be a JSON object"
+        raise ValueError(msg)  # noqa: TRY004
+
+    env = [EnvVariable(name=k, value=str(v)) for k, v in env_dict.items()]
+    return McpServerStdio(name=name, command=command, args=args, env=env)
+
+
+def _parse_extra_mcp_servers(*, env_json: str, cli_specs: list[str]) -> tuple[McpServerStdio, ...]:
+    """Parse extra MCP stdio server config from `ACP_MCP_SERVERS` env JSON and CLI specs.
+
+    `env_json` is the raw value of the `ACP_MCP_SERVERS` environment variable (a JSON
+    array of server-spec objects). `cli_specs` is the list of raw JSON object strings
+    supplied via repeated `--mcp-server` flags.
+
+    Internal servers (e.g. `telegram-channel`) take precedence and are prepended by
+    the caller; this function only handles the user-supplied extras.
+    """
+    servers: list[McpServerStdio] = []
+
+    if env_json.strip():
+        try:
+            env_data = json.loads(env_json)
+        except json.JSONDecodeError as exc:
+            msg = f"{ACP_MCP_SERVERS_ENV} contains invalid JSON: {exc}"
+            raise ValueError(msg) from exc
+        if not isinstance(env_data, list):
+            msg = f"{ACP_MCP_SERVERS_ENV} must be a JSON array"
+            raise ValueError(msg)
+        for i, spec in enumerate(env_data):
+            if not isinstance(spec, dict):
+                msg = f"{ACP_MCP_SERVERS_ENV}[{i}] must be a JSON object"
+                raise ValueError(msg)  # noqa: TRY004
+            servers.append(_parse_mcp_server_spec(spec))
+
+    for raw in cli_specs:
+        try:
+            spec = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            msg = f"--mcp-server contains invalid JSON: {exc}"
+            raise ValueError(msg) from exc
+        if not isinstance(spec, dict):
+            msg = "--mcp-server value must be a JSON object"
+            raise ValueError(msg)  # noqa: TRY004
+        servers.append(_parse_mcp_server_spec(spec))
+
+    return tuple(servers)
 
 
 def _parse_csv(value: str) -> list[str]:
@@ -252,6 +337,14 @@ def main(args: list[str] | None = None) -> int:
         state_file=channel_state_file,
         scheduled_tasks_db=scheduled_tasks_db,
     )
+    try:
+        extra_mcp_servers = _parse_extra_mcp_servers(
+            env_json=os.getenv(ACP_MCP_SERVERS_ENV, ""),
+            cli_specs=opts.mcp_server,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    mcp_servers = mcp_servers + extra_mcp_servers
 
     config = make_config(
         token=opts.telegram_token,
@@ -280,4 +373,4 @@ def main(args: list[str] | None = None) -> int:
     return _run_bot_loop(config, bridge, scheduler, restart_command_parts)
 
 
-__all__: list[str] = ["get_parser", "main"]
+__all__: list[str] = ["ACP_MCP_SERVERS_ENV", "get_parser", "main"]

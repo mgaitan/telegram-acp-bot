@@ -74,6 +74,21 @@ ACP_SCHEDULED_TASKS_DB
   Path to the SQLite database used for deferred follow-up tasks.
   Maps to `--scheduled-tasks-db`.
 
+ACP_MCP_SERVERS
+  Optional extra MCP stdio servers to advertise to the ACP agent, in addition to the
+  built-in `telegram-channel` server. Value must be a JSON array of server-spec objects.
+  Each object requires `name` (string) and `command` (string), and accepts optional
+  `args` (list of strings) and `env` (object with string values).
+
+  Example:
+
+  ```json
+  [{"name": "my-server", "command": "uvx", "args": ["my-mcp-server"], "env": {"KEY": "val"}}]
+  ```
+
+  The built-in `telegram-channel` server always takes precedence and is registered first.
+  Maps to `--mcp-server` (repeatable; each value is a single JSON object).
+
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
   Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
   Disabled by default. Set to `1` (or `true`/`yes`/`on`) only when file-path inputs are trusted.
@@ -103,12 +118,17 @@ ACP_LOG_LEVEL=INFO
 ACP_LOG_FORMAT=text
 ACP_ACTIVITY_MODE=normal
 ACP_SCHEDULED_TASKS_DB=/home/alice/.local/state/telegram-acp-bot/scheduled-tasks.sqlite3
+# ACP_MCP_SERVERS='[{"name": "my-server", "command": "uvx", "args": ["my-mcp-server"]}]'
 ```
 
 ## MCP behavior
 
 The bot always advertises an internal MCP stdio server named `telegram-channel`
 to the ACP agent. No extra configuration is required.
+
+Additional MCP stdio servers can be registered via {term}`ACP_MCP_SERVERS` (or the
+`--mcp-server` CLI flag). User-supplied servers are appended after the internal one,
+so `telegram-channel` always appears first in the server list.
 
 (mcp-channel-environment-variables)=
 ## MCP channel environment variables
