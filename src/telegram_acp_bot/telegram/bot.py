@@ -102,6 +102,7 @@ from telegram_acp_bot.telegram.constants import (  # noqa: F401
     SEARCH_LABEL_NEUTRAL,
     SEARCH_LABEL_WEB,
     TELEGRAM_MAX_UTF16_MESSAGE_LENGTH,
+    UNSUPPORTED_MESSAGE_TEXT,
 )
 from telegram_acp_bot.telegram.models import (  # noqa: F401
     AgentService,

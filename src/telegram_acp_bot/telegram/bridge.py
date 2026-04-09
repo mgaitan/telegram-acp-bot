@@ -85,6 +85,7 @@ from telegram_acp_bot.telegram.constants import (
     SEARCH_LABEL_NEUTRAL,
     SEARCH_LABEL_WEB,
     TELEGRAM_MAX_UTF16_MESSAGE_LENGTH,
+    UNSUPPORTED_MESSAGE_TEXT,
 )
 from telegram_acp_bot.telegram.models import (
     AgentService,
@@ -159,9 +160,9 @@ class TelegramBridge:
         app.add_handler(CallbackQueryHandler(self.on_resume_callback, pattern=r"^resume\|"))
         app.add_handler(CallbackQueryHandler(self.on_scheduled_callback, pattern=r"^scheduled\|"))
         app.add_handler(CallbackQueryHandler(self.on_busy_callback, pattern=r"^busy\|"))
-        app.add_handler(
-            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
-        )
+        _supported = filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VOICE | filters.AUDIO
+        app.add_handler(MessageHandler(_supported & ~filters.COMMAND, self.on_message))
+        app.add_handler(MessageHandler(~filters.COMMAND & ~_supported, self.on_unsupported_message))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
@@ -723,6 +724,12 @@ class TelegramBridge:
                 prompt_input=prompt_input,
             )
 
+    async def on_unsupported_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._require_access(update):
+            return
+        await self._reply(update, UNSUPPORTED_MESSAGE_TEXT)
+
     async def _drain_prompt_queue(
         self,
         *,
@@ -889,9 +896,12 @@ class TelegramBridge:
         text = message.text or message.caption or ""
         images = await self._extract_prompt_images(message=message, context=context)
         files = await self._extract_prompt_files(message=message, context=context)
-        if not text and not images and not files:
+        audio = await self._extract_prompt_audio(message=message, context=context)
+        all_files = (*files, *audio)
+        if not text and not images and not all_files:
             return None
-        return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=files)
+        return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=all_files)
+
 
     async def _ensure_session_for_chat(self, *, update: Update, chat_id: int) -> bool:
         if self._agent_service.get_workspace(chat_id=chat_id) is not None:
@@ -1197,7 +1207,31 @@ class TelegramBridge:
                 ),
             )
 
-    async def _send_attachments(self, update: Update, reply: AgentReply) -> None:
+    async def _extract_prompt_audio(
+        self,
+        *,
+        message: Message,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> tuple[PromptFile, ...]:
+        """Extract voice or audio messages as binary `PromptFile` entries."""
+        voice = message.voice
+        if voice is not None:
+            tg_file = await context.bot.get_file(voice.file_id)
+            raw = bytes(await tg_file.download_as_bytearray())
+            mime_type = voice.mime_type or "audio/ogg"
+            return (PromptFile(name="voice.ogg", mime_type=mime_type, data_base64=base64.b64encode(raw).decode("ascii")),)
+
+        audio = message.audio
+        if audio is not None:
+            tg_file = await context.bot.get_file(audio.file_id)
+            raw = bytes(await tg_file.download_as_bytearray())
+            name = audio.file_name or "audio"
+            mime_type = audio.mime_type or "audio/mpeg"
+            return (PromptFile(name=name, mime_type=mime_type, data_base64=base64.b64encode(raw).decode("ascii")),)
+
+        return ()
+
+
         for image in reply.images:
             await self._send_image(update, image)
         for file_payload in reply.files:

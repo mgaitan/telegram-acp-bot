@@ -35,6 +35,7 @@ from telegram_acp_bot.telegram.bot import (
     BUSY_STILL_QUEUED_TEXT,
     RESTART_EXIT_CODE,
     RESUME_KEYBOARD_MAX_ROWS,
+    UNSUPPORTED_MESSAGE_TEXT,
     AgentService,
     ChatRequiredError,
     TelegramBridge,
@@ -89,12 +90,16 @@ class DummyMessage:
         caption: str | None = None,
         photo: Sequence[object] | None = None,
         document: object | None = None,
+        voice: object | None = None,
+        audio: object | None = None,
     ) -> None:
         self.message_id = message_id
         self.text = text
         self.caption = caption
         self.photo = list(photo) if photo is not None else []
         self.document = document
+        self.voice = voice
+        self.audio = audio
         self._next_reply_message_id = message_id + 1
         self.replies: list[str] = []
         self.reply_kwargs: list[dict[str, object]] = []
@@ -530,11 +535,21 @@ def make_update(  # noqa: PLR0913
     caption: str | None = None,
     photo: Sequence[object] | None = None,
     document: object | None = None,
+    voice: object | None = None,
+    audio: object | None = None,
     message_id: int = 1,
     with_message: bool = True,
 ):
     message = (
-        DummyMessage(text, message_id=message_id, caption=caption, photo=photo, document=document)
+        DummyMessage(
+            text,
+            message_id=message_id,
+            caption=caption,
+            photo=photo,
+            document=document,
+            voice=voice,
+            audio=audio,
+        )
         if with_message
         else None
     )
@@ -580,6 +595,7 @@ __all__ = [
     "RESTART_EXIT_CODE",
     "RESUME_KEYBOARD_MAX_ROWS",
     "TEST_CHAT_ID",
+    "UNSUPPORTED_MESSAGE_TEXT",
     "AIORateLimiter",
     "ActivityMode",
     "AgentActivityBlock",

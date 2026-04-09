@@ -79,7 +79,46 @@ async def test_on_message_with_image_document_attachment():
     assert "images=1" in update.message.replies[-1]
 
 
-async def test_outbound_agent_attachments_are_sent():
+async def test_on_message_with_voice_attachment():
+    bridge = make_bridge()
+    voice = SimpleNamespace(file_id="v1", mime_type="audio/ogg")
+    update = make_update(voice=voice)
+    context = make_context()
+    context.bot.files["v1"] = b"\x4f\x67\x67\x53"  # OGG magic bytes
+
+    await bridge.new_session(update, make_context())
+    await bridge.on_message(update, context)
+
+    assert update.message is not None
+    assert "files=1" in update.message.replies[-1]
+
+
+async def test_on_message_with_audio_attachment():
+    bridge = make_bridge()
+    audio = SimpleNamespace(file_id="a1", mime_type="audio/mpeg", file_name="song.mp3")
+    update = make_update(audio=audio)
+    context = make_context()
+    context.bot.files["a1"] = b"\xff\xfb"  # MP3 magic bytes
+
+    await bridge.new_session(update, make_context())
+    await bridge.on_message(update, context)
+
+    assert update.message is not None
+    assert "files=1" in update.message.replies[-1]
+
+
+async def test_on_unsupported_message_replies():
+    bridge = make_bridge()
+    update = make_update(text=None)  # message with no supported content
+    context = make_context()
+
+    await bridge.on_unsupported_message(update, context)
+
+    assert update.message is not None
+    assert UNSUPPORTED_MESSAGE_TEXT in update.message.replies[-1]
+
+
+
     class AttachmentService:
         async def new_session(self, *, chat_id: int, workspace):
             del workspace

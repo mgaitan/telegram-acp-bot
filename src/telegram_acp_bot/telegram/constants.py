@@ -44,3 +44,6 @@ SEARCH_LABEL_NEUTRAL = "🔎 Querying"
 REPLY_LABEL = "✍️ Replying"
 ACTIVITY_MODE_CHOICES: tuple[str, ...] = ("normal", "compact", "verbose")
 ACTIVITY_MODE_HELP = "normal, compact, or verbose"
+UNSUPPORTED_MESSAGE_TEXT = (
+    "Unsupported message type. I can process text, photos, documents, and voice/audio messages."
+)
