@@ -140,14 +140,19 @@ Supported time formats:
 - `10m` — 10 minutes from now
 - `2h` — 2 hours from now
 - `1d` — 1 day from now
+- Natural-language dates such as `tomorrow 9am` or `mañana 9am`
 - ISO timestamp with timezone, e.g. `2026-04-11T10:00:00+00:00`
 
 Example:
 
 ```text
-/schedule 30m Check for new review comments on the open PR
+/schedule tomorrow 9am Check for new review comments on the open PR
 Summarize what changed
 Flag anything blocking merge
+
+/schedule mañana 9am Generate the weekly summary report
+Include pending reviews
+Mention overdue follow-ups
 
 /schedule 2026-04-12T09:00:00+00:00 Generate the weekly summary report
 Include pending reviews
@@ -157,6 +162,8 @@ Mention overdue follow-ups
 The bot replies with the scheduled execution time. When the time arrives, the stored prompt is sent to the agent and the reply is posted back to the chat as a reply to your `/schedule` message.
 
 The prompt may also continue on following lines. Everything after the time spec is stored verbatim, so multiline prompts keep their line breaks.
+
+Natural-language parsing uses English and Spanish by default. You can customize the accepted languages with {term}`ACP_SCHEDULE_LANGUAGES` or `telegram.schedule_languages` in the config file.
 
 Single-line prompts still work too:
 

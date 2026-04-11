@@ -82,14 +82,14 @@ In addition to the agent-driven path, users can schedule a `prompt_agent` task d
 /schedule <time> <prompt text>
 ```
 
-Supported time formats are: `30s`, `10m`, `2h`, `1d`, or an ISO timestamp with an explicit timezone offset such as `2026-04-11T10:00:00+00:00`.
+Supported time formats are: `30s`, `10m`, `2h`, `1d`, natural-language dates such as `tomorrow 9am` or `mañana 9am`, or an ISO timestamp with an explicit timezone offset such as `2026-04-11T10:00:00+00:00`.
 
 The prompt text can span multiple lines. Everything after the time spec is preserved as-is and stored in the scheduled `prompt_agent` task.
 
 Example interaction:
 
 ```text
-User: /schedule 30m Check for new review comments on the open PR
+User: /schedule tomorrow 9am Check for new review comments on the open PR
 Summarize what changed
 Flag anything blocking merge
 Bot: Scheduled for 2026-04-11 10:30 UTC. Use /scheduled to view or cancel.
@@ -105,6 +105,8 @@ Single-line prompts remain valid as a shorter form:
 User: /schedule 2h Generate the weekly summary report
 Bot: Scheduled for 2026-04-11 12:00 UTC. Use /scheduled to view or cancel.
 ```
+
+Natural-language parsing uses English and Spanish by default, and can be restricted or extended with {term}`ACP_SCHEDULE_LANGUAGES` or `telegram.schedule_languages`.
 
 The `/schedule` command sets the command message itself as the anchor, so the scheduled reply will appear directly in that thread. Session behavior and failure reporting follow the same rules as agent-driven scheduling.
 

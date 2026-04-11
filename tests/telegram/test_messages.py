@@ -2066,6 +2066,25 @@ async def test_schedule_prompt_creates_pending_task(tmp_path: Path):
     assert now + timedelta(minutes=29) <= task.run_at <= now + timedelta(minutes=31)
 
 
+async def test_schedule_prompt_creates_pending_task_from_raw_one_line_message(tmp_path: Path):
+    anchor_message_id = 79
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True, text="/schedule 30m Check for new PRs", message_id=anchor_message_id)
+
+    await bridge.schedule_prompt(update, make_context(args=["30m", "Check", "for", "new", "PRs"]))
+
+    tasks = store.list_tasks_for_chat(chat_id=TEST_CHAT_ID)
+    assert len(tasks) == 1
+    assert tasks[0].prompt_text == "Check for new PRs"
+    assert tasks[0].anchor_message_id == anchor_message_id
+
+
 async def test_schedule_prompt_preserves_multiline_prompt_text(tmp_path: Path):
     anchor_message_id = 88
     store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
@@ -2119,6 +2138,65 @@ async def test_schedule_prompt_accepts_absolute_timestamp(tmp_path: Path):
     assert update.message is not None
     assert "2030-01-01 12:00 UTC" in update.message.replies[-1]
     tasks = store.list_tasks_for_chat(chat_id=TEST_CHAT_ID)
+    assert tasks[0].prompt_text == "Send report"
+
+
+async def test_schedule_prompt_accepts_natural_language_time_in_english(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True, text="/schedule tomorrow 9am Send report")
+
+    await bridge.schedule_prompt(update, make_context(args=["tomorrow", "9am", "Send", "report"]))
+
+    tasks = store.list_tasks_for_chat(chat_id=TEST_CHAT_ID)
+    assert len(tasks) == 1
+    assert tasks[0].prompt_text == "Send report"
+
+
+async def test_schedule_prompt_accepts_natural_language_time_in_spanish(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace=".", schedule_languages=["es"]),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True, text="/schedule mañana 9am Revisar PR")
+
+    await bridge.schedule_prompt(update, make_context(args=["mañana", "9am", "Revisar", "PR"]))
+
+    tasks = store.list_tasks_for_chat(chat_id=TEST_CHAT_ID)
+    assert len(tasks) == 1
+    assert tasks[0].prompt_text == "Revisar PR"
+
+
+async def test_schedule_prompt_uses_effective_message_for_edited_command(tmp_path: Path):
+    anchor_message_id = 93
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    effective_message = make_update(
+        with_message=True,
+        text="/schedule tomorrow 9am Send report",
+        message_id=anchor_message_id,
+    ).message
+    update = make_update(with_message=False)
+    update.effective_message = effective_message
+
+    await bridge.schedule_prompt(update, make_context(args=["tomorrow", "9am", "Send", "report"]))
+
+    tasks = store.list_tasks_for_chat(chat_id=TEST_CHAT_ID)
+    assert len(tasks) == 1
+    assert tasks[0].anchor_message_id == anchor_message_id
     assert tasks[0].prompt_text == "Send report"
 
 
@@ -2221,6 +2299,21 @@ async def test_schedule_prompt_reports_unavailable_without_store():
     assert update.message.replies[-1] == "Scheduled tasks are unavailable."
 
 
+async def test_schedule_prompt_requires_anchor_message(tmp_path: Path):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=False)
+
+    await bridge.schedule_prompt(update, make_context(args=["10m", "Ping"]))
+
+    assert store.list_tasks_for_chat(chat_id=TEST_CHAT_ID) == []
+
+
 async def test_schedule_prompt_denies_access_for_restricted_users(tmp_path: Path):
     store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
     store.initialize()
@@ -2311,8 +2404,61 @@ def test_parse_schedule_time_iso_timestamp():
     assert (result.year, result.month, result.day, result.hour, result.minute) == (2030, 6, 15, 9, 30)
 
 
+def test_parse_schedule_time_natural_language_english():
+    result = TelegramBridge._parse_schedule_time("tomorrow 9am")
+    assert result is not None
+    assert result.tzinfo is UTC
+
+
+def test_parse_schedule_time_natural_language_spanish():
+    result = TelegramBridge._parse_schedule_time("mañana 9am", languages=("es",))
+    assert result is not None
+    assert result.tzinfo is UTC
+
+
+def test_parse_schedule_time_respects_configured_languages():
+    assert TelegramBridge._parse_schedule_time("mañana 9am", languages=("en",)) is None
+
+
 def test_parse_schedule_time_invalid_returns_none():
     assert TelegramBridge._parse_schedule_time("notvalid") is None
     assert TelegramBridge._parse_schedule_time("10") is None
     assert TelegramBridge._parse_schedule_time("10x") is None
     assert TelegramBridge._parse_schedule_time("2030-06-15T09:30:00") is None  # missing TZ
+    assert TelegramBridge._parse_schedule_time(f"{10**20}d") is None
+
+
+def test_parse_schedule_command_rejects_single_token_raw_message():
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+    )
+    update = make_update(with_message=True, text="/schedule")
+
+    assert bridge._parse_schedule_command(update=update, context=make_context(args=[])) is None
+
+
+async def test_schedule_prompt_shows_usage_when_time_parse_returns_none(tmp_path: Path, mocker):
+    store = ScheduledTaskStore(tmp_path / "scheduled.sqlite3")
+    store.initialize()
+    bridge = TelegramBridge(
+        config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
+        agent_service=EchoAgentService(SessionRegistry()),
+        scheduled_task_store=store,
+    )
+    update = make_update(with_message=True)
+    mocker.patch.object(
+        bridge,
+        "_parse_schedule_command",
+        return_value=("10m", "Ping"),
+    )
+    mocker.patch.object(
+        TelegramBridge,
+        "_parse_schedule_time",
+        return_value=None,
+    )
+
+    await bridge.schedule_prompt(update, make_context(args=["10m", "Ping"]))
+
+    assert update.message is not None
+    assert "Usage:" in update.message.replies[-1]

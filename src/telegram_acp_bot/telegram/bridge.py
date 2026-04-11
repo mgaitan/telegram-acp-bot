@@ -14,6 +14,7 @@ from typing import cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import dateparser
 from telegram import (
     Bot,
     CallbackQuery,
@@ -325,13 +326,16 @@ class TelegramBridge:
             return
         time_spec, prompt_text = parsed_command
 
-        run_at = TelegramBridge._parse_schedule_time(time_spec)
+        run_at = TelegramBridge._parse_schedule_time(time_spec, languages=self._config.schedule_languages)
         if run_at is None:
             await self._reply(update, SCHEDULE_COMMAND_USAGE)
             return
 
-        message = update.message
-        anchor_message_id = message.message_id if message is not None else None
+        message = cast(Message | None, getattr(update, "effective_message", None) or update.message)
+        if message is None:
+            await self._reply(update, "Could not schedule task because no anchor message is available.")
+            return
+        anchor_message_id = message.message_id
 
         session_context = self._active_session_context(chat_id=chat_id)
         session_id = None if session_context is None else session_context[0]
@@ -362,33 +366,72 @@ class TelegramBridge:
     ) -> tuple[str, str] | None:
         """Extract the time spec and prompt text from `/schedule` input."""
 
-        message = update.message
-        raw_text = "" if message is None else (message.text or "").strip()
-        if raw_text:
-            parts = raw_text.split(maxsplit=SCHEDULE_COMMAND_PART_COUNT - 1)
-            if len(parts) < SCHEDULE_COMMAND_PART_COUNT:
+        message = cast(Message | None, getattr(update, "effective_message", None) or update.message)
+        raw_text = "" if message is None else (message.text or "")
+        if raw_text.strip():
+            command_match = re.match(r"^\s*\S+\s+([\s\S]*)$", raw_text)
+            if command_match is None:
                 return None
-            _, time_spec, prompt_text = parts
-            return time_spec, prompt_text.strip()
+            return self._split_schedule_spec_and_prompt(command_match.group(1))
 
         args = self._context_args(context)
         if len(args) < SCHEDULE_COMMAND_MIN_ARGS:
             return None
-        time_spec, *rest = args
-        prompt_text = " ".join(rest).strip()
-        if not prompt_text:
-            return None
-        return time_spec, prompt_text
+        return self._split_schedule_spec_and_prompt(" ".join(args))
+
+    def _split_schedule_spec_and_prompt(self, remainder: str) -> tuple[str, str] | None:
+        """Infer the `/schedule` time span and prompt body from *remainder*."""
+
+        token_matches = tuple(re.finditer(r"\S+", remainder))
+        for token_count in range(len(token_matches) - 1, 0, -1):
+            time_spec = remainder[: token_matches[token_count - 1].end()].strip()
+            prompt_text = remainder[token_matches[token_count - 1].end() :].strip()
+            if self._parse_schedule_time(time_spec, languages=self._config.schedule_languages) is not None:
+                return time_spec, prompt_text
+        return None
 
     @staticmethod
-    def _parse_schedule_time(spec: str) -> datetime | None:
+    def _parse_schedule_time(spec: str, *, languages: tuple[str, ...] = ("en", "es")) -> datetime | None:
         """Parse a time spec like `30s`, `10m`, `2h`, `1d` or an ISO timestamp.
 
         Returns a timezone-aware UTC datetime, or `None` when the spec is
-        not recognised. See also {py:class}`~telegram_acp_bot.scheduled_tasks.store.ScheduledTaskStore`.
+        not recognised. See also :py:class:`~telegram_acp_bot.scheduled_tasks.store.ScheduledTaskStore`.
         """
-        match = _SCHEDULE_DELAY_RE.match(spec.strip())
-        if match is not None:
+        normalized_spec = spec.strip()
+        if relative_time := TelegramBridge._parse_relative_schedule_time(normalized_spec):
+            return relative_time
+
+        try:
+            return parse_utc_timestamp(normalized_spec)
+        except ValueError:
+            pass
+
+        if normalized_spec.isdigit():
+            return None
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?", normalized_spec):
+            return None
+
+        parsed_natural_time = dateparser.parse(
+            normalized_spec,
+            languages=list(languages),
+            settings={
+                "RETURN_AS_TIMEZONE_AWARE": True,
+                "TIMEZONE": "UTC",
+                "TO_TIMEZONE": "UTC",
+                "PREFER_DATES_FROM": "future",
+                "RELATIVE_BASE": utc_now(),
+            },
+        )
+        return None if parsed_natural_time is None else parsed_natural_time.astimezone(UTC)
+
+    @staticmethod
+    def _parse_relative_schedule_time(spec: str) -> datetime | None:
+        """Parse `<amount><unit>` schedule delays into an absolute UTC timestamp."""
+
+        match = _SCHEDULE_DELAY_RE.match(spec)
+        if match is None:
+            return None
+        try:
             value = int(match.group(1))
             unit = match.group(2).lower()
             match unit:
@@ -403,9 +446,7 @@ class TelegramBridge:
                 case _:  # pragma: no cover
                     return None
             return utc_now() + delta
-        try:
-            return parse_utc_timestamp(spec)
-        except ValueError:
+        except OverflowError:
             return None
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

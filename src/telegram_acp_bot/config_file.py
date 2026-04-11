@@ -73,6 +73,10 @@ def _validate_telegram_section(tg: dict[str, Any], path: Path) -> None:
         names = tg["allowed_usernames"]
         if not isinstance(names, list) or not all(isinstance(x, str) for x in names):
             raise _err(path, "'telegram.allowed_usernames' must be a list of strings")
+    if "schedule_languages" in tg:
+        languages = tg["schedule_languages"]
+        if not isinstance(languages, list) or not all(isinstance(x, str) for x in languages):
+            raise _err(path, "'telegram.schedule_languages' must be a list of strings")
 
 
 def _validate_acp_section(acp: dict[str, Any], path: Path) -> None:

@@ -37,9 +37,11 @@ SCHEDULE_COMMAND_USAGE = (
     "Usage: `/schedule <time> <prompt>`\n\n"
     "Examples:\n"
     "  `/schedule 30m Check for new PRs`\n"
+    "  `/schedule tomorrow 9am Review the build logs`\n"
     "  `/schedule 2h Review the build logs`\n"
     "  `/schedule 1d Send a weekly report`\n\n"
-    "Time formats: `30s`, `10m`, `2h`, `1d`, or ISO timestamp `2026-04-11T10:00:00+00:00`"
+    "Time formats: `30s`, `10m`, `2h`, `1d`, natural-language dates, "
+    "or ISO timestamp `2026-04-11T10:00:00+00:00`"
 )
 KIND_LABELS = {
     "think": "💡 Thinking",
