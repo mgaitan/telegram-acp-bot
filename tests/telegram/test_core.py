@@ -2,6 +2,9 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
+import asyncio
+from contextlib import suppress
+
 from tests.telegram.support import *
 
 
@@ -139,6 +142,122 @@ async def test_normal_activity_handler_skips_reply_and_duplicate_stream_updates(
     )
 
     assert len(bot.sent_messages) == EXPECTED_REPEATED_ACTIVITY_MESSAGES
+
+
+async def test_normal_thinking_indicator_updates_elapsed_time(mocker):
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-1")
+    loop_times = iter([100.0, 115.0])
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 999)
+    mocker.patch(
+        "telegram_acp_bot.telegram.activity.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: next(loop_times)),
+    )
+
+    sleep_calls = 0
+
+    async def fake_sleep(_: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", side_effect=fake_sleep)
+
+    await handler.on_activity_event(chat_id=TEST_CHAT_ID, block=block)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["think-1"]
+    with suppress(asyncio.CancelledError):
+        await indicator.task
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert bot.edited_messages[0]["text"] == "💡 Thinking · 15s"
+
+
+async def test_normal_thinking_completion_stops_elapsed_updates(mocker):
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-2")
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 999)
+
+    await handler.on_activity_event(chat_id=TEST_CHAT_ID, block=block)
+    assert "think-2" in handler._thinking_by_chat[TEST_CHAT_ID]
+
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="think", title="", status="completed", text="done", activity_id="think-2"),
+    )
+
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_normal_thinking_elapsed_loop_stops_without_app(mocker):
+    bridge = make_bridge()
+    handler = bot_module._NormalActivityModeHandler(bridge)
+
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", return_value=None)
+
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="think-no-app", message_id=1)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["think-no-app"]
+    await indicator.task
+
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_normal_thinking_elapsed_loop_stops_when_max_is_exceeded(mocker):
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+    loop_times = iter([10.0, 50.0])
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 5)
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", return_value=None)
+    mocker.patch(
+        "telegram_acp_bot.telegram.activity.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: next(loop_times)),
+    )
+
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="think-max", message_id=1)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["think-max"]
+    with suppress(asyncio.CancelledError):
+        await indicator.task
+
+    assert bot.edited_messages == []
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_normal_thinking_elapsed_loop_stops_when_edit_fails(mocker):
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+    loop_times = iter([1.0, 16.0])
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 999)
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", return_value=None)
+    mocker.patch(
+        "telegram_acp_bot.telegram.activity.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: next(loop_times)),
+    )
+    mocker.patch.object(bridge, "_edit_markdown_in_chat", return_value=False)
+
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="think-edit-fail", message_id=1)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["think-edit-fail"]
+    with suppress(asyncio.CancelledError):
+        await indicator.task
+
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
 
 
 async def test_compact_permission_request_replaces_status_message_when_edit_fails():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from telegram import Bot, InlineKeyboardMarkup, Message, Update
@@ -21,6 +22,15 @@ if TYPE_CHECKING:
     from telegram_acp_bot.telegram.bridge import TelegramBridge
 
 VERBOSE_STREAM_TICK_SECONDS = 0.12
+THINKING_ELAPSED_UPDATE_SECONDS = 15
+THINKING_ELAPSED_MAX_SECONDS = 180
+
+
+@dataclass(slots=True)
+class _ThinkingElapsedIndicator:
+    message_id: int
+    started_at: float
+    task: asyncio.Task[None]
 
 
 class _ActivityModeHandler:
@@ -59,6 +69,14 @@ class _ActivityModeHandler:
     async def clear_chat_state(self, *, chat_id: int) -> None:
         del chat_id
 
+    @staticmethod
+    def _tracks_elapsed_thinking(block: AgentActivityBlock) -> bool:
+        return block.kind == "think" and block.status == "in_progress" and not block.text.strip()
+
+    @staticmethod
+    def _thinking_elapsed_text(elapsed_seconds: int) -> str:
+        return f"*💡 Thinking · {elapsed_seconds}s*"
+
 
 class _NormalActivityModeHandler(_ActivityModeHandler):
     """Preserve the legacy per-event activity UX without streaming edits."""
@@ -66,11 +84,15 @@ class _NormalActivityModeHandler(_ActivityModeHandler):
     def __init__(self, bridge: TelegramBridge) -> None:
         super().__init__(bridge)
         self._seen_streams_by_chat: dict[int, set[str]] = {}
+        self._thinking_by_chat: dict[int, dict[str, _ThinkingElapsedIndicator]] = {}
 
     async def on_activity_event(self, *, chat_id: int, block: AgentActivityBlock) -> None:
         app = self._bridge._app
         if app is None or block.kind == "reply":
             return
+        slot_key = self._slot_key(block)
+        if not self._tracks_elapsed_thinking(block):
+            self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
         if block.activity_id:
             if block.status == "in_progress":
                 seen = self._seen_streams_by_chat.setdefault(chat_id, set())
@@ -81,10 +103,73 @@ class _NormalActivityModeHandler(_ActivityModeHandler):
                 self._seen_streams_by_chat.get(chat_id, set()).discard(block.activity_id)
         workspace = self._bridge._activity_workspace(chat_id=chat_id)
         text = self._bridge._format_activity_block(block, workspace=workspace)
-        await self._bridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+        sent = await self._bridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
+        if sent is not None and self._tracks_elapsed_thinking(block):
+            self._start_thinking_indicator(chat_id=chat_id, slot_key=slot_key, message_id=sent.message_id)
 
     async def clear_chat_state(self, *, chat_id: int) -> None:
+        for slot_key in list(self._thinking_by_chat.get(chat_id, {})):
+            self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        self._thinking_by_chat.pop(chat_id, None)
         self._seen_streams_by_chat.pop(chat_id, None)
+
+    @staticmethod
+    def _slot_key(block: AgentActivityBlock) -> str:
+        return block.activity_id or f"{block.kind}:{block.title}"
+
+    def _start_thinking_indicator(self, *, chat_id: int, slot_key: str, message_id: int) -> None:
+        self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        started_at = asyncio.get_running_loop().time()
+        task = asyncio.create_task(
+            self._run_thinking_elapsed_loop(
+                chat_id=chat_id,
+                slot_key=slot_key,
+            )
+        )
+        self._thinking_by_chat.setdefault(chat_id, {})[slot_key] = _ThinkingElapsedIndicator(
+            message_id=message_id,
+            started_at=started_at,
+            task=task,
+        )
+
+    def _stop_thinking_indicator(self, *, chat_id: int, slot_key: str) -> None:
+        indicators = self._thinking_by_chat.get(chat_id)
+        if indicators is None:
+            return
+        indicator = indicators.pop(slot_key, None)
+        if indicator is not None:
+            indicator.task.cancel()
+        if not indicators:
+            self._thinking_by_chat.pop(chat_id, None)
+
+    async def _run_thinking_elapsed_loop(self, *, chat_id: int, slot_key: str) -> None:
+        try:
+            while True:
+                await asyncio.sleep(THINKING_ELAPSED_UPDATE_SECONDS)
+                indicator = self._thinking_by_chat.get(chat_id, {}).get(slot_key)
+                app = self._bridge._app
+                if indicator is None or app is None:
+                    return
+                elapsed_seconds = int(asyncio.get_running_loop().time() - indicator.started_at)
+                if elapsed_seconds > THINKING_ELAPSED_MAX_SECONDS:
+                    self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+                    return
+                edited = await self._bridge._edit_markdown_in_chat(
+                    bot=app.bot,
+                    chat_id=chat_id,
+                    message_id=indicator.message_id,
+                    text=self._thinking_elapsed_text(elapsed_seconds),
+                )
+                if not edited:
+                    self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+                    return
+        finally:
+            indicator = self._thinking_by_chat.get(chat_id, {}).get(slot_key)
+            current = asyncio.current_task()
+            if indicator is not None and indicator.task is current:
+                self._thinking_by_chat[chat_id].pop(slot_key, None)
+                if not self._thinking_by_chat[chat_id]:
+                    self._thinking_by_chat.pop(chat_id, None)
 
 
 class _CompactActivityModeHandler(_ActivityModeHandler):
@@ -168,6 +253,7 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
         self._messages_by_chat: dict[int, dict[str, _VerboseActivityMessage]] = {}
         self._pending_by_chat: dict[int, dict[str, _QueuedVerboseBlock]] = {}
         self._flush_tasks_by_chat: dict[int, asyncio.Task[None]] = {}
+        self._thinking_by_chat: dict[int, dict[str, _ThinkingElapsedIndicator]] = {}
 
     async def on_activity_event(self, *, chat_id: int, block: AgentActivityBlock) -> None:
         app = self._bridge._app
@@ -231,6 +317,9 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
         self._cancel_flush_task(chat_id)
         self._pending_by_chat.pop(chat_id, None)
         self._messages_by_chat.pop(chat_id, None)
+        for slot_key in list(self._thinking_by_chat.get(chat_id, {})):
+            self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        self._thinking_by_chat.pop(chat_id, None)
 
     def _slot_key(self, block: AgentActivityBlock) -> str:
         return f"activity:{self._bridge._activity_id(block)}"
@@ -255,10 +344,63 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
             self._pending_by_chat.pop(chat_id, None)
             self._cancel_flush_task(chat_id)
 
+    def _start_thinking_indicator(self, *, chat_id: int, slot_key: str, message_id: int) -> None:
+        self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        started_at = asyncio.get_running_loop().time()
+        task = asyncio.create_task(self._run_thinking_elapsed_loop(chat_id=chat_id, slot_key=slot_key))
+        self._thinking_by_chat.setdefault(chat_id, {})[slot_key] = _ThinkingElapsedIndicator(
+            message_id=message_id,
+            started_at=started_at,
+            task=task,
+        )
+
+    def _stop_thinking_indicator(self, *, chat_id: int, slot_key: str) -> None:
+        indicators = self._thinking_by_chat.get(chat_id)
+        if indicators is None:
+            return
+        indicator = indicators.pop(slot_key, None)
+        if indicator is not None:
+            indicator.task.cancel()
+        if not indicators:
+            self._thinking_by_chat.pop(chat_id, None)
+
     def _cancel_flush_task(self, chat_id: int) -> None:
         task = self._flush_tasks_by_chat.pop(chat_id, None)
         if task is not None:
             task.cancel()
+
+    async def _run_thinking_elapsed_loop(self, *, chat_id: int, slot_key: str) -> None:
+        try:
+            while True:
+                await asyncio.sleep(THINKING_ELAPSED_UPDATE_SECONDS)
+                lock = self._locks.setdefault(chat_id, asyncio.Lock())
+                async with lock:
+                    indicator = self._thinking_by_chat.get(chat_id, {}).get(slot_key)
+                    active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
+                    app = self._bridge._app
+                    if indicator is None or active is None or app is None:
+                        return
+                    elapsed_seconds = int(asyncio.get_running_loop().time() - indicator.started_at)
+                    if elapsed_seconds > THINKING_ELAPSED_MAX_SECONDS:
+                        self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+                        return
+                    edited = await self._bridge._edit_markdown_in_chat(
+                        bot=app.bot,
+                        chat_id=chat_id,
+                        message_id=active.message_id,
+                        text=self._thinking_elapsed_text(elapsed_seconds),
+                    )
+                    if not edited:
+                        self._clear_message(chat_id=chat_id, slot_key=slot_key)
+                        self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+                        return
+        finally:
+            indicator = self._thinking_by_chat.get(chat_id, {}).get(slot_key)
+            current = asyncio.current_task()
+            if indicator is not None and indicator.task is current:
+                self._thinking_by_chat[chat_id].pop(slot_key, None)
+                if not self._thinking_by_chat[chat_id]:
+                    self._thinking_by_chat.pop(chat_id, None)
 
     def _ensure_flush_task(self, *, chat_id: int) -> None:
         task = self._flush_tasks_by_chat.get(chat_id)
@@ -316,62 +458,22 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
             return None
         return await self._bridge._send_rendered_chunks_to_chat(bot=bot, chat_id=chat_id, chunks=[preview])
 
-    async def _apply_block_locked(self, *, chat_id: int, slot_key: str, block: AgentActivityBlock) -> None:
-        app = self._bridge._app
-        if app is None:
-            return
-        text = (
-            block.text
-            if block.kind == "reply"
-            else self._bridge._format_activity_block(
-                block,
-                workspace=self._bridge._activity_workspace(chat_id=chat_id),
-            )
+    def _activity_text(self, *, chat_id: int, block: AgentActivityBlock) -> str:
+        if block.kind == "reply":
+            return block.text
+        return self._bridge._format_activity_block(
+            block,
+            workspace=self._bridge._activity_workspace(chat_id=chat_id),
         )
-        active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
-        if active is not None:
-            if block.status == "in_progress":
-                edited = await self._edit_in_progress_preview(
-                    bot=app.bot,
-                    chat_id=chat_id,
-                    message_id=active.message_id,
-                    text=text,
-                )
-            else:
-                edited = await self._bridge._edit_markdown_in_chat(
-                    bot=app.bot,
-                    chat_id=chat_id,
-                    message_id=active.message_id,
-                    text=text,
-                )
-            if edited:
-                if block.status == "in_progress":
-                    self._store_message(
-                        chat_id=chat_id,
-                        slot_key=slot_key,
-                        message=_VerboseActivityMessage(
-                            activity_id=active.activity_id,
-                            kind=block.kind,
-                            title=block.title,
-                            message_id=active.message_id,
-                            source_text=block.text,
-                        ),
-                    )
-                else:
-                    self._clear_message(chat_id=chat_id, slot_key=slot_key)
-                return
-            self._clear_message(chat_id=chat_id, slot_key=slot_key)
 
-        if block.status == "in_progress":
-            sent = await self._send_in_progress_preview(
-                bot=app.bot,
-                chat_id=chat_id,
-                text=text,
-            )
-        else:
-            sent = await self._bridge._send_markdown_to_chat(bot=app.bot, chat_id=chat_id, text=text)
-        if sent is None:
-            return
+    def _update_message_state(
+        self,
+        *,
+        chat_id: int,
+        slot_key: str,
+        block: AgentActivityBlock,
+        message_id: int,
+    ) -> None:
         if block.status == "in_progress":
             self._store_message(
                 chat_id=chat_id,
@@ -380,9 +482,105 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
                     activity_id=self._bridge._activity_id(block),
                     kind=block.kind,
                     title=block.title,
-                    message_id=sent.message_id,
+                    message_id=message_id,
                     source_text=block.text,
                 ),
             )
+            if self._tracks_elapsed_thinking(block):
+                self._start_thinking_indicator(
+                    chat_id=chat_id,
+                    slot_key=slot_key,
+                    message_id=message_id,
+                )
             return
         self._clear_message(chat_id=chat_id, slot_key=slot_key)
+
+    async def _update_active_message(
+        self,
+        *,
+        chat_id: int,
+        slot_key: str,
+        block: AgentActivityBlock,
+        active: _VerboseActivityMessage,
+    ) -> bool:
+        app = self._bridge._app
+        if app is None:
+            return False
+        text = self._activity_text(chat_id=chat_id, block=block)
+        if block.status == "in_progress":
+            edited = await self._edit_in_progress_preview(
+                bot=app.bot,
+                chat_id=chat_id,
+                message_id=active.message_id,
+                text=text,
+            )
+        else:
+            edited = await self._bridge._edit_markdown_in_chat(
+                bot=app.bot,
+                chat_id=chat_id,
+                message_id=active.message_id,
+                text=text,
+            )
+        if not edited:
+            return False
+        self._update_message_state(
+            chat_id=chat_id,
+            slot_key=slot_key,
+            block=block,
+            message_id=active.message_id,
+        )
+        return True
+
+    async def _send_new_message(
+        self,
+        *,
+        chat_id: int,
+        slot_key: str,
+        block: AgentActivityBlock,
+    ) -> None:
+        app = self._bridge._app
+        if app is None:
+            return
+        text = self._activity_text(chat_id=chat_id, block=block)
+        if block.status == "in_progress":
+            sent = await self._send_in_progress_preview(
+                bot=app.bot,
+                chat_id=chat_id,
+                text=text,
+            )
+        else:
+            sent = await self._bridge._send_markdown_to_chat(
+                bot=app.bot,
+                chat_id=chat_id,
+                text=text,
+            )
+        if sent is None:
+            return
+        self._update_message_state(
+            chat_id=chat_id,
+            slot_key=slot_key,
+            block=block,
+            message_id=sent.message_id,
+        )
+
+    async def _apply_block_locked(self, *, chat_id: int, slot_key: str, block: AgentActivityBlock) -> None:
+        app = self._bridge._app
+        if app is None:
+            return
+        if not self._tracks_elapsed_thinking(block):
+            self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
+        if active is not None and await self._update_active_message(
+            chat_id=chat_id,
+            slot_key=slot_key,
+            block=block,
+            active=active,
+        ):
+            return
+        if active is not None:
+            self._clear_message(chat_id=chat_id, slot_key=slot_key)
+        await self._send_new_message(
+            chat_id=chat_id,
+            slot_key=slot_key,
+            block=block,
+        )

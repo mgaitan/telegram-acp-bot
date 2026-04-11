@@ -2,6 +2,11 @@ from __future__ import annotations
 
 # ruff: noqa: F403, F405, I001
 
+import asyncio
+from contextlib import suppress
+
+from telegram_acp_bot.telegram.models import _VerboseActivityMessage
+
 from tests.telegram.support import *
 
 SECOND_REPLY_MESSAGE_ID = 2
@@ -725,6 +730,161 @@ async def test_compact_concurrent_activity_sends_only_one_message():
     assert len(bot.sent_messages) == 1, "Only one status message should be created"
     assert TEST_CHAT_ID in bridge._compact_status_msg_id
     assert TEST_CHAT_ID in bridge._compact_status_tasks
+
+
+async def test_verbose_thinking_indicator_updates_elapsed_time(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-verbose")
+    loop_times = iter([200.0, 215.0])
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 999)
+    mocker.patch(
+        "telegram_acp_bot.telegram.activity.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: next(loop_times)),
+    )
+
+    sleep_calls = 0
+
+    async def fake_sleep(_: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", side_effect=fake_sleep)
+
+    await handler.on_activity_event(chat_id=TEST_CHAT_ID, block=block)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["activity:think-verbose"]
+    with suppress(asyncio.CancelledError):
+        await indicator.task
+
+    assert len(bot.sent_messages) == 1
+    assert len(bot.edited_messages) == 1
+    assert bot.edited_messages[0]["text"] == "💡 Thinking · 15s"
+
+
+async def test_verbose_thinking_elapsed_loop_stops_without_active_message(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", return_value=None)
+
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="activity:think-missing", message_id=1)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["activity:think-missing"]
+    await indicator.task
+
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_verbose_update_active_message_returns_false_without_app():
+    bridge = make_verbose_bridge()
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    active = _VerboseActivityMessage(
+        activity_id="think-no-app",
+        kind="think",
+        title="",
+        message_id=1,
+        source_text="",
+    )
+
+    edited = await handler._update_active_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:think-no-app",
+        block=AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-no-app"),
+        active=active,
+    )
+
+    assert edited is False
+
+
+async def test_verbose_send_new_message_returns_without_app():
+    bridge = make_verbose_bridge()
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+
+    await handler._send_new_message(
+        chat_id=TEST_CHAT_ID,
+        slot_key="activity:think-no-app",
+        block=AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-no-app"),
+    )
+
+    assert handler._messages_by_chat == {}
+
+
+async def test_verbose_thinking_elapsed_loop_stops_when_max_is_exceeded(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    loop_times = iter([5.0, 20.0])
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 5)
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", return_value=None)
+    mocker.patch(
+        "telegram_acp_bot.telegram.activity.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: next(loop_times)),
+    )
+
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-max")
+    await handler.on_activity_event(chat_id=TEST_CHAT_ID, block=block)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["activity:think-max"]
+    with suppress(asyncio.CancelledError):
+        await indicator.task
+
+    assert bot.edited_messages == []
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_verbose_thinking_elapsed_loop_stops_when_edit_fails(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    loop_times = iter([7.0, 22.0])
+
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
+    mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 999)
+    mocker.patch("telegram_acp_bot.telegram.activity.asyncio.sleep", return_value=None)
+    mocker.patch(
+        "telegram_acp_bot.telegram.activity.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: next(loop_times)),
+    )
+    mocker.patch.object(bridge, "_edit_markdown_in_chat", return_value=False)
+
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-edit-fail")
+    await handler.on_activity_event(chat_id=TEST_CHAT_ID, block=block)
+    indicator = handler._thinking_by_chat[TEST_CHAT_ID]["activity:think-edit-fail"]
+    with suppress(asyncio.CancelledError):
+        await indicator.task
+
+    assert TEST_CHAT_ID not in handler._thinking_by_chat
+    assert "activity:think-edit-fail" not in handler._messages_by_chat.get(TEST_CHAT_ID, {})
+
+
+async def test_verbose_restarts_thinking_timer_when_existing_preview_is_updated(mocker):
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+    block = AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-restart")
+
+    await handler.on_activity_event(chat_id=TEST_CHAT_ID, block=block)
+    first_indicator = handler._thinking_by_chat[TEST_CHAT_ID]["activity:think-restart"]
+
+    mocker.patch.object(bridge, "_edit_markdown_in_chat", return_value=True)
+    await handler._apply_block_locked(chat_id=TEST_CHAT_ID, slot_key="activity:think-restart", block=block)
+
+    second_indicator = handler._thinking_by_chat[TEST_CHAT_ID]["activity:think-restart"]
+    assert second_indicator is not first_indicator
+    assert first_indicator.task.cancelled() or first_indicator.task.cancelling() > 0 or first_indicator.task.done()
+
+    await handler.clear_chat_state(chat_id=TEST_CHAT_ID)
 
 
 async def test_compact_live_activity_full_flow_multi_activity():
