@@ -58,8 +58,9 @@ def get_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Path to a JSON config file. Values are overridden by environment variables"
-            " and CLI flags. See docs for the full schema."
+            "Path to a JSON config file. If not provided, the bot will automatically "
+            "look for config files in standard locations. Values are overridden by "
+            "environment variables and CLI flags. See docs for the full schema."
         ),
     )
     parser.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN", ""), help="Telegram bot token")
@@ -306,6 +307,28 @@ def _run_bot_loop(
             return 1
 
 
+def _find_config_file() -> Path | None:
+    """Find a config file from standard locations.
+
+    Returns the first existing config file from:
+    1. ./.telegram_acp_bot/config.json
+    2. ~/.config/telegram_acp_bot/config.json
+    3. ~/.telegram_acp_bot/config.json
+
+    Returns None if no config file is found.
+    """
+    candidates = [
+        Path(".telegram_acp_bot/config.json"),
+        Path("~/.config/telegram_acp_bot/config.json").expanduser(),
+        Path("~/.telegram_acp_bot/config.json").expanduser(),
+    ]
+
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
 def main(args: list[str] | None = None) -> int:
     """Run the main program.
 
@@ -322,8 +345,9 @@ def main(args: list[str] | None = None) -> int:
     pre_opts, _ = parser.parse_known_args(args=argv)
 
     config_data: dict[str, Any] = {}
-    if pre_opts.config:
-        config_path = Path(pre_opts.config).expanduser()
+    config_path = Path(pre_opts.config).expanduser() if pre_opts.config else _find_config_file()
+
+    if config_path:
         try:
             config_data = load_config_file(config_path)
         except ConfigFileError as exc:

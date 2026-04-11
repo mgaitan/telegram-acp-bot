@@ -10,10 +10,20 @@ You can mix layers freely. A typical setup uses a config file for static values 
 
 ## Config file
 
-Pass `--config <path>` (or set it in a wrapper script) to load settings from a JSON file.
+The bot automatically loads configuration from the following locations (in order):
+
+1. `./.telegram_acp_bot/config.json` (project-local)
+2. `~/.config/telegram_acp_bot/config.json` (XDG-compliant)
+3. `~/.telegram_acp_bot/config.json` (legacy)
+
+The first existing file is used. You can also specify an explicit path with `--config`.
 
 ```bash
-telegram-acp-bot --config ./telegram-acp.json
+# Automatic discovery (no --config needed if file exists)
+telegram-acp-bot
+
+# Explicit path (overrides automatic discovery)
+telegram-acp-bot --config ./telegram-acp-bot.json
 ```
 
 The file must be a JSON object. All keys are optional. Missing keys fall back to environment variables or built-in defaults.
@@ -29,7 +39,7 @@ The file must be a JSON object. All keys are optional. Missing keys fall back to
   },
   "acp": {
     "agent_command": "npx @zed-industries/codex-acp",
-    "restart_command": "uv run telegram-acp-bot --config ./telegram-acp.json",
+    "restart_command": "uv run telegram-acp-bot --config ./telegram-acp-bot.json",
     "permission_mode": "ask",
     "permission_event_output": "stdout",
     "stdio_limit": 8388608,
@@ -175,7 +185,7 @@ The equivalent config file is:
 Then run:
 
 ```bash
-telegram-acp-bot --config ./telegram-acp.json
+telegram-acp-bot --config ./telegram-acp-bot.json
 ```
 
 ### Mixed setup (env override for secrets)
@@ -194,7 +204,7 @@ Keep the token in the environment and everything else in the config file:
 ```
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:abc telegram-acp-bot --config ./telegram-acp.json
+TELEGRAM_BOT_TOKEN=123456:abc telegram-acp-bot --config ./telegram-acp-bot.json
 ```
 
 The environment variable wins over the config file for `bot_token`, so you can rotate the token without touching the file.

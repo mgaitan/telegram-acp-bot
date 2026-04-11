@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import sys
 from importlib import metadata
@@ -544,3 +545,55 @@ def test_register_commands_subcommand_uses_config_file(mocker, monkeypatch, tmp_
     assert mock_register.call_count == 1
     assert mock_register.call_args is not None
     assert mock_register.call_args.args[0].telegram_token == "CFG_TOKEN"
+
+
+def test_main_auto_discovers_config_file(mocker, monkeypatch, tmp_path):
+    """Config file is automatically discovered from standard locations."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    # Create config in one of the standard locations
+    config_dir = tmp_path / ".telegram_acp_bot"
+    config_dir.mkdir()
+    config_path = config_dir / "config.json"
+    config_path.write_text('{"telegram": {"bot_token": "AUTO_TOKEN"}, "acp": {"agent_command": "auto_agent"}}')
+
+    # Change to the temp directory and run without --config
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert main([]) == 0
+        config = mock_run_polling.call_args.args[0]
+        assert config.token == "AUTO_TOKEN"
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_main_explicit_config_overrides_auto_discovery(mocker, monkeypatch, tmp_path):
+    """Explicit --config path takes precedence over auto-discovered files."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    # Create config in standard location
+    config_dir = tmp_path / ".telegram_acp_bot"
+    config_dir.mkdir()
+    auto_config = config_dir / "config.json"
+    auto_config.write_text('{"telegram": {"bot_token": "AUTO_TOKEN"}, "acp": {"agent_command": "auto_agent"}}')
+
+    # Create explicit config with different values
+    explicit_config = tmp_path / "explicit.json"
+    explicit_config.write_text(
+        '{"telegram": {"bot_token": "EXPLICIT_TOKEN"}, "acp": {"agent_command": "explicit_agent"}}'
+    )
+
+    # Change to the temp directory and run with explicit --config
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert main(["--config", str(explicit_config)]) == 0
+        config = mock_run_polling.call_args.args[0]
+        assert config.token == "EXPLICIT_TOKEN"
+    finally:
+        os.chdir(original_cwd)
