@@ -363,7 +363,7 @@ class TelegramBridge:
         """Parse a time spec like `30s`, `10m`, `2h`, `1d` or an ISO timestamp.
 
         Returns a timezone-aware UTC datetime, or `None` when the spec is
-        not recognised. See also `{py:class}~telegram_acp_bot.scheduled_tasks.store.ScheduledTaskStore`.
+        not recognised. See also {py:class}`~telegram_acp_bot.scheduled_tasks.store.ScheduledTaskStore`.
         """
         match = _SCHEDULE_DELAY_RE.match(spec.strip())
         if match is not None:
