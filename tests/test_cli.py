@@ -469,3 +469,15 @@ def test_main_config_file_stdio_limit_and_timeout(mocker, monkeypatch, tmp_path)
     assert main(["--config", str(config_path)]) == 0
     assert mock_service.call_args.kwargs["stdio_limit"] == CONFIG_FILE_STDIO_LIMIT
     assert mock_service.call_args.kwargs["connect_timeout"] == CONFIG_FILE_CONNECT_TIMEOUT
+
+
+def test_register_commands_subcommand_uses_config_file(mocker, monkeypatch, tmp_path):
+    """Subcommands keep config-file defaults after the full parse."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    mock_register = mocker.patch("telegram_acp_bot.register_commands._execute_register_commands", return_value=0)
+    config_path = _write_config(tmp_path, {"telegram": {"bot_token": "CFG_TOKEN"}})
+
+    assert main(["--config", str(config_path), "register-commands"]) == 0
+    assert mock_register.call_count == 1
+    assert mock_register.call_args is not None
+    assert mock_register.call_args.args[0].telegram_token == "CFG_TOKEN"

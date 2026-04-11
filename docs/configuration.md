@@ -37,7 +37,7 @@ The file must be a JSON object. All keys are optional. Missing keys fall back to
     "log_format": "text",
     "log_level": "INFO",
     "activity_mode": "normal",
-    "scheduled_tasks_db": "/home/alice/.local/state/telegram-acp-bot/tasks.sqlite3",
+    "scheduled_tasks_db": "/home/alice/.local/state/telegram-acp-bot/scheduled-tasks.sqlite3",
     "workspace": "/home/alice/projects"
   }
 }

@@ -85,6 +85,11 @@ def test_telegram_allowed_user_ids_not_integers(tmp_path: Path) -> None:
         load_config_file(write_config(tmp_path, {"telegram": {"allowed_user_ids": ["one"]}}))
 
 
+def test_telegram_allowed_user_ids_rejects_booleans(tmp_path: Path) -> None:
+    with pytest.raises(ConfigFileError, match=r"'telegram\.allowed_user_ids' must be a list of integers"):
+        load_config_file(write_config(tmp_path, {"telegram": {"allowed_user_ids": [True]}}))
+
+
 def test_telegram_allowed_usernames_not_list_of_strings(tmp_path: Path) -> None:
     with pytest.raises(ConfigFileError, match=r"'telegram\.allowed_usernames' must be a list of strings"):
         load_config_file(write_config(tmp_path, {"telegram": {"allowed_usernames": [1, 2]}}))
@@ -120,9 +125,19 @@ def test_acp_stdio_limit_not_integer(tmp_path: Path) -> None:
         load_config_file(write_config(tmp_path, {"acp": {"stdio_limit": "8mb"}}))
 
 
+def test_acp_stdio_limit_rejects_booleans(tmp_path: Path) -> None:
+    with pytest.raises(ConfigFileError, match=r"'acp\.stdio_limit' must be an integer"):
+        load_config_file(write_config(tmp_path, {"acp": {"stdio_limit": True}}))
+
+
 def test_acp_connect_timeout_not_number(tmp_path: Path) -> None:
     with pytest.raises(ConfigFileError, match=r"'acp\.connect_timeout' must be a number"):
         load_config_file(write_config(tmp_path, {"acp": {"connect_timeout": "fast"}}))
+
+
+def test_acp_connect_timeout_rejects_booleans(tmp_path: Path) -> None:
+    with pytest.raises(ConfigFileError, match=r"'acp\.connect_timeout' must be a number"):
+        load_config_file(write_config(tmp_path, {"acp": {"connect_timeout": False}}))
 
 
 def test_acp_string_fields_not_string(tmp_path: Path) -> None:

@@ -186,7 +186,7 @@ def _apply_config_file_defaults(
         ("permission_event_output", "ACP_PERMISSION_EVENT_OUTPUT", acp_cfg.get("permission_event_output")),
         ("log_format", "ACP_LOG_FORMAT", acp_cfg.get("log_format")),
         ("activity_mode", "ACP_ACTIVITY_MODE", acp_cfg.get("activity_mode")),
-        ("scheduled_tasks_db", "ACP_SCHEDULED_TASKS_DB", acp_cfg.get("scheduled_tasks_db")),
+        ("scheduled_tasks_db", ACP_SCHEDULED_TASKS_DB_ENV, acp_cfg.get("scheduled_tasks_db")),
     ]
     updates |= {
         dest: cfg_val for dest, env_name, cfg_val in _str_map if not os.getenv(env_name) and cfg_val is not None
@@ -203,7 +203,20 @@ def _apply_config_file_defaults(
         updates["acp_connect_timeout"] = float(acp_cfg["connect_timeout"])
 
     if updates:
-        parser.set_defaults(**updates)
+        _set_parser_defaults(parser, updates)
+
+
+def _set_parser_defaults(parser: argparse.ArgumentParser, updates: dict[str, object]) -> None:
+    """Apply defaults to *parser* and any subparsers that expose the same dests."""
+    parser_dests = {action.dest for action in parser._actions}
+    parser_updates = {dest: value for dest, value in updates.items() if dest in parser_dests}
+    if parser_updates:
+        parser.set_defaults(**parser_updates)
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                _set_parser_defaults(subparser, updates)
 
 
 def _parse_csv(value: str) -> list[str]:
@@ -283,12 +296,8 @@ def main(args: list[str] | None = None) -> int:
     parser = get_parser()
     argv = list(args) if args is not None else sys.argv[1:]
 
-    # Pre-parse to get --config before full argument resolution
+    # Pre-parse to extract --config before full argument resolution
     pre_opts, _ = parser.parse_known_args(args=argv)
-
-    # Sub-command dispatch: each sub-command sets opts.func via set_defaults.
-    if hasattr(pre_opts, "func"):
-        return pre_opts.func(pre_opts)
 
     config_data: dict[str, Any] = {}
     if pre_opts.config:
@@ -299,7 +308,12 @@ def main(args: list[str] | None = None) -> int:
             parser.error(str(exc))
         _apply_config_file_defaults(parser, config_data)
 
+    # Full parse: catches unknown/invalid flags for both the main command and subcommands.
     opts = parser.parse_args(args=argv)
+
+    # Sub-command dispatch: each sub-command sets opts.func via set_defaults.
+    if hasattr(opts, "func"):
+        return opts.func(opts)
 
     log_level = os.getenv("ACP_LOG_LEVEL") or config_data.get("acp", {}).get("log_level", "INFO")
     configure_logging(

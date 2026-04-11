@@ -63,7 +63,7 @@ def _validate_telegram_section(tg: dict[str, Any], path: Path) -> None:
         raise _err(path, "'telegram.bot_token' must be a string")
     if "allowed_user_ids" in tg:
         ids = tg["allowed_user_ids"]
-        if not isinstance(ids, list) or not all(isinstance(x, int) for x in ids):
+        if not isinstance(ids, list) or not all(type(x) is int for x in ids):
             raise _err(path, "'telegram.allowed_user_ids' must be a list of integers")
     if "allowed_usernames" in tg:
         names = tg["allowed_usernames"]
@@ -98,7 +98,9 @@ def _validate_acp_section(acp: dict[str, Any], path: Path) -> None:
             path,
             f"'acp.activity_mode' must be one of {sorted(_VALID_ACTIVITY_MODES)}, got {acp['activity_mode']!r}",
         )
-    if "stdio_limit" in acp and not isinstance(acp["stdio_limit"], int):
+    if "stdio_limit" in acp and (isinstance(acp["stdio_limit"], bool) or not isinstance(acp["stdio_limit"], int)):
         raise _err(path, "'acp.stdio_limit' must be an integer")
-    if "connect_timeout" in acp and not isinstance(acp["connect_timeout"], (int, float)):
+    if "connect_timeout" in acp and (
+        isinstance(acp["connect_timeout"], bool) or not isinstance(acp["connect_timeout"], (int, float))
+    ):
         raise _err(path, "'acp.connect_timeout' must be a number")
