@@ -307,6 +307,7 @@ def test_main_activity_mode_defaults_to_normal(mocker):
     config = mock_run_polling.call_args.args[0]
     assert config.activity_mode == "normal"
     assert config.compact_activity is False
+    assert config.schedule_languages == ("en", "es")
 
 
 def test_main_compact_activity_mode_sets_flag(mocker):
@@ -412,6 +413,60 @@ def test_main_config_file_activity_mode(mocker, monkeypatch, tmp_path):
     assert main(["--config", str(config_path)]) == 0
     config = mock_run_polling.call_args.args[0]
     assert config.compact_activity is True
+
+
+def test_main_schedule_languages_from_env(mocker, monkeypatch):
+    """ACP_SCHEDULE_LANGUAGES env var configures natural-language schedule parsing."""
+    monkeypatch.setenv("ACP_SCHEDULE_LANGUAGES", "es,en")
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
+
+    config = mock_run_polling.call_args.args[0]
+    assert config.schedule_languages == ("es", "en")
+
+
+def test_main_schedule_languages_from_config_file(mocker, monkeypatch, tmp_path):
+    """schedule_languages from config file are applied when env and CLI are absent."""
+    monkeypatch.delenv("ACP_SCHEDULE_LANGUAGES", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path,
+        {
+            "telegram": {"bot_token": "T", "schedule_languages": ["es"]},
+            "acp": {"agent_command": "a"},
+        },
+    )
+
+    assert main(["--config", str(config_path)]) == 0
+
+    config = mock_run_polling.call_args.args[0]
+    assert config.schedule_languages == ("es",)
+
+
+def test_main_schedule_languages_cli_override_env(mocker, monkeypatch):
+    """CLI schedule languages override ACP_SCHEDULE_LANGUAGES."""
+    monkeypatch.setenv("ACP_SCHEDULE_LANGUAGES", "es")
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--schedule-language",
+                "en",
+                "--schedule-language",
+                "pt",
+            ]
+        )
+        == 0
+    )
+
+    config = mock_run_polling.call_args.args[0]
+    assert config.schedule_languages == ("en", "pt")
 
 
 def test_main_config_file_not_found_error(tmp_path):

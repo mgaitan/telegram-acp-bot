@@ -36,6 +36,7 @@ from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, BotConfig, Telegram
 
 ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
 ALLOWED_USERNAMES_ENV = "TELEGRAM_ALLOWED_USERNAMES"
+SCHEDULE_LANGUAGES_ENV = "ACP_SCHEDULE_LANGUAGES"
 
 
 def get_version() -> str:
@@ -85,6 +86,14 @@ def get_parser() -> argparse.ArgumentParser:
         "--workspace",
         default=os.getcwd(),
         help="Default workspace path for /new when path is not provided.",
+    )
+    parser.add_argument(
+        "--schedule-language",
+        action="append",
+        default=[],
+        help=(
+            "Language code accepted by natural-language /schedule parsing. Can be repeated; defaults to 'en' and 'es'."
+        ),
     )
     parser.add_argument(
         "--permission-mode",
@@ -278,6 +287,28 @@ def _resolve_allowed_users(
     return allowed_user_ids, allowed_usernames
 
 
+def _resolve_schedule_languages(
+    *,
+    opts: argparse.Namespace,
+    config_data: dict[str, Any] | None = None,
+) -> list[str]:
+    cli_languages = [language.strip() for language in opts.schedule_language if language.strip()]
+    if cli_languages:
+        return [language.lower() for language in cli_languages]
+
+    env_languages = _parse_csv(os.getenv(SCHEDULE_LANGUAGES_ENV, ""))
+    if env_languages:
+        return [language.lower() for language in env_languages]
+
+    if config_data:
+        telegram_cfg = config_data.get("telegram", {})
+        configured = telegram_cfg.get("schedule_languages", [])
+        if configured:
+            return [str(language).strip().lower() for language in configured if str(language).strip()]
+
+    return ["en", "es"]
+
+
 def _run_bot_loop(
     config: BotConfig,
     bridge: TelegramBridge,
@@ -353,6 +384,7 @@ def main(args: list[str] | None = None) -> int:
     if opts.acp_connect_timeout <= 0:
         parser.error("--acp-connect-timeout must be a positive number")
     allowed_user_ids, allowed_usernames = _resolve_allowed_users(parser=parser, opts=opts, config_data=config_data)
+    schedule_languages = _resolve_schedule_languages(opts=opts, config_data=config_data)
 
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
@@ -373,6 +405,7 @@ def main(args: list[str] | None = None) -> int:
         allowed_usernames=allowed_usernames,
         workspace=opts.workspace,
         activity_mode=cast(ActivityMode, opts.activity_mode),
+        schedule_languages=schedule_languages,
     )
     service = AcpAgentService(
         SessionRegistry(),

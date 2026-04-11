@@ -126,7 +126,54 @@ The queued notice is updated to `✅ Sent.` so chat state matches what happened.
 
 If the current task finishes naturally before you press the button, your queued message runs automatically and the button is removed (pressing it after that shows "Already sent." with no side effects).
 
-## 8. Inspect and cancel scheduled follow-ups
+## 8. Schedule a prompt directly
+
+You can schedule a deferred agent prompt without going through the agent, using `/schedule`. This is useful when the model rejects your request due to quota limits or when you want to queue work for later without starting an agent session first.
+
+```text
+/schedule <time> <prompt text>
+```
+
+Supported time formats:
+
+- `30s` — 30 seconds from now
+- `10m` — 10 minutes from now
+- `2h` — 2 hours from now
+- `1d` — 1 day from now
+- Natural-language dates such as `tomorrow 9am` or `mañana 9am`
+- ISO timestamp with timezone, e.g. `2026-04-11T10:00:00+00:00`
+
+Example:
+
+```text
+/schedule tomorrow 9am Check for new review comments on the open PR
+Summarize what changed
+Flag anything blocking merge
+
+/schedule mañana 9am Generate the weekly summary report
+Include pending reviews
+Mention overdue follow-ups
+
+/schedule 2026-04-12T09:00:00+00:00 Generate the weekly summary report
+Include pending reviews
+Mention overdue follow-ups
+```
+
+The bot replies with the scheduled execution time. When the time arrives, the stored prompt is sent to the agent and the reply is posted back to the chat as a reply to your `/schedule` message.
+
+The prompt may also continue on following lines. Everything after the time spec is stored verbatim, so multiline prompts keep their line breaks.
+
+Natural-language parsing uses English and Spanish by default. You can customize the accepted languages with {term}`ACP_SCHEDULE_LANGUAGES` or `telegram.schedule_languages` in the config file.
+
+Single-line prompts still work too:
+
+```text
+/schedule 2h Generate the weekly summary report
+```
+
+If no active session exists when the scheduled time arrives, the bot will report that the task could not be run automatically.
+
+## 9. Inspect and cancel scheduled follow-ups
 
 When the agent schedules a deferred follow-up, you can inspect the pending work directly from Telegram:
 
@@ -154,7 +201,7 @@ From there you can tap **Cancel 1**, **Cancel 2**, and so on, or use **Cancel al
 
 For this first version, cancellation is intentionally limited to tasks that are still `pending`. Tasks that are already `running` are visible for inspection, but they are not turned into interruptible jobs by this command.
 
-## 9. Restart bot process (dev workflow)
+## 10. Restart bot process (dev workflow)
 
 ```text
 /restart
