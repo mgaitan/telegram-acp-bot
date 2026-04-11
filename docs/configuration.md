@@ -112,6 +112,10 @@ ACP_TELEGRAM_CHANNEL_ALLOW_PATH
   Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
   Disabled by default. Set to `1` (or `true`/`yes`/`on`) only when file-path inputs are trusted.
 
+ACP_TELEGRAM_CHANNEL_ALLOW_PUBLISH
+  Enables external long-form publishing for the internal MCP `telegram_publish_markdown` tool.
+  Disabled by default because published pages are hosted outside Telegram.
+
 ACP_TELEGRAM_CHANNEL_STATE_FILE
   Path to the MCP channel shared state file (`session_id -> chat_id`, plus last active session).
   Usually injected by the bot runtime for the internal MCP server.
@@ -119,6 +123,17 @@ ACP_TELEGRAM_CHANNEL_STATE_FILE
 ACP_TELEGRAM_BOT_TOKEN
   Telegram bot token used by the internal MCP server when sending attachments.
   Usually injected by the bot runtime for the internal MCP server.
+
+ACP_TELEGRAM_CHANNEL_PUBLISH_SHORT_NAME
+  Telegraph account short name used when creating transient publishing accounts.
+  Defaults to `telegram-acp-bot`.
+
+ACP_TELEGRAM_CHANNEL_PUBLISH_AUTHOR_NAME
+  Default author name for `telegram_publish_markdown`.
+  Defaults to `telegram-acp-bot`.
+
+ACP_TELEGRAM_CHANNEL_PUBLISH_AUTHOR_URL
+  Optional author URL attached to published Telegraph pages.
 ```
 
 ## CLI flags
@@ -211,10 +226,16 @@ For adding external MCP servers, see {doc}`mcp`.
 
 - {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` controls whether MCP attachment delivery accepts `path` input.
   Default behavior is disabled, so agents must use `data_base64`.
+- {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PUBLISH` controls whether MCP long-form publishing is allowed.
+  Default behavior is disabled, so agents cannot publish outside Telegram unless you opt in.
 - {term}`ACP_TELEGRAM_CHANNEL_STATE_FILE` points to runtime state used to resolve session routing for MCP calls.
 - {term}`ACP_TELEGRAM_BOT_TOKEN` is the token consumed by the MCP server when calling Telegram Bot API.
+- {term}`ACP_TELEGRAM_CHANNEL_PUBLISH_SHORT_NAME` sets the Telegraph short name for published pages.
+- {term}`ACP_TELEGRAM_CHANNEL_PUBLISH_AUTHOR_NAME` sets the default author label for published pages.
+- {term}`ACP_TELEGRAM_CHANNEL_PUBLISH_AUTHOR_URL` sets the optional author URL for published pages.
 
 Security notes:
 
 - Keep {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` disabled unless your agent is trusted to read local files.
+- Keep {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PUBLISH` disabled unless your agent is trusted to publish content outside Telegram.
 - {term}`ACP_TELEGRAM_CHANNEL_STATE_FILE` and {term}`ACP_TELEGRAM_BOT_TOKEN` are typically managed by the bot process and should not be shared across unrelated runtimes.
