@@ -5,15 +5,16 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from html.parser import HTMLParser
 from typing import cast
+from urllib.parse import urlsplit
 
 import httpx
-from markdown_it import MarkdownIt
 from mcp.server.fastmcp import FastMCP
+from md_to_telegraph import md_to_telegraph
 from telegram import Bot
+from telegram.error import TelegramError
 
-from telegram_acp_bot.mcp.context import resolve_request_context
+from telegram_acp_bot.mcp.context import RequestContext, resolve_request_context
 
 ALLOW_PUBLISH_ENV = "ACP_TELEGRAM_CHANNEL_ALLOW_PUBLISH"
 PUBLISH_SHORT_NAME_ENV = "ACP_TELEGRAM_CHANNEL_PUBLISH_SHORT_NAME"
@@ -24,9 +25,10 @@ DEFAULT_PUBLISH_AUTHOR_NAME = "telegram-acp-bot"
 TELEGRAPH_API_BASE_URL = "https://api.telegra.ph"
 TELEGRAPH_CONTENT_LIMIT_BYTES = 64 * 1024
 
+ALLOWED_LINK_SCHEMES = {"http", "https", "mailto"}
+ALLOWED_IMAGE_SCHEMES = {"http", "https"}
 ALLOWED_TELEGRAPH_TAGS = {
     "a",
-    "aside",
     "blockquote",
     "br",
     "code",
@@ -41,21 +43,10 @@ ALLOWED_TELEGRAPH_TAGS = {
     "pre",
     "s",
     "strong",
-    "u",
     "ul",
 }
-ALLOWED_TELEGRAPH_ATTRS = {"href", "src"}
-INLINE_TELEGRAPH_TAGS = {"a", "br", "code", "em", "img", "s", "strong", "u"}
-TAG_ALIASES = {
-    "b": "strong",
-    "del": "s",
-    "h1": "h3",
-    "h2": "h3",
-    "h5": "h4",
-    "h6": "h4",
-    "i": "em",
-    "strike": "s",
-}
+INLINE_TELEGRAPH_TAGS = {"a", "br", "code", "em", "img", "s", "strong"}
+TAG_ALIASES = {"del": "s"}
 
 type TelegraphNode = str | dict[str, object]
 
@@ -82,56 +73,9 @@ class PublishError(RuntimeError):
     def request_failed(cls, detail: str) -> PublishError:
         return cls(f"Telegraph request failed: {detail}")
 
-
-class TelegraphHTMLRenderer(HTMLParser):
-    """Convert sanitized Markdown HTML into Telegraph Node arrays."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._root: list[TelegraphNode] = []
-        self._children_stack: list[list[TelegraphNode]] = [self._root]
-        self._frame_opens_node: list[bool] = []
-
-    def render(self, html: str) -> list[TelegraphNode]:
-        self.feed(html)
-        self.close()
-        return strip_blank_text_nodes(wrap_root_inline_nodes(self._root))
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        normalized = normalize_telegraph_tag(tag)
-        if normalized is None:
-            self._children_stack.append(self._children_stack[-1])
-            self._frame_opens_node.append(False)
-            return
-
-        children: list[TelegraphNode] = []
-        node: dict[str, object] = {"tag": normalized, "children": children}
-        filtered_attrs = {key: value for key, value in attrs if key in ALLOWED_TELEGRAPH_ATTRS and value is not None}
-        if filtered_attrs:
-            node["attrs"] = filtered_attrs
-        self._children_stack[-1].append(node)
-        self._children_stack.append(children)
-        self._frame_opens_node.append(True)
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        normalized = normalize_telegraph_tag(tag)
-        if normalized is None:
-            return
-        node: dict[str, object] = {"tag": normalized}
-        filtered_attrs = {key: value for key, value in attrs if key in ALLOWED_TELEGRAPH_ATTRS and value is not None}
-        if filtered_attrs:
-            node["attrs"] = filtered_attrs
-        self._children_stack[-1].append(node)
-
-    def handle_endtag(self, tag: str) -> None:
-        if not self._frame_opens_node:
-            return
-        self._frame_opens_node.pop()
-        self._children_stack.pop()
-
-    def handle_data(self, data: str) -> None:
-        if data:
-            self._children_stack[-1].append(data)
+    @classmethod
+    def delivery_failed(cls, *, detail: str, url: str) -> PublishError:
+        return cls(f"published page but failed to send Telegram message: {detail}. Published URL: {url}")
 
 
 def register_publishing_tools(mcp: FastMCP) -> None:
@@ -155,22 +99,16 @@ async def telegram_publish_markdown(
 ) -> dict[str, object]:
     """Publish long Markdown content and send the resulting page URL back to Telegram."""
 
-    def fail(error: str) -> dict[str, object]:
-        return {"ok": False, "error": error}
+    def fail(error: str, **extra: object) -> dict[str, object]:
+        return {"ok": False, "error": error, **extra}
 
-    if not allow_page_publishing():
-        return fail(f"page publishing is disabled by default. Set {ALLOW_PUBLISH_ENV}=1 to enable it explicitly.")
+    invalid_request = validate_publish_request(title=title, markdown=markdown, session_id=session_id)
+    if invalid_request is not None:
+        return fail(invalid_request)
 
-    if not title.strip():
-        return fail("title must not be empty")
-    if not markdown.strip():
-        return fail("markdown must not be empty")
+    context = cast(RequestContext, resolve_request_context(session_id=session_id))
 
-    context = resolve_request_context(session_id=session_id)
-    if isinstance(context, str):
-        return fail(context)
-
-    resolved_author_name = author_name or os.getenv(PUBLISH_AUTHOR_NAME_ENV, DEFAULT_PUBLISH_AUTHOR_NAME).strip()
+    resolved_author_name = resolve_author_name(author_name)
     resolved_author_url = os.getenv(PUBLISH_AUTHOR_URL_ENV, "").strip() or None
 
     try:
@@ -184,11 +122,15 @@ async def telegram_publish_markdown(
         return fail(str(exc))
 
     bot = Bot(token=context.token)
-    sent = await bot.send_message(
-        chat_id=context.chat_id,
-        text=format_published_message(title=title, url=page.url, summary=summary),
-        disable_web_page_preview=False,
-    )
+    try:
+        sent = await bot.send_message(
+            chat_id=context.chat_id,
+            text=format_published_message(title=title, url=page.url, summary=summary),
+            disable_web_page_preview=False,
+        )
+    except TelegramError as exc:
+        return fail(str(PublishError.delivery_failed(detail=str(exc), url=page.url)), url=page.url)
+
     return {
         "ok": True,
         "session_id": context.session_id,
@@ -249,9 +191,142 @@ async def publish_markdown_page(
 def render_markdown_as_telegraph_nodes(markdown: str) -> list[TelegraphNode]:
     """Render a Markdown string into a Telegraph-compatible node array."""
 
-    parser = MarkdownIt("commonmark", {"html": False})
-    html = parser.render(markdown)
-    return TelegraphHTMLRenderer().render(html)
+    return wrap_root_inline_nodes(sanitize_telegraph_nodes(md_to_telegraph(markdown)))
+
+
+def sanitize_telegraph_nodes(nodes: list[TelegraphNode]) -> list[TelegraphNode]:
+    """Normalize tag names and discard unsafe Telegraph attributes."""
+
+    sanitized: list[TelegraphNode] = []
+    for node in nodes:
+        sanitized.extend(sanitize_telegraph_node(node))
+    return sanitized
+
+
+def sanitize_telegraph_node(node: TelegraphNode) -> list[TelegraphNode]:
+    """Normalize one Telegraph node into the subset this client allows."""
+
+    if isinstance(node, str):
+        return [node] if node.strip() else []
+
+    tag = node.get("tag")
+    if not isinstance(tag, str):
+        return []
+    normalized_tag = TAG_ALIASES.get(tag, tag)
+    children = sanitize_telegraph_nodes(cast(list[TelegraphNode], node.get("children", [])))
+
+    if normalized_tag == "img":
+        return build_image_node(node)
+    if normalized_tag not in ALLOWED_TELEGRAPH_TAGS:
+        return children
+
+    attrs = sanitize_attrs(node=node, tag=normalized_tag)
+    sanitized: dict[str, object] = {"tag": normalized_tag}
+    if children:
+        sanitized["children"] = children
+    if attrs:
+        sanitized["attrs"] = attrs
+    return [sanitized]
+
+
+def sanitize_attrs(*, node: dict[str, object], tag: str) -> dict[str, str]:
+    """Return only the Telegraph attributes this client allows for a node."""
+
+    if tag != "a":
+        return {}
+    href = extract_allowed_url(node, attr_name="href", allowed_schemes=ALLOWED_LINK_SCHEMES)
+    if href is None:
+        return {}
+    return {"href": href}
+
+
+def extract_allowed_url(
+    node: dict[str, object],
+    *,
+    attr_name: str,
+    allowed_schemes: set[str],
+) -> str | None:
+    """Extract and validate one URL attribute from a Telegraph node."""
+
+    attrs = node.get("attrs")
+    if not isinstance(attrs, dict):
+        return None
+    attrs_map = cast(dict[str, object], attrs)
+    value = attrs_map.get(attr_name)
+    if not isinstance(value, str):
+        return None
+    return value if is_allowed_url(value, allowed_schemes=allowed_schemes) else None
+
+
+def build_image_node(node: dict[str, object]) -> list[TelegraphNode]:
+    """Return a sanitized Telegraph image node when the source URL is allowed."""
+
+    src = extract_allowed_url(node, attr_name="src", allowed_schemes=ALLOWED_IMAGE_SCHEMES)
+    if src is None:
+        return []
+    return [{"tag": "img", "attrs": {"src": src}}]
+
+
+def is_allowed_url(value: str, *, allowed_schemes: set[str]) -> bool:
+    """Return whether a URL uses an allowed scheme and has the required components."""
+
+    parsed = urlsplit(value)
+    if parsed.scheme not in allowed_schemes:
+        return False
+    if parsed.scheme == "mailto":
+        return bool(parsed.path)
+    return bool(parsed.netloc)
+
+
+def wrap_root_inline_nodes(nodes: list[TelegraphNode]) -> list[TelegraphNode]:
+    """Wrap stray inline nodes so the document remains Telegraph-friendly."""
+
+    wrapped: list[TelegraphNode] = []
+    paragraph_children: list[TelegraphNode] = []
+
+    for node in nodes:
+        if is_root_inline_node(node):
+            paragraph_children.append(node)
+            continue
+        if paragraph_children:
+            wrapped.append({"tag": "p", "children": paragraph_children})
+            paragraph_children = []
+        wrapped.append(node)
+
+    if paragraph_children:
+        wrapped.append({"tag": "p", "children": paragraph_children})
+    return wrapped
+
+
+def is_root_inline_node(node: TelegraphNode) -> bool:
+    """Return whether a root node should be wrapped into a paragraph."""
+
+    if isinstance(node, str):
+        return bool(node.strip())
+    tag = node.get("tag")
+    return isinstance(tag, str) and tag in INLINE_TELEGRAPH_TAGS
+
+
+def resolve_author_name(author_name: str | None) -> str:
+    """Resolve the Telegraph author name from tool input or environment defaults."""
+
+    candidate = author_name or os.getenv(PUBLISH_AUTHOR_NAME_ENV, DEFAULT_PUBLISH_AUTHOR_NAME)
+    normalized = candidate.strip()
+    return normalized or DEFAULT_PUBLISH_AUTHOR_NAME
+
+
+def validate_publish_request(*, title: str, markdown: str, session_id: str | None) -> str | None:
+    """Validate publish inputs and return an error message when the request is invalid."""
+
+    if not allow_page_publishing():
+        return f"page publishing is disabled by default. Set {ALLOW_PUBLISH_ENV}=1 to enable it explicitly."
+    if not title.strip():
+        return "title must not be empty"
+    if not markdown.strip():
+        return "markdown must not be empty"
+
+    context = resolve_request_context(session_id=session_id)
+    return context if isinstance(context, str) else None
 
 
 def format_published_message(*, title: str, url: str, summary: str | None) -> str:
@@ -277,7 +352,12 @@ async def telegraph_api_request(
     except httpx.HTTPError as exc:
         raise PublishError.request_failed(str(exc)) from exc
 
-    decoded = response.json()
+    try:
+        decoded = response.json()
+    except ValueError as exc:
+        raise PublishError.malformed_response() from exc
+    if not isinstance(decoded, dict):
+        raise PublishError.malformed_response()
     if not decoded.get("ok"):
         error = str(decoded.get("error") or "unknown Telegraph error")
         raise PublishError.request_failed(error)
@@ -285,64 +365,6 @@ async def telegraph_api_request(
     if not isinstance(result, dict):
         raise PublishError.malformed_response()
     return cast(dict[str, object], result)
-
-
-def normalize_telegraph_tag(tag: str) -> str | None:
-    """Map HTML tags into the subset accepted by Telegraph."""
-
-    normalized = TAG_ALIASES.get(tag, tag)
-    if normalized in ALLOWED_TELEGRAPH_TAGS:
-        return normalized
-    return None
-
-
-def wrap_root_inline_nodes(nodes: list[TelegraphNode]) -> list[TelegraphNode]:
-    """Wrap stray inline nodes so the document remains Telegraph-friendly."""
-
-    wrapped: list[TelegraphNode] = []
-    paragraph_children: list[TelegraphNode] = []
-
-    for node in nodes:
-        if isinstance(node, str) and not node.strip():
-            continue
-        if is_root_inline_node(node):
-            paragraph_children.append(node)
-            continue
-        if paragraph_children:
-            wrapped.append({"tag": "p", "children": paragraph_children})
-            paragraph_children = []
-        wrapped.append(node)
-
-    if paragraph_children:
-        wrapped.append({"tag": "p", "children": paragraph_children})
-    return wrapped
-
-
-def strip_blank_text_nodes(nodes: list[TelegraphNode]) -> list[TelegraphNode]:
-    """Remove blank text nodes produced by HTML formatting whitespace."""
-
-    cleaned: list[TelegraphNode] = []
-    for node in nodes:
-        if isinstance(node, str):
-            if node.strip():
-                cleaned.append(node)
-            continue
-        children = node.get("children")
-        if isinstance(children, list):
-            cleaned_node = {**node, "children": strip_blank_text_nodes(cast(list[TelegraphNode], children))}
-            cleaned.append(cleaned_node)
-            continue
-        cleaned.append(node)
-    return cleaned
-
-
-def is_root_inline_node(node: TelegraphNode) -> bool:
-    """Return whether a root node should be wrapped into a paragraph."""
-
-    if isinstance(node, str):
-        return bool(node.strip())
-    tag = node.get("tag")
-    return isinstance(tag, str) and tag in INLINE_TELEGRAPH_TAGS
 
 
 def allow_page_publishing() -> bool:

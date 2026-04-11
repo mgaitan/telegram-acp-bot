@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-import httpx
 from mcp.server.fastmcp import FastMCP
 
 from telegram_acp_bot.mcp.context import RequestContext, resolve_request_context
@@ -32,17 +31,12 @@ from telegram_acp_bot.mcp.tools.publishing import (
     PUBLISH_SHORT_NAME_ENV,
     TELEGRAPH_CONTENT_LIMIT_BYTES,
     PublishedPage,
-    TelegraphHTMLRenderer,
     allow_page_publishing,
     format_published_message,
-    is_root_inline_node,
-    normalize_telegraph_tag,
     publish_markdown_page,
     register_publishing_tools,
-    render_markdown_as_telegraph_nodes,
     telegram_publish_markdown,
     telegraph_api_request,
-    wrap_root_inline_nodes,
 )
 from telegram_acp_bot.mcp.tools.reactions import (
     STANDARD_REACTION_EMOJI_LIST,
@@ -68,12 +62,9 @@ _resolve_request_context = resolve_request_context
 _AttachmentPayload = AttachmentPayload
 _load_attachment_bytes = load_attachment_bytes
 _PublishedPage = PublishedPage
-_render_markdown_as_telegraph_nodes = render_markdown_as_telegraph_nodes
 _publish_markdown_page = publish_markdown_page
 _format_published_message = format_published_message
-_normalize_telegraph_tag = normalize_telegraph_tag
 _telegraph_api_request = telegraph_api_request
-_wrap_root_inline_nodes = wrap_root_inline_nodes
 
 __all__ = [
     "ALLOW_PATH_ENV",
@@ -94,24 +85,18 @@ __all__ = [
     "TOKEN_ENV",
     "UTC",
     "PublishedPage",
-    "TelegraphHTMLRenderer",
     "_AttachmentPayload",
     "_PublishedPage",
     "_RequestContext",
     "_format_published_message",
     "_load_attachment_bytes",
-    "_normalize_telegraph_tag",
     "_publish_markdown_page",
-    "_render_markdown_as_telegraph_nodes",
     "_resolve_request_context",
     "_telegraph_api_request",
-    "_wrap_root_inline_nodes",
     "allow_page_publishing",
     "allow_path_inputs",
     "datetime",
     "format_scheduled_summary",
-    "httpx",
-    "is_root_inline_node",
     "load_last_session_id",
     "load_prompt_message_id",
     "load_scheduled_task_store",
