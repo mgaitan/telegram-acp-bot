@@ -1,12 +1,59 @@
 # Configuration
 
-This page documents runtime configuration via environment variables.
+telegram-acp-bot uses a three-layer configuration model. Settings are resolved in this order:
 
-For ready-to-use command examples per backend, see {doc}`agents`.
+```
+CLI flags  >  Environment variables  >  Config file  >  Built-in defaults
+```
+
+You can mix layers freely. A typical setup uses a config file for static values and environment variables for secrets that should not live on disk.
+
+## Config file
+
+Pass `--config <path>` (or set it in a wrapper script) to load settings from a JSON file.
+
+```bash
+telegram-acp-bot --config ./telegram-acp.json
+```
+
+The file must be a JSON object. All keys are optional. Missing keys fall back to environment variables or built-in defaults.
+
+### Schema
+
+```json
+{
+  "telegram": {
+    "bot_token": "123456:abc",
+    "allowed_user_ids": [123456789],
+    "allowed_usernames": ["alice", "@bob"]
+  },
+  "acp": {
+    "agent_command": "npx @zed-industries/codex-acp",
+    "restart_command": "uv run telegram-acp-bot --config ./telegram-acp.json",
+    "permission_mode": "ask",
+    "permission_event_output": "stdout",
+    "stdio_limit": 8388608,
+    "connect_timeout": 30,
+    "log_format": "text",
+    "log_level": "INFO",
+    "activity_mode": "normal",
+    "scheduled_tasks_db": "/home/alice/.local/state/telegram-acp-bot/scheduled-tasks.sqlite3",
+    "workspace": "/home/alice/projects"
+  }
+}
+```
+
+### Validation
+
+The config file is validated at startup. Invalid values (wrong types, unknown enum values) are reported as clear error messages and the bot does not start.
+
+## Environment variables
+
+Environment variables override any matching config file value. They are the recommended way to pass secrets like the bot token in container or CI environments.
 
 ```{glossary}
 TELEGRAM_BOT_TOKEN
-  Telegram bot token (from BotFather). Required unless passed as `--telegram-token`.
+  Telegram bot token (from BotFather). Required unless set via config file or `--telegram-token`.
 
 TELEGRAM_ALLOWED_USER_IDS
   Comma-separated allowlist of Telegram numeric user IDs.
@@ -20,32 +67,26 @@ TELEGRAM_ALLOWED_USERNAMES
 ACP_AGENT_COMMAND
   Command line used to launch the ACP agent process.
   Examples: `npx @zed-industries/codex-acp`, `uv run examples/echo_agent.py`.
-  Required unless passed as `--agent-command`.
+  Required unless set via config file or `--agent-command`.
 
 ACP_RESTART_COMMAND
   Optional command used by `/restart` to relaunch the bot process.
   Recommended when you run with `uv run ...` and need to preserve its flags.
-  Example: `uv run telegram-acp-bot --telegram-token ... --agent-command ...`.
 
 ACP_PERMISSION_MODE
   Default permission policy for ACP tool calls.
   Allowed values: `ask`, `approve`, `deny`.
-  Maps to `--permission-mode`.
 
 ACP_PERMISSION_EVENT_OUTPUT
   Permission/tool event log output mode.
   Allowed values: `stdout`, `off`.
-  Maps to `--permission-event-output`.
 
 ACP_STDIO_LIMIT
   Asyncio stdio reader limit in bytes for ACP transport.
   Increase this if the agent emits very large JSON lines.
-  Maps to `--acp-stdio-limit`.
 
 ACP_CONNECT_TIMEOUT
   Timeout in seconds for ACP initialize/new_session handshake.
-  Prevents `/new` from hanging forever if the agent does not speak ACP over stdio.
-  Maps to `--acp-connect-timeout`.
 
 ACP_LOG_LEVEL
   Application log level.
@@ -54,8 +95,6 @@ ACP_LOG_LEVEL
 ACP_LOG_FORMAT
   Application log format.
   Allowed values: `text`, `json`.
-  `text` includes contextual key/value fields in each line.
-  `json` emits structured logs with `chat_id`, `session_id`, and `prompt_cycle_id`.
 
 ACP_ACTIVITY_MODE
   Controls how intermediate agent activity events are shown in Telegram.
@@ -63,16 +102,11 @@ ACP_ACTIVITY_MODE
   `normal` (default) emits each visible activity event as its own message.
   `compact` collapses all events into a single in-place status message
   that is replaced by the final answer when the agent responds.
-  While work is in progress, that same compact message keeps the normal
-  activity emoji in the message text (for example `⚙️`, `🌐`, `📖`) and
-  rotates the trailing dots to show progress.
   `verbose` streams append-only updates in place for active reply text and
   tool activity, and then finalizes those messages when the prompt completes.
-  Maps to `--activity-mode`.
 
 ACP_SCHEDULED_TASKS_DB
   Path to the SQLite database used for deferred follow-up tasks.
-  Maps to `--scheduled-tasks-db`.
 
 ACP_TELEGRAM_CHANNEL_ALLOW_PATH
   Enables `path` inputs for the internal MCP `telegram_send_attachment` tool.
@@ -87,28 +121,90 @@ ACP_TELEGRAM_BOT_TOKEN
   Usually injected by the bot runtime for the internal MCP server.
 ```
 
-## Example `.env`
+## CLI flags
+
+CLI flags take the highest priority and override both environment variables and the config file. Run `telegram-acp-bot --help` for the full list.
+
+Key flags that map to config file or environment variable equivalents:
+
+| CLI flag | Env var | Config key |
+|---|---|---|
+| `--config` | — | — |
+| `--telegram-token` | `TELEGRAM_BOT_TOKEN` | `telegram.bot_token` |
+| `--allowed-user-id` | `TELEGRAM_ALLOWED_USER_IDS` | `telegram.allowed_user_ids` |
+| `--allowed-username` | `TELEGRAM_ALLOWED_USERNAMES` | `telegram.allowed_usernames` |
+| `--agent-command` | `ACP_AGENT_COMMAND` | `acp.agent_command` |
+| `--restart-command` | `ACP_RESTART_COMMAND` | `acp.restart_command` |
+| `--permission-mode` | `ACP_PERMISSION_MODE` | `acp.permission_mode` |
+| `--permission-event-output` | `ACP_PERMISSION_EVENT_OUTPUT` | `acp.permission_event_output` |
+| `--acp-stdio-limit` | `ACP_STDIO_LIMIT` | `acp.stdio_limit` |
+| `--acp-connect-timeout` | `ACP_CONNECT_TIMEOUT` | `acp.connect_timeout` |
+| `--log-format` | `ACP_LOG_FORMAT` | `acp.log_format` |
+| `--activity-mode` / `-m` | `ACP_ACTIVITY_MODE` | `acp.activity_mode` |
+| `--scheduled-tasks-db` | `ACP_SCHEDULED_TASKS_DB` | `acp.scheduled_tasks_db` |
+| `--workspace` | — | `acp.workspace` |
+
+## Migration guide
+
+### From `.env` to `config.json`
+
+If you currently use a `.env` file:
 
 ```ini
 TELEGRAM_BOT_TOKEN=123456:abc
 TELEGRAM_ALLOWED_USER_IDS=123456789
-# TELEGRAM_ALLOWED_USERNAMES=alice,@bob
-ACP_AGENT_COMMAND="npx @zed-industries/codex-acp"
-ACP_RESTART_COMMAND="uv run telegram-acp-bot --telegram-token 123456:abc --agent-command \"npx @zed-industries/codex-acp\""
-ACP_PERMISSION_MODE=ask
-ACP_PERMISSION_EVENT_OUTPUT=stdout
-ACP_STDIO_LIMIT=8388608
-ACP_CONNECT_TIMEOUT=30
-ACP_LOG_LEVEL=INFO
-ACP_LOG_FORMAT=text
-ACP_ACTIVITY_MODE=normal
-ACP_SCHEDULED_TASKS_DB=/home/alice/.local/state/telegram-acp-bot/scheduled-tasks.sqlite3
+ACP_AGENT_COMMAND=npx @zed-industries/codex-acp
+ACP_PERMISSION_MODE=approve
 ```
+
+The equivalent config file is:
+
+```json
+{
+  "telegram": {
+    "bot_token": "123456:abc",
+    "allowed_user_ids": [123456789]
+  },
+  "acp": {
+    "agent_command": "npx @zed-industries/codex-acp",
+    "permission_mode": "approve"
+  }
+}
+```
+
+Then run:
+
+```bash
+telegram-acp-bot --config ./telegram-acp.json
+```
+
+### Mixed setup (env override for secrets)
+
+Keep the token in the environment and everything else in the config file:
+
+```json
+{
+  "telegram": {
+    "allowed_user_ids": [123456789]
+  },
+  "acp": {
+    "agent_command": "npx @zed-industries/codex-acp"
+  }
+}
+```
+
+```bash
+TELEGRAM_BOT_TOKEN=123456:abc telegram-acp-bot --config ./telegram-acp.json
+```
+
+The environment variable wins over the config file for `bot_token`, so you can rotate the token without touching the file.
 
 ## MCP behavior
 
 The bot always advertises an internal MCP stdio server named `telegram-channel`
 to the ACP agent. No extra configuration is required.
+
+For adding external MCP servers, see {doc}`mcp`.
 
 (mcp-channel-environment-variables)=
 ## MCP channel environment variables

@@ -168,7 +168,7 @@ class FakeDemoAcpAgent(Agent):
     async def set_session_model(self, model_id: str, session_id: str, **kwargs: object) -> None:
         del model_id, session_id, kwargs
 
-    async def set_config_option(self, config_id: str, session_id: str, value: str, **kwargs: object) -> None:
+    async def set_config_option(self, config_id: str, session_id: str, value: str | bool, **kwargs: object) -> None:
         del config_id, session_id, value, kwargs
 
     async def authenticate(self, method_id: str, **kwargs: object) -> None:

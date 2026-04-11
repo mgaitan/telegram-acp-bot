@@ -162,6 +162,99 @@ sequenceDiagram
     B-->>U: confirmation message
 ```
 
+## External MCP Servers
+
+In addition to the built-in `telegram-channel` server, you can register external MCP servers via the `mcp_servers` key in the {doc}`config file <configuration>`.
+
+All configured servers are merged with the internal one and passed to every ACP session at startup. If you configure a server named `telegram-channel`, it overrides the internal server.
+
+### Stdio server (local process)
+
+```json
+{
+  "mcp_servers": {
+    "echo": {
+      "command": "uv",
+      "args": ["run", "examples/echo_agent.py"],
+      "env": {
+        "MY_API_KEY": "secret"
+      }
+    }
+  }
+}
+```
+
+Fields:
+
+- key name — server identifier exposed to ACP; must match `^[a-z0-9-_]+$`
+- `command` (required) — path to the executable
+- `args` (optional) — list of string arguments
+- `env` (optional) — object of `string → string` environment variables
+
+### Remote server (HTTP)
+
+```json
+{
+  "mcp_servers": {
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+Fields:
+
+- key name — server identifier exposed to ACP; must match `^[a-z0-9-_]+$`
+- `url` (required) — URL of the remote MCP server
+- `headers` (optional) — object of `string → string` HTTP headers
+
+### Mixed example
+
+```json
+{
+  "mcp_servers": {
+    "local": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-filesystem", "/home/alice/projects"]
+    },
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer token"
+      }
+    }
+  }
+}
+```
+
+### Validation
+
+Each server must define exactly one transport: `command` (stdio) **or** `url` (remote), not both. The bot validates the config at startup and reports clear errors for invalid definitions.
+
+### Troubleshooting
+
+**Missing transport**
+```json
+{ "mcp_servers": { "broken": { "args": ["--help"] } } }
+```
+Error: `MCP server 'broken' must define 'command' (stdio) or 'url' (remote)`
+
+**Both transports defined**
+```json
+{ "mcp_servers": { "broken": { "command": "x", "url": "http://x" } } }
+```
+Error: `MCP server 'broken' cannot define both 'command' and 'url'`
+
+**Wrong type for args**
+```json
+{ "mcp_servers": { "broken": { "command": "x", "args": "--flag" } } }
+```
+Error: `MCP server 'broken' 'args' must be a list of strings`
+
 ## Current Limits
 
 The MCP layer is intentionally small. It does not implement follow-up suggestion buttons yet, and multi-session ambiguity can still require an explicit `session_id`. That is a tradeoff in favor of predictable routing and debuggable behavior.
