@@ -91,8 +91,10 @@ class _NormalActivityModeHandler(_ActivityModeHandler):
         if app is None or block.kind == "reply":
             return
         slot_key = self._slot_key(block)
-        if not self._tracks_elapsed_thinking(block):
-            self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        if self._tracks_elapsed_thinking(block):
+            self._stop_other_thinking_indicators(chat_id=chat_id, active_slot_key=slot_key)
+        else:
+            self._stop_other_thinking_indicators(chat_id=chat_id)
         if block.activity_id:
             if block.status == "in_progress":
                 seen = self._seen_streams_by_chat.setdefault(chat_id, set())
@@ -142,6 +144,12 @@ class _NormalActivityModeHandler(_ActivityModeHandler):
         if not indicators:
             self._thinking_by_chat.pop(chat_id, None)
 
+    def _stop_other_thinking_indicators(self, *, chat_id: int, active_slot_key: str | None = None) -> None:
+        for other_slot_key in tuple(self._thinking_by_chat.get(chat_id, {})):
+            if other_slot_key == active_slot_key:
+                continue
+            self._stop_thinking_indicator(chat_id=chat_id, slot_key=other_slot_key)
+
     async def _run_thinking_elapsed_loop(self, *, chat_id: int, slot_key: str) -> None:
         try:
             while True:
@@ -151,7 +159,7 @@ class _NormalActivityModeHandler(_ActivityModeHandler):
                 if indicator is None or app is None:
                     return
                 elapsed_seconds = int(asyncio.get_running_loop().time() - indicator.started_at)
-                if elapsed_seconds > THINKING_ELAPSED_MAX_SECONDS:
+                if elapsed_seconds >= THINKING_ELAPSED_MAX_SECONDS:
                     self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
                     return
                 edited = await self._bridge._edit_markdown_in_chat(
@@ -364,6 +372,12 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
         if not indicators:
             self._thinking_by_chat.pop(chat_id, None)
 
+    def _stop_other_thinking_indicators(self, *, chat_id: int, active_slot_key: str | None = None) -> None:
+        for other_slot_key in tuple(self._thinking_by_chat.get(chat_id, {})):
+            if other_slot_key == active_slot_key:
+                continue
+            self._stop_thinking_indicator(chat_id=chat_id, slot_key=other_slot_key)
+
     def _cancel_flush_task(self, chat_id: int) -> None:
         task = self._flush_tasks_by_chat.pop(chat_id, None)
         if task is not None:
@@ -381,7 +395,7 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
                     if indicator is None or active is None or app is None:
                         return
                     elapsed_seconds = int(asyncio.get_running_loop().time() - indicator.started_at)
-                    if elapsed_seconds > THINKING_ELAPSED_MAX_SECONDS:
+                    if elapsed_seconds >= THINKING_ELAPSED_MAX_SECONDS:
                         self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
                         return
                     edited = await self._bridge._edit_markdown_in_chat(
@@ -567,8 +581,10 @@ class _VerboseActivityModeHandler(_ActivityModeHandler):
         app = self._bridge._app
         if app is None:
             return
-        if not self._tracks_elapsed_thinking(block):
-            self._stop_thinking_indicator(chat_id=chat_id, slot_key=slot_key)
+        if self._tracks_elapsed_thinking(block):
+            self._stop_other_thinking_indicators(chat_id=chat_id, active_slot_key=slot_key)
+        else:
+            self._stop_other_thinking_indicators(chat_id=chat_id)
         active = self._messages_by_chat.get(chat_id, {}).get(slot_key)
         if active is not None and await self._update_active_message(
             chat_id=chat_id,

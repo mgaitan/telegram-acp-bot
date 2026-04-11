@@ -821,7 +821,7 @@ async def test_verbose_thinking_elapsed_loop_stops_when_max_is_exceeded(mocker):
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
     handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
-    loop_times = iter([5.0, 20.0])
+    loop_times = iter([5.0, 10.0])
 
     mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
     mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 5)
@@ -839,6 +839,31 @@ async def test_verbose_thinking_elapsed_loop_stops_when_max_is_exceeded(mocker):
 
     assert bot.edited_messages == []
     assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_verbose_non_think_event_stops_other_thinking_indicators():
+    bridge = make_verbose_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = cast(bot_module._VerboseActivityModeHandler, bridge._activity_handler(chat_id=TEST_CHAT_ID))
+
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(kind="think", title="", status="in_progress", text="", activity_id="think-old"),
+    )
+
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(
+            kind="tool",
+            title="Running tool",
+            status="in_progress",
+            text="go",
+            activity_id="tool-1",
+        ),
+    )
+
+    assert "activity:think-old" not in handler._thinking_by_chat.get(TEST_CHAT_ID, {})
 
 
 async def test_verbose_thinking_elapsed_loop_stops_when_edit_fails(mocker):

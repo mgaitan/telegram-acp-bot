@@ -217,7 +217,7 @@ async def test_normal_thinking_elapsed_loop_stops_when_max_is_exceeded(mocker):
     bot = DummyBot()
     bridge._app = cast(Application, SimpleNamespace(bot=bot))
     handler = bot_module._NormalActivityModeHandler(bridge)
-    loop_times = iter([10.0, 50.0])
+    loop_times = iter([10.0, 15.0])
 
     mocker.patch.object(activity_module, "THINKING_ELAPSED_UPDATE_SECONDS", 0)
     mocker.patch.object(activity_module, "THINKING_ELAPSED_MAX_SECONDS", 5)
@@ -234,6 +234,42 @@ async def test_normal_thinking_elapsed_loop_stops_when_max_is_exceeded(mocker):
 
     assert bot.edited_messages == []
     assert TEST_CHAT_ID not in handler._thinking_by_chat
+
+
+async def test_normal_non_think_event_stops_other_thinking_indicators():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="think-old", message_id=1)
+
+    await handler.on_activity_event(
+        chat_id=TEST_CHAT_ID,
+        block=AgentActivityBlock(
+            kind="tool",
+            title="Running tool",
+            status="in_progress",
+            text="go",
+            activity_id="tool-1",
+        ),
+    )
+
+    assert "think-old" not in handler._thinking_by_chat.get(TEST_CHAT_ID, {})
+
+
+async def test_normal_tracked_thinking_keeps_active_indicator_only():
+    bridge = make_bridge()
+    bot = DummyBot()
+    bridge._app = cast(Application, SimpleNamespace(bot=bot))
+    handler = bot_module._NormalActivityModeHandler(bridge)
+
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="think-old", message_id=1)
+    handler._start_thinking_indicator(chat_id=TEST_CHAT_ID, slot_key="think-current", message_id=2)
+
+    handler._stop_other_thinking_indicators(chat_id=TEST_CHAT_ID, active_slot_key="think-current")
+
+    assert set(handler._thinking_by_chat[TEST_CHAT_ID]) == {"think-current"}
 
 
 async def test_normal_thinking_elapsed_loop_stops_when_edit_fails(mocker):
