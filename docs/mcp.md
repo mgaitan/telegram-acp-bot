@@ -25,11 +25,13 @@ ACP remains responsible for the conversational session with the agent. MCP is th
 
 ## What The Tools Enable
 
-The built-in server currently exposes four tools.
+The built-in server currently exposes five tools.
 
 `telegram_channel_info` is a lightweight capability probe. It lets the agent confirm what this Telegram channel integration can currently do.
 
 `telegram_send_attachment` lets the agent deliver a file or image to the current Telegram chat. This is the tool behind flows like “send me the generated screenshot” or “upload the review artifact”.
+
+`telegram_publish_markdown` lets the agent publish long Markdown output to an external Telegraph page and post the resulting URL back to the current Telegram chat. This is the tool behind flows like “share the full report as a readable page”.
 
 `telegram_set_message_reaction` lets the agent add a standard Telegram emoji reaction to a message in the current chat. This is the tool behind lightweight moments such as “acknowledge that briefly” or “react instead of sending a noisy one-line reply”.
 
@@ -91,6 +93,35 @@ telegram_send_attachment(
 ```
 
 If the MIME type resolves to `image/*`, the server sends a Telegram photo. Otherwise it sends a document. In most deployments, `data_base64` is the safer default. The `path` input is intentionally disabled unless {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PATH` is enabled.
+
+(mcp-feature-publishing)=
+## Publish Long Markdown
+
+`telegram_publish_markdown` is the escape hatch for outputs that are too long or too awkward for normal Telegram message splitting. It publishes the Markdown artifact to Telegraph, then sends a compact Telegram message with the resulting URL.
+
+A typical call looks like this:
+
+```text
+telegram_publish_markdown(
+  title="Review report",
+  markdown="# Summary\n\n..."
+)
+```
+
+The first version is intentionally conservative:
+
+- publishing is disabled unless {term}`ACP_TELEGRAM_CHANNEL_ALLOW_PUBLISH` is enabled
+- pages are published through Telegraph
+- the Telegram side effect is only a compact confirmation message plus the URL
+
+Markdown conversion currently preserves a practical subset well:
+
+- headings map to Telegraph headings (`#` and `##` become `h3`, deeper headings become `h4`)
+- paragraphs, bullet lists, ordered lists, block quotes, thematic breaks, links, emphasis, strong emphasis, inline code, and fenced code blocks are preserved
+- unsupported HTML tags are flattened to plain text
+- Markdown tables are not converted into structured Telegraph tables; they fall back to plain text because Telegraph does not support table nodes
+
+Because this publishes content outside Telegram, the trust boundary is different from a normal text reply. Keep the feature disabled unless your agent is allowed to publish externally.
 
 (mcp-feature-reactions)=
 ## React To Messages
