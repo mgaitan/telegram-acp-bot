@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import runpy
 import sys
 from importlib import metadata
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,8 @@ from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE
 
 CUSTOM_STDIO_LIMIT = 12_345
 CUSTOM_CONNECT_TIMEOUT = 42.5
+CONFIG_FILE_STDIO_LIMIT = 1024
+CONFIG_FILE_CONNECT_TIMEOUT = 5.0
 
 
 @pytest.fixture(autouse=True)
@@ -340,3 +344,128 @@ def test_main_activity_mode_short_alias_sets_flag(mocker):
     assert mock_run_polling.call_args is not None
     config = mock_run_polling.call_args.args[0]
     assert config.activity_mode == "verbose"
+
+
+# Config file tests
+
+
+def _write_config(tmp_path: Path, data: dict) -> Path:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(data))
+    return path
+
+
+def test_main_config_file_provides_token_and_agent_command(mocker, monkeypatch, tmp_path):
+    """Config file values are used when env vars and CLI flags are absent."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path, {"telegram": {"bot_token": "CFG_TOKEN"}, "acp": {"agent_command": "cfg_agent"}}
+    )
+    assert main(["--config", str(config_path)]) == 0
+
+
+def test_main_config_file_provides_allowlist(mocker, monkeypatch, tmp_path):
+    """Allowed user IDs from config file satisfy startup validation."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path,
+        {"telegram": {"bot_token": "T", "allowed_user_ids": [42]}, "acp": {"agent_command": "a"}},
+    )
+    assert main(["--config", str(config_path)]) == 0
+
+
+def test_main_env_token_overrides_config_file(mocker, monkeypatch, tmp_path):
+    """TELEGRAM_BOT_TOKEN env var takes precedence over config file."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "ENV_TOKEN")
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(tmp_path, {"telegram": {"bot_token": "CFG_TOKEN"}, "acp": {"agent_command": "a"}})
+    assert main(["--config", str(config_path)]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.token == "ENV_TOKEN"
+
+
+def test_main_cli_token_overrides_config_file(mocker, monkeypatch, tmp_path):
+    """--telegram-token CLI flag takes precedence over config file."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(tmp_path, {"telegram": {"bot_token": "CFG_TOKEN"}, "acp": {"agent_command": "a"}})
+    assert main(["--config", str(config_path), "--telegram-token", "CLI_TOKEN"]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.token == "CLI_TOKEN"
+
+
+def test_main_config_file_activity_mode(mocker, monkeypatch, tmp_path):
+    """activity_mode from config file is applied."""
+    monkeypatch.delenv("ACP_ACTIVITY_MODE", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path,
+        {"telegram": {"bot_token": "T"}, "acp": {"agent_command": "a", "activity_mode": "compact"}},
+    )
+    assert main(["--config", str(config_path)]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.compact_activity is True
+
+
+def test_main_config_file_not_found_error(tmp_path):
+    """--config pointing to a missing file causes a startup error."""
+    with pytest.raises(SystemExit):
+        main(["--config", str(tmp_path / "missing.json"), "--telegram-token", "T", "--agent-command", "a"])
+
+
+def test_main_config_file_invalid_json_error(tmp_path):
+    """--config pointing to a file with invalid JSON causes a startup error."""
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        main(["--config", str(bad), "--telegram-token", "T", "--agent-command", "a"])
+
+
+def test_main_config_file_invalid_value_error(tmp_path):
+    """--config with an invalid value (e.g. bad permission_mode) causes a startup error."""
+    config_path = _write_config(tmp_path, {"acp": {"permission_mode": "not_valid"}})
+    with pytest.raises(SystemExit):
+        main(["--config", str(config_path), "--telegram-token", "T", "--agent-command", "a"])
+
+
+def test_main_config_file_workspace(mocker, monkeypatch, tmp_path):
+    """workspace from config file is passed to make_config."""
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path,
+        {"telegram": {"bot_token": "T"}, "acp": {"agent_command": "a", "workspace": str(tmp_path)}},
+    )
+    assert main(["--config", str(config_path)]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.default_workspace == tmp_path
+
+
+def test_main_config_file_stdio_limit_and_timeout(mocker, monkeypatch, tmp_path):
+    """stdio_limit and connect_timeout from config file are forwarded to the service."""
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    monkeypatch.delenv("ACP_STDIO_LIMIT", raising=False)
+    monkeypatch.delenv("ACP_CONNECT_TIMEOUT", raising=False)
+    mock_service = mocker.patch("telegram_acp_bot.AcpAgentService")
+    mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path,
+        {
+            "telegram": {"bot_token": "T"},
+            "acp": {
+                "agent_command": "a",
+                "stdio_limit": CONFIG_FILE_STDIO_LIMIT,
+                "connect_timeout": CONFIG_FILE_CONNECT_TIMEOUT,
+            },
+        },
+    )
+    assert main(["--config", str(config_path)]) == 0
+    assert mock_service.call_args.kwargs["stdio_limit"] == CONFIG_FILE_STDIO_LIMIT
+    assert mock_service.call_args.kwargs["connect_timeout"] == CONFIG_FILE_CONNECT_TIMEOUT
