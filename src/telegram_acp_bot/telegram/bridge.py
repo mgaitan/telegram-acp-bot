@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -55,6 +57,7 @@ from telegram_acp_bot.scheduled_tasks import (
     ScheduledTaskExecutionError,
     ScheduledTaskStore,
 )
+from telegram_acp_bot.scheduled_tasks.store import parse_utc_timestamp, utc_now
 from telegram_acp_bot.telegram.activity import (
     _ActivityModeHandler,
     _CompactActivityModeHandler,
@@ -79,6 +82,7 @@ from telegram_acp_bot.telegram.constants import (
     RESUME_CALLBACK_PARTS,
     RESUME_CALLBACK_PREFIX,
     RESUME_KEYBOARD_MAX_ROWS,
+    SCHEDULE_COMMAND_USAGE,
     SCHEDULED_CALLBACK_PARTS,
     SCHEDULED_CALLBACK_PREFIX,
     SCHEDULED_KEYBOARD_MAX_ROWS,
@@ -101,6 +105,7 @@ SCHEDULED_CHAT_BUSY_ERROR = "chat is busy"
 SCHEDULED_PROMPT_TRY_LOCK_TIMEOUT_SECONDS = 1e-9
 SCHEDULED_MISSING_ANCHOR_ERROR = "scheduled task is missing an anchor message"
 SCHEDULED_TASK_PREVIEW_MAX_CHARS = 72
+_SCHEDULE_DELAY_RE = re.compile(r"^(\d+)(s|m|h|d)$", re.IGNORECASE)
 
 
 class TelegramBridge:
@@ -148,6 +153,7 @@ class TelegramBridge:
         app.add_handler(CommandHandler("help", self.help))
         app.add_handler(CommandHandler("new", self.new_session))
         app.add_handler(CommandHandler("resume", self.resume_session))
+        app.add_handler(CommandHandler("schedule", self.schedule_prompt))
         app.add_handler(CommandHandler("scheduled", self.scheduled))
         app.add_handler(CommandHandler("mode", self.mode))
         app.add_handler(CommandHandler("session", self.session))
@@ -178,7 +184,8 @@ class TelegramBridge:
             return
         await self._reply(
             update,
-            "Commands: /new [workspace], /resume [N|workspace], /scheduled, /mode [normal|compact|verbose], "
+            "Commands: /new [workspace], /resume [N|workspace], /schedule <time> <prompt>, /scheduled, "
+            "/mode [normal|compact|verbose], "
             "/session, /cancel, /stop, /clear, /restart [N [workspace]], /help",
         )
 
@@ -300,6 +307,84 @@ class TelegramBridge:
         if update.message is None:
             return
         await update.message.reply_text(text, reply_markup=keyboard)
+
+    async def schedule_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle `/schedule <time> <prompt>` to queue a deferred agent prompt directly."""
+        if not await self._require_access(update):
+            return
+        if self._scheduled_task_store is None:
+            await self._reply(update, "Scheduled tasks are unavailable.")
+            return
+
+        chat_id = self._chat_id(update)
+        args = self._context_args(context)
+
+        if not args:
+            await self._reply(update, SCHEDULE_COMMAND_USAGE)
+            return
+
+        time_spec, *rest = args
+        prompt_text = " ".join(rest).strip()
+        if not prompt_text:
+            await self._reply(update, SCHEDULE_COMMAND_USAGE)
+            return
+
+        run_at = TelegramBridge._parse_schedule_time(time_spec)
+        if run_at is None:
+            await self._reply(update, SCHEDULE_COMMAND_USAGE)
+            return
+
+        message = update.message
+        anchor_message_id = message.message_id if message is not None else None
+
+        session_context = self._active_session_context(chat_id=chat_id)
+        session_id = None if session_context is None else session_context[0]
+
+        try:
+            task = await asyncio.to_thread(
+                self._scheduled_task_store.create_task,
+                chat_id=chat_id,
+                session_id=session_id,
+                anchor_message_id=anchor_message_id,
+                mode="prompt_agent",
+                prompt_text=prompt_text,
+                run_at=run_at,
+            )
+        except Exception:
+            logger.exception("Failed to create scheduled task for chat %s", chat_id)
+            await self._reply(update, "Could not save scheduled task.")
+            return
+
+        timestamp = task.run_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+        await self._reply(update, f"Scheduled for {timestamp}. Use /scheduled to view or cancel.")
+
+    @staticmethod
+    def _parse_schedule_time(spec: str) -> datetime | None:
+        """Parse a time spec like `30s`, `10m`, `2h`, `1d` or an ISO timestamp.
+
+        Returns a timezone-aware UTC datetime, or `None` when the spec is
+        not recognised. See also `{py:class}~telegram_acp_bot.scheduled_tasks.store.ScheduledTaskStore`.
+        """
+        match = _SCHEDULE_DELAY_RE.match(spec.strip())
+        if match is not None:
+            value = int(match.group(1))
+            unit = match.group(2).lower()
+            match unit:
+                case "s":
+                    delta = timedelta(seconds=value)
+                case "m":
+                    delta = timedelta(minutes=value)
+                case "h":
+                    delta = timedelta(hours=value)
+                case "d":
+                    delta = timedelta(days=value)
+                case _:  # pragma: no cover
+                    return None
+            return utc_now() + delta
+        try:
+            return parse_utc_timestamp(spec)
+        except ValueError:
+            return None
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context

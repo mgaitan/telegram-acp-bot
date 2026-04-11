@@ -23,6 +23,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "Start or resume in the default workspace"),
     ("new", "Create a new agent session [workspace]"),
     ("resume", "Resume a previous session [N|workspace]"),
+    ("schedule", "Schedule a prompt for later [time prompt]"),
     ("scheduled", "List and cancel scheduled follow-ups"),
     ("mode", "Show or set activity mode [normal|compact|verbose]"),
     ("session", "Show the active session workspace"),
@@ -31,6 +32,14 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("clear", "Clear the current session"),
     ("restart", "Restart the bot [N [workspace]]"),
     ("help", "Show available commands"),
+)
+SCHEDULE_COMMAND_USAGE = (
+    "Usage: `/schedule <time> <prompt>`\n\n"
+    "Examples:\n"
+    "  `/schedule 30m Check for new PRs`\n"
+    "  `/schedule 2h Review the build logs`\n"
+    "  `/schedule 1d Send a weekly report`\n\n"
+    "Time formats: `30s`, `10m`, `2h`, `1d`, or ISO timestamp `2026-04-11T10:00:00+00:00`"
 )
 KIND_LABELS = {
     "think": "💡 Thinking",

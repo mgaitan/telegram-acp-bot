@@ -126,7 +126,35 @@ The queued notice is updated to `✅ Sent.` so chat state matches what happened.
 
 If the current task finishes naturally before you press the button, your queued message runs automatically and the button is removed (pressing it after that shows "Already sent." with no side effects).
 
-## 8. Inspect and cancel scheduled follow-ups
+## 8. Schedule a prompt directly
+
+You can schedule a deferred agent prompt without going through the agent, using `/schedule`. This is useful when the model rejects your request due to quota limits or when you want to queue work for later without starting an agent session first.
+
+```text
+/schedule <time> <prompt text>
+```
+
+Supported time formats:
+
+- `30s` — 30 seconds from now
+- `10m` — 10 minutes from now
+- `2h` — 2 hours from now
+- `1d` — 1 day from now
+- ISO timestamp with timezone, e.g. `2026-04-11T10:00:00+00:00`
+
+Example:
+
+```text
+/schedule 30m Check for new review comments on the open PR
+/schedule 2h Generate the weekly summary report
+/schedule 2026-04-12T09:00:00+00:00 Send the daily standup report
+```
+
+The bot replies with the scheduled execution time. When the time arrives, the stored prompt is sent to the agent and the reply is posted back to the chat as a reply to your `/schedule` message.
+
+If no active session exists when the scheduled time arrives, the bot will report that the task could not be run automatically.
+
+## 9. Inspect and cancel scheduled follow-ups
 
 When the agent schedules a deferred follow-up, you can inspect the pending work directly from Telegram:
 
@@ -154,7 +182,7 @@ From there you can tap **Cancel 1**, **Cancel 2**, and so on, or use **Cancel al
 
 For this first version, cancellation is intentionally limited to tasks that are still `pending`. Tasks that are already `running` are visible for inspection, but they are not turned into interruptible jobs by this command.
 
-## 9. Restart bot process (dev workflow)
+## 10. Restart bot process (dev workflow)
 
 ```text
 /restart

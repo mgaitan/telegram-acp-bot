@@ -29,6 +29,8 @@ Recurring schedules and automatic session rehydration are intentionally out of s
 
 The bot does, however, provide a small management surface for already-scheduled work. The `/scheduled` command shows the pending and running follow-ups for the current chat, and pending items can be cancelled from inline buttons without typing task ids by hand.
 
+Users can also schedule prompts directly via the `/schedule` slash command, without going through the agent at all. This is especially useful when the model rejects a request due to quota limits or when immediate execution is not possible.
+
 (deferred-followups-ux)=
 ## How The UX Works
 
@@ -71,6 +73,29 @@ Absolute scheduling is still supported through `run_at`, which must be an ISO ti
 `prompt_agent` only runs if the chat has an active ACP session when the scheduled time arrives. The implementation intentionally reuses the chat’s current live session rather than trying to resurrect one invisibly. That makes failures easier to understand and avoids hidden magic.
 
 If there is no active session, the task fails visibly by replying to the anchor message with an explanation such as `Could not run automatically: no active session.` The same principle applies to delivery errors: the user should see a plain explanation in the thread rather than having the task disappear silently.
+
+## Scheduling Directly Via Slash Command
+
+In addition to the agent-driven path, users can schedule a `prompt_agent` task directly from the chat without involving the agent at all. This is useful when the model rejects a prompt due to quota limits or when immediate execution is not possible.
+
+```text
+/schedule <time> <prompt text>
+```
+
+Supported time formats are: `30s`, `10m`, `2h`, `1d`, or an ISO timestamp with an explicit timezone offset such as `2026-04-11T10:00:00+00:00`.
+
+Example interaction:
+
+```text
+User: /schedule 30m Check for new review comments on the open PR
+Bot: Scheduled for 2026-04-11 10:30 UTC. Use /scheduled to view or cancel.
+
+... 30 minutes later ...
+
+Bot (replying to that command): There are 3 new comments on the PR.
+```
+
+The `/schedule` command sets the command message itself as the anchor, so the scheduled reply will appear directly in that thread. Session behavior and failure reporting follow the same rules as agent-driven scheduling.
 
 ## Inspecting And Cancelling Scheduled Work
 
