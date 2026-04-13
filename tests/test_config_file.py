@@ -29,6 +29,7 @@ def test_load_full_config(tmp_path: Path) -> None:
             "bot_token": "123:abc",
             "allowed_user_ids": [1, 2],
             "allowed_usernames": ["alice", "@bob"],
+            "schedule_languages": ["en", "es"],
         },
         "acp": {
             "agent_command": "npx codex",
@@ -93,6 +94,11 @@ def test_telegram_allowed_user_ids_rejects_booleans(tmp_path: Path) -> None:
 def test_telegram_allowed_usernames_not_list_of_strings(tmp_path: Path) -> None:
     with pytest.raises(ConfigFileError, match=r"'telegram\.allowed_usernames' must be a list of strings"):
         load_config_file(write_config(tmp_path, {"telegram": {"allowed_usernames": [1, 2]}}))
+
+
+def test_telegram_schedule_languages_not_list_of_strings(tmp_path: Path) -> None:
+    with pytest.raises(ConfigFileError, match=r"'telegram\.schedule_languages' must be a list of strings"):
+        load_config_file(write_config(tmp_path, {"telegram": {"schedule_languages": [1, 2]}}))
 
 
 def test_acp_not_object(tmp_path: Path) -> None:

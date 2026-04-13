@@ -36,6 +36,7 @@ from telegram_acp_bot.telegram.bot import RESTART_EXIT_CODE, BotConfig, Telegram
 
 ALLOWED_USER_IDS_ENV = "TELEGRAM_ALLOWED_USER_IDS"
 ALLOWED_USERNAMES_ENV = "TELEGRAM_ALLOWED_USERNAMES"
+SCHEDULE_LANGUAGES_ENV = "ACP_SCHEDULE_LANGUAGES"
 
 
 def get_version() -> str:
@@ -58,8 +59,9 @@ def get_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Path to a JSON config file. Values are overridden by environment variables"
-            " and CLI flags. See docs for the full schema."
+            "Path to a JSON config file. If not provided, the bot will automatically "
+            "look for config files in standard locations. Values are overridden by "
+            "environment variables and CLI flags. See docs for the full schema."
         ),
     )
     parser.add_argument("--telegram-token", default=os.getenv("TELEGRAM_BOT_TOKEN", ""), help="Telegram bot token")
@@ -85,6 +87,14 @@ def get_parser() -> argparse.ArgumentParser:
         "--workspace",
         default=os.getcwd(),
         help="Default workspace path for /new when path is not provided.",
+    )
+    parser.add_argument(
+        "--schedule-language",
+        action="append",
+        default=[],
+        help=(
+            "Language code accepted by natural-language /schedule parsing. Can be repeated; defaults to 'en' and 'es'."
+        ),
     )
     parser.add_argument(
         "--permission-mode",
@@ -278,6 +288,28 @@ def _resolve_allowed_users(
     return allowed_user_ids, allowed_usernames
 
 
+def _resolve_schedule_languages(
+    *,
+    opts: argparse.Namespace,
+    config_data: dict[str, Any] | None = None,
+) -> list[str]:
+    cli_languages = [language.strip() for language in opts.schedule_language if language.strip()]
+    if cli_languages:
+        return [language.lower() for language in cli_languages]
+
+    env_languages = _parse_csv(os.getenv(SCHEDULE_LANGUAGES_ENV, ""))
+    if env_languages:
+        return [language.lower() for language in env_languages]
+
+    if config_data:
+        telegram_cfg = config_data.get("telegram", {})
+        configured = telegram_cfg.get("schedule_languages", [])
+        if configured:
+            return [str(language).strip().lower() for language in configured if str(language).strip()]
+
+    return ["en", "es"]
+
+
 def _run_bot_loop(
     config: BotConfig,
     bridge: TelegramBridge,
@@ -306,6 +338,53 @@ def _run_bot_loop(
             return 1
 
 
+def _find_config_file() -> Path | None:
+    """Find a config file from standard locations.
+
+    Returns the first readable config file from:
+    1. ./.telegram_acp_bot/config.json
+    2. $XDG_CONFIG_HOME/telegram_acp_bot/config.json
+       (or ~/.config/telegram_acp_bot/config.json when XDG_CONFIG_HOME is unset)
+    3. ~/.telegram_acp_bot/config.json
+
+    Returns None if no config file is found.
+    """
+    xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+    candidates = [
+        Path(".telegram_acp_bot/config.json"),
+        xdg_config_home / "telegram_acp_bot" / "config.json",
+        Path("~/.telegram_acp_bot/config.json").expanduser(),
+    ]
+
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_preparsed_config(
+    parser: argparse.ArgumentParser,
+    config_arg: str | None,
+) -> dict[str, Any]:
+    """Load config-file defaults selected during pre-parsing."""
+    if config_arg is not None:
+        if not config_arg.strip():
+            parser.error("--config must not be empty or whitespace")
+        config_path = Path(config_arg).expanduser()
+    else:
+        config_path = _find_config_file()
+
+    if config_path is None:
+        return {}
+
+    try:
+        config_data = load_config_file(config_path)
+    except ConfigFileError as exc:
+        parser.error(str(exc))
+    _apply_config_file_defaults(parser, config_data)
+    return config_data
+
+
 def main(args: list[str] | None = None) -> int:
     """Run the main program.
 
@@ -321,14 +400,7 @@ def main(args: list[str] | None = None) -> int:
     # Pre-parse to extract --config before full argument resolution
     pre_opts, _ = parser.parse_known_args(args=argv)
 
-    config_data: dict[str, Any] = {}
-    if pre_opts.config:
-        config_path = Path(pre_opts.config).expanduser()
-        try:
-            config_data = load_config_file(config_path)
-        except ConfigFileError as exc:
-            parser.error(str(exc))
-        _apply_config_file_defaults(parser, config_data)
+    config_data = _load_preparsed_config(parser, pre_opts.config)
 
     # Full parse: catches unknown/invalid flags for both the main command and subcommands.
     opts = parser.parse_args(args=argv)
@@ -353,6 +425,7 @@ def main(args: list[str] | None = None) -> int:
     if opts.acp_connect_timeout <= 0:
         parser.error("--acp-connect-timeout must be a positive number")
     allowed_user_ids, allowed_usernames = _resolve_allowed_users(parser=parser, opts=opts, config_data=config_data)
+    schedule_languages = _resolve_schedule_languages(opts=opts, config_data=config_data)
 
     command_parts = shlex.split(opts.agent_command)
     if not command_parts:
@@ -373,6 +446,7 @@ def main(args: list[str] | None = None) -> int:
         allowed_usernames=allowed_usernames,
         workspace=opts.workspace,
         activity_mode=cast(ActivityMode, opts.activity_mode),
+        schedule_languages=schedule_languages,
     )
     service = AcpAgentService(
         SessionRegistry(),

@@ -307,6 +307,7 @@ def test_main_activity_mode_defaults_to_normal(mocker):
     config = mock_run_polling.call_args.args[0]
     assert config.activity_mode == "normal"
     assert config.compact_activity is False
+    assert config.schedule_languages == ("en", "es")
 
 
 def test_main_compact_activity_mode_sets_flag(mocker):
@@ -412,6 +413,60 @@ def test_main_config_file_activity_mode(mocker, monkeypatch, tmp_path):
     assert main(["--config", str(config_path)]) == 0
     config = mock_run_polling.call_args.args[0]
     assert config.compact_activity is True
+
+
+def test_main_schedule_languages_from_env(mocker, monkeypatch):
+    """ACP_SCHEDULE_LANGUAGES env var configures natural-language schedule parsing."""
+    monkeypatch.setenv("ACP_SCHEDULE_LANGUAGES", "es,en")
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert main(["--telegram-token", "TOKEN", "--agent-command", "agent"]) == 0
+
+    config = mock_run_polling.call_args.args[0]
+    assert config.schedule_languages == ("es", "en")
+
+
+def test_main_schedule_languages_from_config_file(mocker, monkeypatch, tmp_path):
+    """schedule_languages from config file are applied when env and CLI are absent."""
+    monkeypatch.delenv("ACP_SCHEDULE_LANGUAGES", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_path = _write_config(
+        tmp_path,
+        {
+            "telegram": {"bot_token": "T", "schedule_languages": ["es"]},
+            "acp": {"agent_command": "a"},
+        },
+    )
+
+    assert main(["--config", str(config_path)]) == 0
+
+    config = mock_run_polling.call_args.args[0]
+    assert config.schedule_languages == ("es",)
+
+
+def test_main_schedule_languages_cli_override_env(mocker, monkeypatch):
+    """CLI schedule languages override ACP_SCHEDULE_LANGUAGES."""
+    monkeypatch.setenv("ACP_SCHEDULE_LANGUAGES", "es")
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    assert (
+        main(
+            [
+                "--telegram-token",
+                "TOKEN",
+                "--agent-command",
+                "agent",
+                "--schedule-language",
+                "en",
+                "--schedule-language",
+                "pt",
+            ]
+        )
+        == 0
+    )
+
+    config = mock_run_polling.call_args.args[0]
+    assert config.schedule_languages == ("en", "pt")
 
 
 def test_main_config_file_not_found_error(tmp_path):
@@ -544,3 +599,69 @@ def test_register_commands_subcommand_uses_config_file(mocker, monkeypatch, tmp_
     assert mock_register.call_count == 1
     assert mock_register.call_args is not None
     assert mock_register.call_args.args[0].telegram_token == "CFG_TOKEN"
+
+
+def test_main_auto_discovers_config_file(mocker, monkeypatch, tmp_path):
+    """Config file is automatically discovered from standard locations."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    # Create config in one of the standard locations
+    config_dir = tmp_path / ".telegram_acp_bot"
+    config_dir.mkdir()
+    config_path = config_dir / "config.json"
+    config_path.write_text('{"telegram": {"bot_token": "AUTO_TOKEN"}, "acp": {"agent_command": "auto_agent"}}')
+
+    monkeypatch.chdir(tmp_path)
+
+    assert main([]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.token == "AUTO_TOKEN"
+
+
+def test_main_explicit_config_overrides_auto_discovery(mocker, monkeypatch, tmp_path):
+    """Explicit --config path takes precedence over auto-discovered files."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+
+    # Create config in standard location
+    config_dir = tmp_path / ".telegram_acp_bot"
+    config_dir.mkdir()
+    auto_config = config_dir / "config.json"
+    auto_config.write_text('{"telegram": {"bot_token": "AUTO_TOKEN"}, "acp": {"agent_command": "auto_agent"}}')
+
+    # Create explicit config with different values
+    explicit_config = tmp_path / "explicit.json"
+    explicit_config.write_text(
+        '{"telegram": {"bot_token": "EXPLICIT_TOKEN"}, "acp": {"agent_command": "explicit_agent"}}'
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--config", str(explicit_config)]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.token == "EXPLICIT_TOKEN"
+
+
+def test_main_auto_discovers_config_from_xdg_config_home(mocker, monkeypatch, tmp_path):
+    """Automatic discovery respects XDG_CONFIG_HOME before the legacy home path."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ACP_AGENT_COMMAND", raising=False)
+    mock_run_polling = mocker.patch("telegram_acp_bot.run_polling", return_value=0)
+    config_dir = tmp_path / "xdg" / "telegram_acp_bot"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.json"
+    config_path.write_text('{"telegram": {"bot_token": "XDG_TOKEN"}, "acp": {"agent_command": "xdg_agent"}}')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert main([]) == 0
+    config = mock_run_polling.call_args.args[0]
+    assert config.token == "XDG_TOKEN"
+
+
+def test_main_rejects_blank_explicit_config_path():
+    """Blank explicit --config values fail instead of falling back to discovery."""
+    with pytest.raises(SystemExit, match="2"):
+        main(["--config", "   "])
