@@ -110,6 +110,12 @@ The available modes are:
 - `compact`: one in-progress status message that becomes the final answer.
 - `verbose`: in-place append-only streaming for reply text and active tool output.
 
+### Markdown replies
+
+Agent replies are rendered with Telegram entities where possible. Web links remain tappable, while local file links emitted
+by coding agents, such as `[activity.py](/home/user/project/activity.py:109)`, are shown as readable text because Telegram
+rejects local-path URLs. Inline code, emphasis, headings, and lists still render using Telegram formatting.
+
 (how-to-busy-queue)=
 ## 7. Busy-state handling
 

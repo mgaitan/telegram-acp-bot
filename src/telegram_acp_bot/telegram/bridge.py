@@ -107,6 +107,7 @@ SCHEDULED_PROMPT_TRY_LOCK_TIMEOUT_SECONDS = 1e-9
 SCHEDULED_MISSING_ANCHOR_ERROR = "scheduled task is missing an anchor message"
 SCHEDULED_TASK_PREVIEW_MAX_CHARS = 72
 SCHEDULE_COMMAND_MIN_ARGS = 2
+TELEGRAM_TEXT_LINK_SCHEMES = frozenset({"http", "https", "tg"})
 _SCHEDULE_DELAY_RE = re.compile(r"^(\d+)(s|m|h|d)$", re.IGNORECASE)
 
 
@@ -1606,6 +1607,26 @@ class TelegramBridge:
         )
 
     @staticmethod
+    def _is_safe_text_link_url(url: str | None) -> bool:
+        if not url:
+            return False
+        parsed = urlparse(url)
+        if parsed.scheme not in TELEGRAM_TEXT_LINK_SCHEMES:
+            return False
+        if parsed.scheme in {"http", "https"}:
+            return bool(parsed.netloc)
+        return bool(parsed.netloc or parsed.path)
+
+    @staticmethod
+    def _to_safe_telegram_entities(entities: list[MarkdownMessageEntity]) -> list[MessageEntity]:
+        rendered_entities: list[MessageEntity] = []
+        for entity in entities:
+            if entity.type == MessageEntity.TEXT_LINK and not TelegramBridge._is_safe_text_link_url(entity.url):
+                continue
+            rendered_entities.append(TelegramBridge._to_telegram_entity(entity))
+        return rendered_entities
+
+    @staticmethod
     async def _reply_activity_block(
         update: Update, block: AgentActivityBlock, *, workspace: Path | None = None
     ) -> None:
@@ -1851,9 +1872,11 @@ class TelegramBridge:
         rendered_chunks: list[tuple[str, list[MessageEntity] | None]] = []
         for chunk_text, chunk_entities in chunks:
             if chunk_entities:
-                rendered_chunks.append(
-                    (chunk_text, [TelegramBridge._to_telegram_entity(entity) for entity in chunk_entities])
-                )
+                telegram_entities = TelegramBridge._to_safe_telegram_entities(chunk_entities)
+                if telegram_entities:
+                    rendered_chunks.append((chunk_text, telegram_entities))
+                    continue
+                rendered_chunks.append((chunk_text, None))
                 continue
             rendered_chunks.append((chunk_text, None))
         return rendered_chunks
