@@ -1863,6 +1863,48 @@ async def test_reply_agent_uses_entities_split_flow(monkeypatch: pytest.MonkeyPa
     assert update.message.reply_kwargs[1] == {}
 
 
+async def test_render_markdown_chunks_drops_local_file_link_entity_but_keeps_other_formatting():
+    text = "## Findings\n- [activity.py](/home/user/project/activity.py:109): `foo_bar` **bad**\n"
+
+    chunks = TelegramBridge._render_markdown_chunks(text)
+
+    assert len(chunks) == 1
+    rendered_text, entities = chunks[0]
+    assert "[activity.py]" not in rendered_text
+    assert "](/home/user/project/activity.py:109)" not in rendered_text
+    assert "`" not in rendered_text
+    assert "activity.py" in rendered_text
+    assert "foo_bar" in rendered_text
+    assert entities is not None
+    entity_types = {entity.type for entity in entities}
+    assert MessageEntity.TEXT_LINK not in entity_types
+    assert MessageEntity.CODE in entity_types
+    assert MessageEntity.BOLD in entity_types
+
+
+async def test_render_markdown_chunks_keeps_web_text_link_entity():
+    chunks = TelegramBridge._render_markdown_chunks("[docs](https://example.com/docs)")
+
+    _, entities = chunks[0]
+    assert entities is not None
+    assert any(
+        entity.type == MessageEntity.TEXT_LINK and entity.url == "https://example.com/docs" for entity in entities
+    )
+
+
+async def test_render_markdown_chunks_drops_unsafe_link_entity_when_it_is_the_only_entity():
+    chunks = TelegramBridge._render_markdown_chunks("[file](/tmp/file.py)")
+
+    rendered_text, entities = chunks[0]
+    assert rendered_text == "file"
+    assert entities is None
+
+
+async def test_is_safe_text_link_url_allows_telegram_deep_links_and_rejects_empty_urls():
+    assert TelegramBridge._is_safe_text_link_url("tg://resolve?domain=telegram") is True
+    assert TelegramBridge._is_safe_text_link_url(None) is False
+
+
 async def test_reply_agent_falls_back_to_plain_text_on_convert_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
