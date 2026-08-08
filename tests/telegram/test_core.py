@@ -61,6 +61,55 @@ async def test_mode_command_rejects_invalid_mode():
     bridge = make_bridge()
     update = make_update(with_message=True)
 
+    await bridge.mode(update, make_context(args=["invalid"]))
+
+    assert update.message is not None
+    assert update.message.replies == ["Usage: /mode normal, compact, or verbose"]
+
+
+async def test_on_commands_event_updates_bot_commands(mocker):
+    bridge = make_bridge()
+    mock_bot = mocker.AsyncMock()
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("goal", "Run long task")])
+
+    mock_bot.set_my_commands.assert_awaited_once()
+    cmds = mock_bot.set_my_commands.call_args[0][0]
+    cmd_names = [c.command for c in cmds]
+    assert "goal" in cmd_names
+    assert "start" in cmd_names
+
+    # Test early return when commands subset already registered
+    mock_bot.set_my_commands.reset_mock()
+    await bridge.on_commands_event(TEST_CHAT_ID, [("goal", "Run long task")])
+    mock_bot.set_my_commands.assert_not_called()
+
+
+async def test_on_commands_event_ignored_when_propagate_disabled(mocker):
+    config = make_config(token="T", allowed_user_ids=[], workspace="/tmp/base", propagate_commands=False)
+    bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+    mock_bot = mocker.AsyncMock()
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("goal", "Run long task")])
+
+    mock_bot.set_my_commands.assert_not_called()
+
+
+async def test_on_commands_event_handles_exception(mocker):
+    bridge = make_bridge()
+    mock_bot = mocker.AsyncMock()
+    mock_bot.set_my_commands.side_effect = Exception("API error")
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("fail", "Fail desc")])
+
+    mock_bot.set_my_commands.assert_awaited_once()
+
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+
     await bridge.mode(update, make_context(args=["loud"]))
 
     assert update.message is not None

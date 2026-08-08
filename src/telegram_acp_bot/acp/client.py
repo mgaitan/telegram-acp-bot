@@ -11,6 +11,7 @@ from acp import RequestError
 from acp.schema import (
     AgentMessageChunk,
     AudioContentBlock,
+    AvailableCommandsUpdate,
     BlobResourceContents,
     CreateTerminalResponse,
     EmbeddedResourceContentBlock,
@@ -62,10 +63,13 @@ class _AcpClient:
         permission_decider: Callable[[str, list[PermissionOption], ToolCall], Awaitable[RequestPermissionResponse]],
         event_reporter: Callable[[str, str], None] | None = None,
         activity_reporter: Callable[[str, AgentActivityBlock], Awaitable[None]] | None = None,
+        commands_handler: Callable[[str, list[tuple[str, str]]], Awaitable[None]] | None = None,
     ) -> None:
         self._permission_decider = permission_decider
         self._event_reporter = event_reporter
         self._activity_reporter = activity_reporter
+        self._commands_handler = commands_handler
+
         self._buffers: dict[str, list[str]] = {}
         self._pending_non_tool_text: dict[str, list[str]] = {}
         self._pending_non_tool_state: dict[str, _PendingTextState] = {}
@@ -143,6 +147,11 @@ class _AcpClient:
                 if active_block.tool_call_id != update.tool_call_id:
                     return
                 await self._close_active_tool_block(session_id=session_id, status=status)
+            return
+        if isinstance(update, AvailableCommandsUpdate):
+            commands = [(cmd.name, cmd.description or cmd.name) for cmd in update.available_commands]
+            if self._commands_handler:
+                await self._commands_handler(session_id, commands)
             return
         if not isinstance(update, AgentMessageChunk):
             return
@@ -371,7 +380,7 @@ class _AcpClient:
         del path, session_id, limit, line, kwargs
         raise RequestError.method_not_found("fs/read_text_file")
 
-    async def create_terminal(  # noqa: PLR0913
+    async def create_terminal(  # noqa: PLR0913,PLR0917
         self,
         command: str,
         session_id: str,

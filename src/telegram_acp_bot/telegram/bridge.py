@@ -17,6 +17,7 @@ from uuid import uuid4
 import dateparser
 from telegram import (
     Bot,
+    BotCommand,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -69,6 +70,7 @@ from telegram_acp_bot.telegram.config import BotConfig
 from telegram_acp_bot.telegram.constants import (
     ACTIVITY_MODE_CHOICES,
     ACTIVITY_MODE_HELP,
+    BOT_COMMANDS,
     BUSY_CALLBACK_PARTS,
     BUSY_CALLBACK_PREFIX,
     BUSY_QUEUED_TEXT,
@@ -148,6 +150,34 @@ class TelegramBridge:
             self._agent_service.set_permission_request_handler(self.on_permission_request)
         if hasattr(self._agent_service, "set_activity_event_handler"):
             self._agent_service.set_activity_event_handler(self.on_activity_event)
+        if hasattr(self._agent_service, "set_commands_event_handler"):
+            self._agent_service.set_commands_event_handler(self.on_commands_event)
+        self._known_acp_commands: set[tuple[str, str]] = set()
+
+    async def on_commands_event(self, chat_id: int, commands: list[tuple[str, str]]) -> None:
+        del chat_id
+        if not self._config.propagate_commands or not self._app:
+            return
+        new_cmds = set(commands)
+        if new_cmds.issubset(self._known_acp_commands):
+            return
+
+        self._known_acp_commands.update(new_cmds)
+
+        # Build superset of commands: built-in BOT_COMMANDS + dynamic ACP commands
+        all_cmds: list[tuple[str, str]] = list(BOT_COMMANDS)
+        for name, desc in sorted(self._known_acp_commands):
+            safe_name = name.lower().replace("-", "_")
+            if not any(cmd[0] == safe_name for cmd in BOT_COMMANDS):
+                all_cmds.append((safe_name, desc))
+
+        try:
+            bot_cmds = [BotCommand(command=name, description=desc[:256]) for name, desc in all_cmds]
+            logger.info("Updating Telegram bot commands superset: %s", [cmd.command for cmd in bot_cmds])
+            await self._app.bot.set_my_commands(bot_cmds)
+            logger.info("Successfully updated Telegram bot commands superset with %d commands", len(bot_cmds))
+        except Exception:
+            logger.exception("Failed to update Telegram bot commands superset")
 
     def install(self, app: Application) -> None:
         self._app = app
@@ -167,9 +197,7 @@ class TelegramBridge:
         app.add_handler(CallbackQueryHandler(self.on_resume_callback, pattern=r"^resume\|"))
         app.add_handler(CallbackQueryHandler(self.on_scheduled_callback, pattern=r"^scheduled\|"))
         app.add_handler(CallbackQueryHandler(self.on_busy_callback, pattern=r"^busy\|"))
-        app.add_handler(
-            MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, self.on_message)
-        )
+        app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.Document.ALL), self.on_message))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
