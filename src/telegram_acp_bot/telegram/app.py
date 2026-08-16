@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import AIORateLimiter, Application
 
 from telegram_acp_bot.scheduled_tasks.scheduler import ScheduledTaskScheduler
 from telegram_acp_bot.telegram.bridge import TelegramBridge
 from telegram_acp_bot.telegram.config import BotConfig
-from telegram_acp_bot.telegram.constants import RESTART_EXIT_CODE
+from telegram_acp_bot.telegram.constants import BOT_COMMANDS, RESTART_EXIT_CODE
 
 
 def build_application(
@@ -21,9 +21,15 @@ def build_application(
 ) -> Application:
     # Permission prompts are awaited inside message handlers, so callback queries
     # must be processed concurrently to avoid deadlocking the update loop.
-    builder = Application.builder().token(config.token).rate_limiter(AIORateLimiter()).concurrent_updates(True)
+    builder = (
+        Application.builder()
+        .token(config.token)
+        .rate_limiter(AIORateLimiter())
+        .concurrent_updates(True)
+        .post_init(_post_init_factory(scheduler, bridge))
+    )
     if scheduler is not None:
-        builder = builder.post_init(_post_init_factory(scheduler)).post_shutdown(_post_shutdown_factory(scheduler))
+        builder = builder.post_shutdown(_post_shutdown_factory(scheduler))
     app = builder.build()
     bridge.install(app)
     return app
@@ -44,9 +50,16 @@ def run_polling(
     return 0
 
 
-def _post_init_factory(scheduler: ScheduledTaskScheduler) -> Callable[[Application], Coroutine[Any, Any, None]]:
-    async def _post_init(_: Application) -> None:
-        await scheduler.start()
+def _post_init_factory(
+    scheduler: ScheduledTaskScheduler | None,
+    bridge: TelegramBridge | None = None,
+) -> Callable[[Application], Coroutine[Any, Any, None]]:
+    async def _post_init(app: Application) -> None:
+        if scheduler is not None:
+            await scheduler.start()
+        if bridge is not None and bridge._config.propagate_commands:
+            bot_cmds = [BotCommand(command=name, description=desc[:256]) for name, desc in BOT_COMMANDS]
+            await app.bot.set_my_commands(bot_cmds)
 
     return _post_init
 

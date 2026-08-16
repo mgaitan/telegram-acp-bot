@@ -1140,15 +1140,41 @@ async def test_forward_activity_event_routes_to_matching_chat(tmp_path: Path):
     await service.new_session(chat_id=7, workspace=tmp_path)
 
     block = AgentActivityBlock(kind="think", title="t", status="completed", text="x")
-    await service._forward_activity_event("activity-session", block)
+    await service._forward_activity_event(7, "activity-session", block)
     assert received == []
 
     service.set_activity_event_handler(capture)
-    await service._forward_activity_event("unknown-session", block)
+    await service._forward_activity_event(7, "unknown-session", block)
+    assert received == [(7, block)]
+
+
+async def test_forward_commands_event_routes_to_matching_chat(tmp_path: Path):
+    process = FakeProcess()
+    connection = FakeConnection(session_id="activity-session")
+    received: list[tuple[int, list[tuple[str, str]]]] = []
+
+    async def fake_spawn(program: str, *args: str, **kwargs):
+        del program, args, kwargs
+        return process
+
+    def fake_connect(client, input_stream, output_stream):
+        del input_stream, output_stream
+        connection.client = client
+        return connection
+
+    async def capture(chat_id: int, cmds: list[tuple[str, str]]) -> None:
+        received.append((chat_id, cmds))
+
+    service = AcpAgentService(SessionRegistry(), program="agent", args=[], spawner=fake_spawn, connector=fake_connect)
+    await service.new_session(chat_id=7, workspace=tmp_path)
+
+    commands = [("test", "desc")]
+    await service._forward_commands_event(7, "activity-session", commands)
     assert received == []
 
-    await service._forward_activity_event("activity-session", block)
-    assert received == [(7, block)]
+    service.set_commands_event_handler(capture)
+    await service._forward_commands_event(7, "unknown-session", commands)
+    assert received == [(7, commands)]
 
 
 async def test_new_session_replaces_previous_and_shuts_down(tmp_path: Path, monkeypatch):

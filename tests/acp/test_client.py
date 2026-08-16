@@ -695,3 +695,23 @@ async def test_acp_client_unsupported_ext_methods_raise():
         await client.ext_method("x", {})
     with pytest.raises(RequestError):
         await client.ext_notification("x", {})
+
+
+async def test_acp_client_available_commands_update():
+    received: list[tuple[str, list[tuple[str, str]]]] = []
+
+    async def commands_handler(session_id: str, commands: list[tuple[str, str]]) -> None:
+        received.append((session_id, commands))
+
+    client = _AcpClient(
+        permission_decider=make_client()._permission_decider,
+        commands_handler=commands_handler,
+    )
+    from acp.schema import AvailableCommand, AvailableCommandsUpdate  # noqa: PLC0415
+
+    update = AvailableCommandsUpdate(
+        session_update="available_commands_update",
+        available_commands=[AvailableCommand(name="goal", description="Run goal")],
+    )
+    await client.session_update("s1", update)
+    assert received == [("s1", [("goal", "Run goal")])]

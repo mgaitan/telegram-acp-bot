@@ -958,7 +958,7 @@ async def test_run_polling_uses_scheduler_when_provided(monkeypatch: pytest.Monk
     assert len(calls) == 1
 
 
-async def test_build_application_registers_scheduler_hooks():
+async def test_build_application_registers_scheduler_hooks(mocker):
     bridge = TelegramBridge(
         config=make_config(token="TOKEN", allowed_user_ids=[], workspace="."),
         agent_service=cast(AgentService, ScheduledPromptService()),
@@ -969,12 +969,14 @@ async def test_build_application_registers_scheduler_hooks():
         bridge,
         scheduler=cast(app_module.ScheduledTaskScheduler, scheduler),
     )
+    app.bot = mocker.AsyncMock()
 
-    await app_module._post_init_factory(cast(app_module.ScheduledTaskScheduler, scheduler))(app)
+    await app_module._post_init_factory(cast(app_module.ScheduledTaskScheduler, scheduler), bridge)(app)
     await app_module._post_shutdown_factory(cast(app_module.ScheduledTaskScheduler, scheduler))(app)
 
     assert scheduler.started is True
     assert scheduler.stopped is True
+    app.bot.set_my_commands.assert_awaited_once()
 
 
 async def test_on_activity_event_ignores_suppressed_chat():

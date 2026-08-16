@@ -132,7 +132,13 @@ class AcpAgentService:
         self._pending_permissions: dict[str, _PendingPermission] = {}
         self._permission_prompt_handler: Callable[[PermissionRequest], Awaitable[None]] | None = None
         self._activity_event_handler: Callable[[int, AgentActivityBlock], Awaitable[None]] | None = None
+        self._commands_event_handler: Callable[[int, list[tuple[str, str]]], Awaitable[None]] | None = None
         self._channel_state_lock = asyncio.Lock()
+
+    def set_commands_event_handler(
+        self, handler: Callable[[int, list[tuple[str, str]]], Awaitable[None]] | None
+    ) -> None:
+        self._commands_event_handler = handler
 
     async def new_session(self, *, chat_id: int, workspace: Path) -> str:
         workspace = self._normalize_workspace(workspace)
@@ -483,8 +489,10 @@ class AcpAgentService:
         client = _AcpClient(
             permission_decider=self._decide_permission,
             event_reporter=self._report_permission_event,
-            activity_reporter=self._forward_activity_event,
+            activity_reporter=lambda s, b: self._forward_activity_event(chat_id, s, b),
+            commands_handler=lambda s, c: self._forward_commands_event(chat_id, s, c),
         )
+
         connection = self._connector(client, process.stdin, process.stdout)
         try:
             with bind_log_context(chat_id=chat_id):
@@ -667,14 +675,17 @@ class AcpAgentService:
         with bind_log_context(chat_id=chat_id, session_id=session_id):
             logger.info("ACP permission event: %s", event)
 
-    async def _forward_activity_event(self, session_id: str, block: AgentActivityBlock) -> None:
+    async def _forward_activity_event(self, chat_id: int, session_id: str, block: AgentActivityBlock) -> None:
         handler = self._activity_event_handler
         if handler is None:
             return
-        chat_id = self._chat_id_by_session(session_id)
-        if chat_id is None:
-            return
         await handler(chat_id, block)
+
+    async def _forward_commands_event(self, chat_id: int, session_id: str, commands: list[tuple[str, str]]) -> None:
+        handler = self._commands_event_handler
+        if handler is None:
+            return
+        await handler(chat_id, commands)
 
     def _chat_id_by_session(self, session_id: str) -> int | None:
         return self._chat_by_session.get(session_id)

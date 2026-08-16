@@ -30,7 +30,7 @@ async def test_start_and_help():
 
     assert update.message is not None
     assert "Send a message to start in the default workspace" in update.message.replies[0]
-    assert "Commands:" in update.message.replies[1]
+    assert "Bot Commands" in update.message.replies[1]
     assert "/cancel" in update.message.replies[1]
     assert "/mode" in update.message.replies[1]
     assert "/scheduled" in update.message.replies[1]
@@ -58,6 +58,80 @@ async def test_mode_command_reports_current_mode_without_args():
 
 
 async def test_mode_command_rejects_invalid_mode():
+    bridge = make_bridge()
+    update = make_update(with_message=True)
+
+    await bridge.mode(update, make_context(args=["invalid"]))
+
+    assert update.message is not None
+    assert update.message.replies == ["Usage: /mode normal, compact, or verbose"]
+
+
+async def test_on_commands_event_updates_bot_commands(mocker):
+    bridge = make_bridge()
+    mock_bot = mocker.AsyncMock()
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("goal", "Run long task")])
+
+    assert mock_bot.set_my_commands.called
+    cmds = mock_bot.set_my_commands.call_args_list[0][0][0]
+    cmd_names = [c.command for c in cmds]
+    assert "goal" in cmd_names
+    assert "start" in cmd_names
+
+
+async def test_on_commands_event_ignored_when_propagate_disabled(mocker):
+    config = make_config(token="T", allowed_user_ids=[], workspace="/tmp/base", propagate_commands=False)
+    bridge = TelegramBridge(config=config, agent_service=EchoAgentService(SessionRegistry()))
+    mock_bot = mocker.AsyncMock()
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("goal", "Run long task")])
+
+    mock_bot.set_my_commands.assert_not_called()
+
+
+async def test_on_commands_event_handles_exception(mocker):
+    bridge = make_bridge()
+    mock_bot = mocker.AsyncMock()
+    mock_bot.set_my_commands.side_effect = Exception("API error")
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("fail", "Fail desc")])
+    assert mock_bot.set_my_commands.called
+
+
+async def test_acp_command_remapping_and_unmapping(mocker):
+    bridge = make_bridge()
+    bridge._app = mocker.MagicMock()
+    await bridge.on_commands_event(TEST_CHAT_ID, [("schedule", "ACP schedule"), ("grill-me", "Interview")])
+    remap = bridge._command_remap_by_chat[TEST_CHAT_ID]
+    assert remap["acp_schedule"] == "schedule"
+    assert remap["grill_me"] == "grill-me"
+
+    update = make_update(chat_id=TEST_CHAT_ID, text="/acp_schedule 10m review code")
+    context = make_context()
+    prompt_input = await bridge._prompt_input(update=update, context=context)
+    assert prompt_input is not None
+    assert prompt_input.text == "/schedule 10m review code"
+
+
+async def test_start_and_help_with_session_commands(mocker):
+    bridge = make_bridge()
+    bridge._app = mocker.MagicMock()
+    update = make_update(chat_id=TEST_CHAT_ID, with_message=True)
+    context = make_context()
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("goal", "Run long task"), ("schedule", "ACP schedule")])
+    await bridge.start(update, context)
+    await bridge.help(update, context)
+
+    assert update.message is not None
+    assert "Session commands available: /goal, /acp_schedule" in update.message.replies[0]
+    assert "Session Commands (ACP)" in update.message.replies[1]
+    assert "/acp_schedule - ACP schedule" in update.message.replies[1]
+
     bridge = make_bridge()
     update = make_update(with_message=True)
 
@@ -838,3 +912,36 @@ async def test_concurrent_first_prompts_start_only_one_implicit_session(tmp_path
     assert update_one.message.replies == ["ok"]
     assert update_two.message.replies == ["ok"]
     assert TEST_CHAT_ID not in bridge._implicit_start_locks_by_chat
+
+
+async def test_acp_command_remapping_duplicate_names():
+    bridge = make_bridge()
+    bridge._app = mocker.MagicMock() if 'mocker' in globals() else None
+    
+    # We need to trigger the duplicate logic in _compute_command_remap
+    # Two commands that sanitize to the same name
+    raw_commands = (("/test-cmd", "First"), ("/test_cmd", "Second"), ("/test-cmd2", "Third"))
+    # Wait, actually we can just pass commands that conflict with Bot commands
+    # e.g., "start", "start" again...
+    
+    # Actually let's just test _compute_command_remap directly
+    from telegram_acp_bot.telegram.bridge import _compute_command_remap
+    remap, display = _compute_command_remap((("/start", "First"), ("/start", "Second"), ("/start", "Third")))
+    
+    names = [d[0] for d in display]
+    assert names == ["acp_start", "acp_start_1", "acp_start_2"]
+
+async def test_on_commands_event_handles_double_exception(mocker):
+    bridge = make_bridge()
+    mock_bot = mocker.AsyncMock()
+    mock_bot.set_my_commands.side_effect = Exception("API error")
+    bridge._app = mocker.MagicMock(bot=mock_bot)
+
+    await bridge.on_commands_event(TEST_CHAT_ID, [("fail", "Fail desc")])
+    assert mock_bot.set_my_commands.call_count == 2
+
+
+async def test_sanitize_empty_fallback():
+    from telegram_acp_bot.telegram.bridge import sanitize_telegram_command
+    assert sanitize_telegram_command("") == "cmd"
+    assert sanitize_telegram_command("!@#") == "cmd"
