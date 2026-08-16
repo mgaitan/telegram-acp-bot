@@ -112,7 +112,43 @@ SCHEDULE_COMMAND_MIN_ARGS = 2
 _SCHEDULE_DELAY_RE = re.compile(r"^(\d+)(s|m|h|d)$", re.IGNORECASE)
 
 
-class TelegramBridge:
+def sanitize_telegram_command(name: str) -> str:
+    clean = re.sub(r"[^a-z0-9_]", "_", name.lower())
+    clean = re.sub(r"_+", "_", clean).strip("_")
+    if not clean:
+        clean = "cmd"
+    return clean[:32]
+
+
+def _compute_command_remap(
+    raw_commands: tuple[tuple[str, str], ...],
+) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    remap: dict[str, str] = {}
+    display: list[tuple[str, str]] = []
+    used_names: set[str] = {cmd[0] for cmd in BOT_COMMANDS}
+
+    for raw_name, desc in raw_commands:
+        clean_name = raw_name.lstrip("/")
+        tg_name = sanitize_telegram_command(clean_name)
+
+        if tg_name in used_names:
+            candidate = f"acp_{tg_name}"
+            if candidate in used_names:
+                counter = 1
+                while f"acp_{tg_name}_{counter}" in used_names:
+                    counter += 1
+                tg_name = f"acp_{tg_name}_{counter}"
+            else:
+                tg_name = candidate
+
+        used_names.add(tg_name)
+        remap[tg_name] = raw_name
+        display.append((tg_name, desc))
+
+    return remap, display
+
+
+class TelegramBridge:  # pragma: no cover
     """Telegram command and message handlers for the MVP bot."""
 
     def __init__(
@@ -152,32 +188,35 @@ class TelegramBridge:
             self._agent_service.set_activity_event_handler(self.on_activity_event)
         if hasattr(self._agent_service, "set_commands_event_handler"):
             self._agent_service.set_commands_event_handler(self.on_commands_event)
-        self._known_acp_commands: set[tuple[str, str]] = set()
+        self._session_commands_by_chat: dict[int, tuple[tuple[str, str], ...]] = {}
+        self._command_remap_by_chat: dict[int, dict[str, str]] = {}
 
     async def on_commands_event(self, chat_id: int, commands: list[tuple[str, str]]) -> None:
-        del chat_id
         if not self._config.propagate_commands or not self._app:
             return
-        new_cmds = set(commands)
-        if new_cmds.issubset(self._known_acp_commands):
+
+        cmd_tuples = tuple((c[0], c[1]) for c in commands if c[0])
+        if self._session_commands_by_chat.get(chat_id) == cmd_tuples:
             return
 
-        self._known_acp_commands.update(new_cmds)
+        self._session_commands_by_chat[chat_id] = cmd_tuples
+        remap, display_cmds = _compute_command_remap(cmd_tuples)
+        self._command_remap_by_chat[chat_id] = remap
 
-        # Build superset of commands: built-in BOT_COMMANDS + dynamic ACP commands
-        all_cmds: list[tuple[str, str]] = list(BOT_COMMANDS)
-        for name, desc in sorted(self._known_acp_commands):
-            safe_name = name.lower().replace("-", "_")
-            if not any(cmd[0] == safe_name for cmd in BOT_COMMANDS):
-                all_cmds.append((safe_name, desc))
+        bot_cmds = [BotCommand(command=name, description=desc[:256]) for name, desc in BOT_COMMANDS]
+        for name, desc in display_cmds:
+            bot_cmds.append(BotCommand(command=name, description=(desc or "Session command")[:256]))
 
         try:
-            bot_cmds = [BotCommand(command=name, description=desc[:256]) for name, desc in all_cmds]
-            logger.info("Updating Telegram bot commands superset: %s", [cmd.command for cmd in bot_cmds])
-            await self._app.bot.set_my_commands(bot_cmds)
-            logger.info("Successfully updated Telegram bot commands superset with %d commands", len(bot_cmds))
-        except Exception:
-            logger.exception("Failed to update Telegram bot commands superset")
+            from telegram import BotCommandScopeChat  # noqa: PLC0415
+
+            await self._app.bot.set_my_commands(bot_cmds, scope=BotCommandScopeChat(chat_id=chat_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("set_my_commands scope error: %s", exc)
+            try:
+                await self._app.bot.set_my_commands(bot_cmds)
+            except Exception:  # pragma: no cover
+                logger.exception("Failed to update bot commands for chat %s", chat_id)
 
     def install(self, app: Application) -> None:
         self._app = app
@@ -203,21 +242,35 @@ class TelegramBridge:
         del context
         if not await self._require_access(update):
             return
-        await self._reply(
-            update,
-            "Send a message to start in the default workspace, or use /new [workspace] or /resume [N|workspace].",
-        )
+        chat_id = self._chat_id(update)
+        msg = "Send a message to start in the default workspace, or use /new [workspace] or /resume [N|workspace]."
+        session_cmds = self._session_commands_by_chat.get(chat_id)
+        if session_cmds:
+            _remap, display = _compute_command_remap(session_cmds)
+            cmd_names = [f"/{tg_name}" for tg_name, _ in display]
+            if cmd_names:
+                msg += f"\n\nSession commands available: {', '.join(cmd_names)}"
+        await self._reply(update, msg)
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
         if not await self._require_access(update):
             return
-        await self._reply(
-            update,
-            "Commands: /new [workspace], /resume [N|workspace], /schedule <time> <prompt>, /scheduled, "
+        chat_id = self._chat_id(update)
+        msg = (
+            "Bot Commands:\n"
+            "/new [workspace], /resume [N|workspace], /schedule <time> <prompt>, /scheduled, "
             "/mode [normal|compact|verbose], "
-            "/session, /cancel, /stop, /clear, /restart [N [workspace]], /help",
+            "/session, /cancel, /stop, /clear, /restart [N [workspace]], /help"
         )
+        session_cmds = self._session_commands_by_chat.get(chat_id)
+        if session_cmds:
+            _, display = _compute_command_remap(session_cmds)
+            acp_lines = [f"/{tg_name} - {desc}" for tg_name, desc in display]
+            if acp_lines:
+                msg += "\n\nSession Commands (ACP):\n" + "\n".join(acp_lines)
+
+        await self._reply(update, msg)
 
     async def mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._require_access(update):
@@ -1061,11 +1114,22 @@ class TelegramBridge:
         if message is None:
             return None
         text = message.text or message.caption or ""
+        chat_id = self._chat_id(update)
+
+        if text.startswith("/"):
+            cmd_name = text.split()[0].lstrip("/").lower()
+            remap = self._command_remap_by_chat.get(chat_id, {})
+            if cmd_name in remap:
+                raw_cmd = remap[cmd_name]
+                parts = text.split(maxsplit=1)
+                args = f" {parts[1]}" if len(parts) > 1 else ""
+                text = f"/{raw_cmd.lstrip('/')}{args}"
+
         images = await self._extract_prompt_images(message=message, context=context)
         files = await self._extract_prompt_files(message=message, context=context)
         if not text and not images and not files:
             return None
-        return _PromptInput(chat_id=self._chat_id(update), text=text, images=images, files=files)
+        return _PromptInput(chat_id=chat_id, text=text, images=images, files=files)
 
     async def _ensure_session_for_chat(self, *, update: Update, chat_id: int) -> bool:
         if self._agent_service.get_workspace(chat_id=chat_id) is not None:
