@@ -135,6 +135,12 @@ ACP_TELEGRAM_CHANNEL_STATE_FILE
 ACP_TELEGRAM_BOT_TOKEN
   Telegram bot token used by the internal MCP server when sending attachments.
   Usually injected by the bot runtime for the internal MCP server.
+
+GH_TOKEN
+  GitHub token used by the `gh` CLI for authenticated GitHub operations.
+
+PYTHONPATH
+  List of directories that Python searches when importing modules.
 ```
 
 ## CLI flags

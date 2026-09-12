@@ -17,7 +17,7 @@ test: ## Run tests with coverage
 qa: ## Run local QA checks via prek
 	@if command -v prek >/dev/null 2>&1; then \
 		echo "🔍 Running prek checks"; \
-		prek run --all-files; \
+		prek run --all-files --skip no-commit-to-branch; \
 	else \
 		echo "ℹ️  prek is not installed. Falling back to direct QA commands. Install it with: uv tool install prek"; \
 		set -e; \

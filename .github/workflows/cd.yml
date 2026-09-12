@@ -39,21 +39,30 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: uv build
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        if: github.event_name == 'release'
+
+      - name: Smoke test built wheel in isolation
+        run: |
+          wheel=$(find dist -name '*.whl' -print -quit)
+          test -n "$wheel"
+          uv run --isolated --no-project --with "$wheel" python -c "import telegram_acp_bot"
+
+      - name: Generate PEP 740 publish attestations
+        uses: astral-sh/attest-action@f589a42a7efb6fe400b4f400de60b4bc90390027 # v0.0.6
+
+      - run: uv publish
 
   docs-build:
     name: Build documentation
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Build docs
         run: make docs
 
@@ -65,11 +74,11 @@ jobs:
       name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_target == 'preview' && 'github-pages-preview' || 'github-pages' }}
       url: ${{ steps.preview_url.outputs.url }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/configure-pages@v5
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/configure-pages@v6.0.0
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Stage documentation artifact
         run: |
           set -euo pipefail
@@ -114,11 +123,11 @@ jobs:
             make docs
             cp -a docs/_build/html/. "$out_dir/"
           fi
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5.0.1
       - name: Compute documentation URL
         id: preview_url
         run: |

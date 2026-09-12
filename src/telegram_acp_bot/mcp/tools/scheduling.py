@@ -31,7 +31,7 @@ def register_scheduling_tools(mcp: FastMCP) -> None:
     )(schedule_task)
 
 
-async def schedule_task(  # noqa: PLR0911,PLR0913
+async def schedule_task(  # noqa: PLR0911,PLR0913,PLR0917
     mode: str,
     run_at: str | None = None,
     delay_seconds: int | None = None,

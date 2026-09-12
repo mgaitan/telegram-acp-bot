@@ -1,5 +1,4 @@
-"""
-Telegram ACP bot
+"""Telegram ACP bot.
 
 A Telegram bot that implements Agent Client Protocol to interact with AI agents.
 """
@@ -40,6 +39,7 @@ SCHEDULE_LANGUAGES_ENV = "ACP_SCHEDULE_LANGUAGES"
 
 
 def get_version() -> str:
+    """Return the installed package version."""
     try:
         return metadata.version("telegram-acp-bot")
     except metadata.PackageNotFoundError:
